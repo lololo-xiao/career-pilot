@@ -239,7 +239,7 @@
   border-radius: 18px;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(190px, auto) auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(190px, auto) auto;
   margin-bottom: 1rem;
   padding: 0.9rem 1rem;
 }
@@ -248,7 +248,6 @@
 .workspace-csv-import span,
 .workspace-csv-import small { color: var(--workspace-muted); font-size: 0.61rem; }
 .workspace-csv-import small { color: var(--workspace-green); font-weight: 750; }
-.workspace-csv-import a,
 .workspace-csv-import button { background: white; border: 1px solid #c5ccc6; border-radius: 99px; color: var(--workspace-ink); cursor: pointer; font-size: 0.65rem; font-weight: 800; padding: 0.58rem 0.8rem; text-align: center; text-decoration: none; white-space: nowrap; }
 .workspace-csv-import button { background: #d8f65b; border-color: #d8f65b; }
 .workspace-csv-import button:disabled { opacity: 0.55; }

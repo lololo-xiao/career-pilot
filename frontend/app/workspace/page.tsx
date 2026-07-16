@@ -481,13 +481,11 @@ function CsvImportPanel({
   kind,
   refresh,
   setError,
-  template,
 }: {
   endpoint: string;
   kind: "jobs" | "applications";
   refresh: (quiet?: boolean) => Promise<void>;
   setError: (message: string | null) => void;
-  template: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -525,7 +523,6 @@ function CsvImportPanel({
         <span>UTF-8 CSV, up to 1,000 rows. Existing records are updated by job URL.</span>
         {message ? <small role="status">{message}</small> : null}
       </div>
-      <a download href={template}>Download 20-company template</a>
       <input accept=".csv,text/csv" aria-label={`Choose ${kind} CSV`} name="file" required type="file" />
       <button disabled={busy} type="submit">{busy ? "Importing…" : "Import CSV"}</button>
     </form>
@@ -832,7 +829,7 @@ function JobsPanel({
   return (
     <section>
       <div className="workspace-section-heading"><div><span className="workspace-eyebrow">FOCUSED SEARCH</span><h1>Your job queue.</h1><p>Deterministic scoring first, with a visible reason for every recommendation.</p></div><button onClick={() => setShowForm((value) => !value)} type="button">{showForm ? "Close form" : "Add a job"}</button></div>
-      <CsvImportPanel endpoint="/api/v1/jobs/import" kind="jobs" refresh={refresh} setError={setError} template="/templates/job-queue-demo-template.csv" />
+      <CsvImportPanel endpoint="/api/v1/jobs/import" kind="jobs" refresh={refresh} setError={setError} />
       {showForm ? (
         <form className="workspace-card workspace-job-form" onSubmit={addJob}>
           <label>Company<input name="company" required /></label>
@@ -959,7 +956,7 @@ function ApplicationsPanel({
         <div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Pilot can prepare and fill. You review, approve, submit, and record each outcome.</p></div>
         <button aria-expanded={showSummary} onClick={() => setShowSummary((value) => !value)} type="button">{showSummary ? "Hide summary" : "View summary"}</button>
       </div>
-      <CsvImportPanel endpoint="/api/v1/applications/import" kind="applications" refresh={refresh} setError={setError} template="/templates/applications-demo-template.csv" />
+      <CsvImportPanel endpoint="/api/v1/applications/import" kind="applications" refresh={refresh} setError={setError} />
       {showSummary ? <ApplicationSummary applications={applications} /> : null}
       <div className="workspace-filters workspace-application-filters" aria-label="Filter applications">
         <label className="workspace-filter-search"><span>Search</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Role, company, or location" type="search" value={query} /></label>
