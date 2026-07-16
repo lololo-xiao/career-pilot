@@ -43,6 +43,21 @@ export interface Job {
     company: string;
     locations: string[];
     description: string;
+    employment_type?: string;
+    workplace_type?: "onsite" | "hybrid" | "remote" | "unknown";
+    company_size?:
+      | "1-10"
+      | "11-50"
+      | "51-200"
+      | "201-500"
+      | "501-1000"
+      | "1001-5000"
+      | "5001-10000"
+      | "10001+"
+      | "unknown";
+    posted_date?: string;
+    deadline?: string;
+    source_url?: string;
   };
   score?: number;
   tier?: string;
@@ -72,6 +87,8 @@ export interface Application {
     note: string;
     created_at: string;
   }>;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ModelRoute {

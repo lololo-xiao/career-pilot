@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -75,6 +77,24 @@ def test_jobs_are_deduplicated_and_isolated_by_account(client) -> None:
     assert client.get("/api/v1/jobs").json() == []
 
 
+def test_job_metadata_round_trips_for_queue_filters(client) -> None:
+    payload = _job_payload()
+    payload["spec"].update(
+        {
+            "posted_date": "2026-07-15",
+            "workplace_type": "hybrid",
+            "company_size": "51-200",
+        }
+    )
+
+    created = client.post("/api/v1/jobs", json=payload)
+
+    assert created.status_code == 200
+    assert created.json()["spec"]["posted_date"] == "2026-07-15"
+    assert created.json()["spec"]["workplace_type"] == "hybrid"
+    assert created.json()["spec"]["company_size"] == "51-200"
+
+
 def test_profile_api_rejects_unsupported_verified_claim(client) -> None:
     response = client.put(
         "/api/v1/onboarding/profile",
@@ -122,6 +142,107 @@ def test_application_state_api_requires_confirmed_submission(client) -> None:
     assert confirmed.status_code == 200
     assert confirmed.json()["status"] == "submitted"
     assert confirmed.json()["submitted_at"] is not None
+
+
+def test_user_can_record_a_detailed_application_outcome(client) -> None:
+    job_id = client.post("/api/v1/jobs", json=_job_payload()).json()["id"]
+    application_id = client.post(
+        "/api/v1/applications", params={"job_id": job_id}
+    ).json()["id"]
+
+    unconfirmed = client.post(
+        f"/api/v1/applications/{application_id}/status",
+        json={"status": "oa_failed", "manual_override": True},
+    )
+    recorded = client.post(
+        f"/api/v1/applications/{application_id}/status",
+        json={
+            "status": "oa_failed",
+            "manual_override": True,
+            "confirmed_by_user": True,
+            "note": "Recorded in the local workspace",
+        },
+    )
+
+    assert unconfirmed.status_code == 409
+    assert recorded.status_code == 200
+    assert recorded.json()["status"] == "oa_failed"
+    assert recorded.json()["submitted_at"] is not None
+    assert recorded.json()["next_action"] == "Record learnings from the assessment"
+    assert recorded.json()["status_events"][-1]["to"] == "oa_failed"
+
+
+def test_job_queue_csv_import_accepts_aliases_and_reports_row_errors(client) -> None:
+    csv_text = """company,role,location,job_url,posted_date,workplace,company_size,description
+Northstar Labs,AI Engineer,"Berlin, Germany",https://jobs.example.com/northstar-ai,2026-07-15,hybrid,51-200,Build retrieval systems.
+Broken Row,Data Engineer,Paris,https://jobs.example.com/broken,not-a-date,remote,11-50,Build pipelines.
+"""
+
+    response = client.post(
+        "/api/v1/jobs/import",
+        files={"file": ("jobs.csv", csv_text, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["created_jobs"] == 1
+    assert len(response.json()["errors"]) == 1
+    jobs = client.get("/api/v1/jobs").json()
+    assert jobs[0]["spec"]["workplace_type"] == "hybrid"
+    assert jobs[0]["spec"]["company_size"] == "51-200"
+
+
+def test_application_csv_import_creates_jobs_and_detailed_statuses(client) -> None:
+    csv_text = """company,title,location,url,status,applied_date,workplace,company_size,notes
+Northstar Labs,AI Engineer,"Berlin, Germany",https://jobs.example.com/northstar-ai,Applied,2026-07-10,hybrid,51-200,Applied manually
+Pinecone Robotics,ML Engineer,"Munich, Germany",https://jobs.example.com/pinecone-ml,Interview 1 Fail,2026-07-08,onsite,201-500,Review system design
+"""
+
+    first = client.post(
+        "/api/v1/applications/import",
+        files={"file": ("applications.csv", csv_text, "text/csv")},
+    )
+    second = client.post(
+        "/api/v1/applications/import",
+        files={"file": ("applications.csv", csv_text, "text/csv")},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["created_jobs"] == 2
+    assert first.json()["created_applications"] == 2
+    assert second.status_code == 200
+    assert second.json()["created_jobs"] == 0
+    assert second.json()["created_applications"] == 0
+    assert second.json()["updated_applications"] == 2
+    applications = client.get("/api/v1/applications").json()
+    assert {item["status"] for item in applications} == {
+        "submitted",
+        "interview_1_failed",
+    }
+    assert all(item["submitted_at"].startswith("2026-07") for item in applications)
+
+
+def test_demo_csv_templates_import_end_to_end(client) -> None:
+    template_dir = Path(__file__).parents[1] / "frontend" / "public" / "templates"
+
+    with (template_dir / "job-queue-demo-template.csv").open("rb") as jobs_file:
+        jobs_response = client.post(
+            "/api/v1/jobs/import",
+            files={"file": ("jobs.csv", jobs_file, "text/csv")},
+        )
+    with (template_dir / "applications-demo-template.csv").open("rb") as applications_file:
+        applications_response = client.post(
+            "/api/v1/applications/import",
+            files={"file": ("applications.csv", applications_file, "text/csv")},
+        )
+
+    assert jobs_response.status_code == 200
+    assert jobs_response.json()["created_jobs"] == 20
+    assert jobs_response.json()["errors"] == []
+    assert applications_response.status_code == 200
+    assert applications_response.json()["created_applications"] == 20
+    assert applications_response.json()["errors"] == []
+    assert len(client.get("/api/v1/jobs").json()) == 20
+    assert len(client.get("/api/v1/applications").json()) == 20
 
 
 def test_integrated_api_uses_existing_provider_settings_only(client) -> None:

@@ -39,6 +39,7 @@ from career_companion.services.applications import (
 )
 from career_companion.services.approvals import decide_approval, request_approval
 from career_companion.services.browser import BrowserAssistant
+from career_companion.services.csv_imports import import_applications_csv, import_jobs_csv
 from career_companion.services.discovery import discover_greenhouse, discover_lever
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.model_routes import daily_cost, upsert_route
@@ -70,6 +71,7 @@ class ApplicationTransitionRequest(BaseModel):
     status: ApplicationStatus
     note: str = ""
     confirmed_by_user: bool = False
+    manual_override: bool = False
 
 
 class RevisionRequest(BaseModel):
@@ -156,6 +158,15 @@ def create_job(job: Job, session: SessionDep) -> dict[str, Any]:
     return _job_json(record) | {"created": created}
 
 
+@router.post("/jobs/import")
+async def import_jobs(file: Annotated[UploadFile, File()], session: SessionDep) -> dict[str, Any]:
+    csv_text = await _read_csv_upload(file)
+    try:
+        return import_jobs_csv(session, csv_text).as_dict()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.get("/jobs")
 def list_jobs(session: SessionDep) -> list[dict[str, Any]]:
     return [_job_json(row) for row in session.scalars(select(JobRecord)).all()]
@@ -190,6 +201,17 @@ def start_application(job_id: str, session: SessionDep) -> dict[str, Any]:
     return _application_json(create_application(session, job_id))
 
 
+@router.post("/applications/import")
+async def import_applications(
+    file: Annotated[UploadFile, File()], session: SessionDep
+) -> dict[str, Any]:
+    csv_text = await _read_csv_upload(file)
+    try:
+        return import_applications_csv(session, csv_text).as_dict()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.get("/applications")
 def list_applications(session: SessionDep) -> list[dict[str, Any]]:
     return [_application_json(row) for row in session.scalars(select(ApplicationRecord)).all()]
@@ -206,6 +228,7 @@ def set_application_status(
             payload.status,
             note=payload.note,
             confirmed_by_user=payload.confirmed_by_user,
+            manual_override=payload.manual_override,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -444,6 +467,21 @@ def _job_json(row: JobRecord) -> dict[str, Any]:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
+
+
+async def _read_csv_upload(file: UploadFile) -> str:
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(400, "Only CSV files are accepted")
+    try:
+        payload = await file.read(2 * 1024 * 1024 + 1)
+    finally:
+        await file.close()
+    if len(payload) > 2 * 1024 * 1024:
+        raise HTTPException(413, "CSV file exceeds 2 MB")
+    try:
+        return payload.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(422, "CSV must use UTF-8 encoding") from exc
 
 
 def _artifact_json(row: ArtifactRecord) -> dict[str, Any]:

@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import type { AuthSessionResponse, AuthUser } from "../types";
+import { ApplicationSummary } from "./application-summary";
 import { API_BASE_URL, apiRequest, openArtifact } from "./api";
 import type {
   Application,
@@ -29,6 +30,111 @@ type WorkspaceTab =
   | "jobs"
   | "applications"
   | "controls";
+
+type DateFilter = "any" | "today" | "7d" | "30d";
+
+interface CsvImportResult {
+  created_jobs: number;
+  updated_jobs: number;
+  created_applications: number;
+  updated_applications: number;
+  skipped: number;
+  errors: string[];
+}
+
+const WORKPLACE_OPTIONS = [
+  ["any", "Any workplace"],
+  ["remote", "Remote"],
+  ["hybrid", "Hybrid"],
+  ["onsite", "On-site"],
+  ["unknown", "Not specified"],
+] as const;
+
+const COMPANY_SIZE_OPTIONS = [
+  ["any", "Any company size"],
+  ["1-10", "1–10 employees"],
+  ["11-50", "11–50 employees"],
+  ["51-200", "51–200 employees"],
+  ["201-500", "201–500 employees"],
+  ["501-1000", "501–1,000 employees"],
+  ["1001-5000", "1,001–5,000 employees"],
+  ["5001-10000", "5,001–10,000 employees"],
+  ["10001+", "10,001+ employees"],
+  ["unknown", "Not specified"],
+] as const;
+
+const APPLICATION_STATUS_OPTIONS = [
+  ["discovered", "Tracked"],
+  ["scored", "Fit reviewed"],
+  ["approved", "Approved to tailor"],
+  ["tailoring", "Tailoring"],
+  ["ready", "Ready to apply"],
+  ["form_filled", "Form filled"],
+  ["submitted", "Applied"],
+  ["followed_up", "Followed up"],
+  ["oa", "Online assessment"],
+  ["oa_failed", "OA failed"],
+  ["interview", "Interview (legacy)"],
+  ["interview_1", "Interview 1"],
+  ["interview_1_failed", "Interview 1 failed"],
+  ["interview_2", "Interview 2"],
+  ["interview_2_failed", "Interview 2 failed"],
+  ["final_interview", "Final interview"],
+  ["final_interview_failed", "Final interview failed"],
+  ["offer", "Offer"],
+  ["accepted", "Accepted"],
+  ["rejected", "Rejected"],
+  ["no_response", "No response"],
+  ["withdrawn", "Withdrawn"],
+] as const;
+
+const APPLICATION_STARTED_STATUSES = new Set([
+  "submitted",
+  "followed_up",
+  "oa",
+  "oa_failed",
+  "interview",
+  "interview_1",
+  "interview_1_failed",
+  "interview_2",
+  "interview_2_failed",
+  "final_interview",
+  "final_interview_failed",
+  "offer",
+  "accepted",
+  "rejected",
+  "no_response",
+]);
+
+function formatDate(value?: string): string {
+  if (!value) return "Not specified";
+  const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
+  if (Number.isNaN(date.getTime())) return "Not specified";
+  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+function matchesDateFilter(value: string | undefined, filter: DateFilter): boolean {
+  if (filter === "any") return true;
+  if (!value) return false;
+  const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const threshold = new Date(start);
+  if (filter === "7d") threshold.setDate(threshold.getDate() - 6);
+  if (filter === "30d") threshold.setDate(threshold.getDate() - 29);
+  return date >= threshold;
+}
+
+function applicationStatusLabel(status: string): string {
+  return APPLICATION_STATUS_OPTIONS.find(([value]) => value === status)?.[1]
+    ?? status.replaceAll("_", " ");
+}
+
+function companySizeLabel(size?: string): string {
+  return COMPANY_SIZE_OPTIONS.find(([value]) => value === (size ?? "unknown"))?.[1]
+    ?? "Not specified";
+}
 
 const EMPTY_PROFILE: CandidateProfile = {
   display_name: "",
@@ -370,6 +476,62 @@ function Metric({ label, value }: { label: string; value: number | string }) {
   return <div><strong>{value}</strong><span>{label}</span></div>;
 }
 
+function CsvImportPanel({
+  endpoint,
+  kind,
+  refresh,
+  setError,
+  template,
+}: {
+  endpoint: string;
+  kind: "jobs" | "applications";
+  refresh: (quiet?: boolean) => Promise<void>;
+  setError: (message: string | null) => void;
+  template: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function importCsv(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await apiRequest<CsvImportResult>(endpoint, {
+        method: "POST",
+        body: new FormData(formElement),
+      });
+      const created = kind === "jobs" ? result.created_jobs : result.created_applications;
+      const updated = kind === "jobs" ? result.updated_jobs : result.updated_applications;
+      const errorSummary = result.errors.length
+        ? ` ${result.errors.length} row${result.errors.length === 1 ? "" : "s"} need attention: ${result.errors[0]}`
+        : "";
+      setMessage(`Imported ${created} and updated ${updated} ${kind}.${errorSummary}`);
+      formElement.reset();
+      await refresh(true);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `The ${kind} CSV could not be imported.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="workspace-csv-import" onSubmit={importCsv}>
+      <div>
+        <strong>Import {kind} from CSV</strong>
+        <span>UTF-8 CSV, up to 1,000 rows. Existing records are updated by job URL.</span>
+        {message ? <small role="status">{message}</small> : null}
+      </div>
+      <a download href={template}>Download 20-company template</a>
+      <input accept=".csv,text/csv" aria-label={`Choose ${kind} CSV`} name="file" required type="file" />
+      <button disabled={busy} type="submit">{busy ? "Importing…" : "Import CSV"}</button>
+    </form>
+  );
+}
+
 function ProfilePanel({
   profile,
   refresh,
@@ -594,6 +756,10 @@ function JobsPanel({
 }) {
   const [showForm, setShowForm] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("any");
+  const [workplaceFilter, setWorkplaceFilter] = useState("any");
+  const [companySizeFilter, setCompanySizeFilter] = useState("any");
   const trackedJobs = new Set(applications.map((item) => item.job_id));
 
   async function addJob(event: FormEvent<HTMLFormElement>) {
@@ -606,6 +772,9 @@ function JobsPanel({
       company: String(form.get("company") ?? "").trim(),
       locations: String(form.get("location") ?? "").split(";").map((item) => item.trim()).filter(Boolean),
       description: String(form.get("description") ?? "").trim(),
+      posted_date: String(form.get("posted_date") ?? "") || undefined,
+      workplace_type: String(form.get("workplace_type") ?? "unknown"),
+      company_size: String(form.get("company_size") ?? "unknown"),
       source_type: "manual",
     };
     if (sourceUrl) spec.source_url = sourceUrl;
@@ -638,29 +807,73 @@ function JobsPanel({
     }
   }
 
-  const sortedJobs = [...jobs].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const filteredJobs = jobs
+    .filter((job) => {
+      const normalizedQuery = query.trim().toLocaleLowerCase();
+      const matchesQuery = !normalizedQuery || [
+        job.company,
+        job.title,
+        ...job.spec.locations,
+      ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+      return matchesQuery
+        && matchesDateFilter(job.spec.posted_date, dateFilter)
+        && (workplaceFilter === "any" || (job.spec.workplace_type ?? "unknown") === workplaceFilter)
+        && (companySizeFilter === "any" || (job.spec.company_size ?? "unknown") === companySizeFilter);
+    })
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+
+  function clearFilters() {
+    setQuery("");
+    setDateFilter("any");
+    setWorkplaceFilter("any");
+    setCompanySizeFilter("any");
+  }
+
   return (
     <section>
       <div className="workspace-section-heading"><div><span className="workspace-eyebrow">FOCUSED SEARCH</span><h1>Your job queue.</h1><p>Deterministic scoring first, with a visible reason for every recommendation.</p></div><button onClick={() => setShowForm((value) => !value)} type="button">{showForm ? "Close form" : "Add a job"}</button></div>
+      <CsvImportPanel endpoint="/api/v1/jobs/import" kind="jobs" refresh={refresh} setError={setError} template="/templates/job-queue-demo-template.csv" />
       {showForm ? (
         <form className="workspace-card workspace-job-form" onSubmit={addJob}>
           <label>Company<input name="company" required /></label>
           <label>Role<input name="title" required /></label>
           <label>Locations<input name="location" placeholder="Berlin, Germany; Munich, Germany" /></label>
           <label>Job URL<input name="url" type="url" /></label>
+          <label>Posted date<input name="posted_date" type="date" /></label>
+          <label>Workplace<select defaultValue="unknown" name="workplace_type">{WORKPLACE_OPTIONS.filter(([value]) => value !== "any").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Company size<select defaultValue="unknown" name="company_size">{COMPANY_SIZE_OPTIONS.filter(([value]) => value !== "any").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="workspace-wide">Job description<textarea name="description" required rows={10} /></label>
           <button disabled={busyId === "new"} type="submit">{busyId === "new" ? "Saving…" : "Save opportunity"}</button>
         </form>
       ) : null}
+      <div className="workspace-filters" aria-label="Filter jobs">
+        <label className="workspace-filter-search"><span>Search</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Role, company, or location" type="search" value={query} /></label>
+        <label><span>Posted</span><select onChange={(event) => setDateFilter(event.target.value as DateFilter)} value={dateFilter}><option value="any">Any date</option><option value="today">Today</option><option value="7d">Past 7 days</option><option value="30d">Past 30 days</option></select></label>
+        <label><span>Workplace</span><select onChange={(event) => setWorkplaceFilter(event.target.value)} value={workplaceFilter}>{WORKPLACE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label><span>Company size</span><select onChange={(event) => setCompanySizeFilter(event.target.value)} value={companySizeFilter}>{COMPANY_SIZE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <div><strong>{filteredJobs.length}</strong><span>of {jobs.length} jobs</span><button onClick={clearFilters} type="button">Clear</button></div>
+      </div>
       <div className="workspace-stack">
-        {sortedJobs.map((job) => (
+        {filteredJobs.map((job) => (
           <article className="workspace-card workspace-job-card" key={job.id}>
             <div className={`workspace-score workspace-tier-${job.tier ?? "none"}`}><strong>{job.score ?? "—"}</strong><span>{job.tier ? `Tier ${job.tier}` : "Not scored"}</span></div>
-            <div className="workspace-job-copy"><span>{job.company}</span><h2>{job.title}</h2><p>{job.spec.locations.join(" · ") || "Location not listed"}</p>{job.score_explanation.length ? <details><summary>Why this score?</summary><ul>{job.score_explanation.map((reason) => <li key={reason}>{reason}</li>)}</ul></details> : null}</div>
+            <div className="workspace-job-copy">
+              <span>{job.company}</span>
+              <h2>{job.title}</h2>
+              <p>{job.spec.locations.join(" · ") || "Location not listed"}</p>
+              <div className="workspace-job-meta">
+                <span>Posted {formatDate(job.spec.posted_date)}</span>
+                <span>{WORKPLACE_OPTIONS.find(([value]) => value === (job.spec.workplace_type ?? "unknown"))?.[1]}</span>
+                <span>{companySizeLabel(job.spec.company_size)}</span>
+                {job.canonical_url ? <a href={job.canonical_url} rel="noreferrer" target="_blank">View job ↗</a> : <span>No URL</span>}
+              </div>
+              {job.score_explanation.length ? <details><summary>Why this score?</summary><ul>{job.score_explanation.map((reason) => <li key={reason}>{reason}</li>)}</ul></details> : null}
+            </div>
             <div className="workspace-actions"><button disabled={busyId === job.id} onClick={() => void act(`/api/v1/jobs/${job.id}/score`, job.id)} type="button">Score</button><button disabled={busyId === job.id || trackedJobs.has(job.id)} onClick={() => void act(`/api/v1/applications?job_id=${job.id}`, job.id)} type="button">{trackedJobs.has(job.id) ? "Tracked" : "Track application"}</button></div>
           </article>
         ))}
         {!jobs.length ? <div className="workspace-empty workspace-card"><strong>Your queue is empty.</strong><span>Add a job description to start ranking opportunities.</span></div> : null}
+        {jobs.length && !filteredJobs.length ? <div className="workspace-empty workspace-card"><strong>No jobs match these filters.</strong><span>Clear one or more filters to see the rest of your queue.</span></div> : null}
       </div>
     </section>
   );
@@ -684,6 +897,12 @@ function ApplicationsPanel({
   setError: (message: string | null) => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [showSummary, setShowSummary] = useState(false);
+  const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("any");
+  const [workplaceFilter, setWorkplaceFilter] = useState("any");
+  const [companySizeFilter, setCompanySizeFilter] = useState("any");
+  const [statusFilter, setStatusFilter] = useState("any");
 
   async function post(path: string, id: string, body?: unknown) {
     setBusyId(id);
@@ -701,18 +920,75 @@ function ApplicationsPanel({
     }
   }
 
+  const filteredApplications = applications.filter((application) => {
+    const job = jobById.get(application.job_id);
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const matchesQuery = !normalizedQuery || [
+      job?.company ?? "",
+      job?.title ?? "",
+      ...(job?.spec.locations ?? []),
+    ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+    return matchesQuery
+      && matchesDateFilter(application.submitted_at ?? application.created_at, dateFilter)
+      && (statusFilter === "any" || application.status === statusFilter)
+      && (workplaceFilter === "any" || (job?.spec.workplace_type ?? "unknown") === workplaceFilter)
+      && (companySizeFilter === "any" || (job?.spec.company_size ?? "unknown") === companySizeFilter);
+  });
+
+  function clearFilters() {
+    setQuery("");
+    setDateFilter("any");
+    setWorkplaceFilter("any");
+    setCompanySizeFilter("any");
+    setStatusFilter("any");
+  }
+
+  function updateStatus(application: Application, status: string) {
+    if (status === application.status) return;
+    void post(`/api/v1/applications/${application.id}/status`, application.id, {
+      status,
+      note: "Status updated by the user in the local workspace",
+      manual_override: true,
+      confirmed_by_user: APPLICATION_STARTED_STATUSES.has(status),
+    });
+  }
+
   return (
     <section>
-      <div className="workspace-section-heading"><div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Pilot can prepare and fill. You review, approve, and submit.</p></div></div>
+      <div className="workspace-section-heading">
+        <div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Pilot can prepare and fill. You review, approve, submit, and record each outcome.</p></div>
+        <button aria-expanded={showSummary} onClick={() => setShowSummary((value) => !value)} type="button">{showSummary ? "Hide summary" : "View summary"}</button>
+      </div>
+      <CsvImportPanel endpoint="/api/v1/applications/import" kind="applications" refresh={refresh} setError={setError} template="/templates/applications-demo-template.csv" />
+      {showSummary ? <ApplicationSummary applications={applications} /> : null}
+      <div className="workspace-filters workspace-application-filters" aria-label="Filter applications">
+        <label className="workspace-filter-search"><span>Search</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Role, company, or location" type="search" value={query} /></label>
+        <label><span>Application date</span><select onChange={(event) => setDateFilter(event.target.value as DateFilter)} value={dateFilter}><option value="any">Any date</option><option value="today">Today</option><option value="7d">Past 7 days</option><option value="30d">Past 30 days</option></select></label>
+        <label><span>Status</span><select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}><option value="any">Any status</option>{APPLICATION_STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label><span>Workplace</span><select onChange={(event) => setWorkplaceFilter(event.target.value)} value={workplaceFilter}>{WORKPLACE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label><span>Company size</span><select onChange={(event) => setCompanySizeFilter(event.target.value)} value={companySizeFilter}>{COMPANY_SIZE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <div><strong>{filteredApplications.length}</strong><span>of {applications.length} applications</span><button onClick={clearFilters} type="button">Clear</button></div>
+      </div>
       <div className="workspace-stack">
-        {applications.map((application) => {
+        {filteredApplications.map((application) => {
           const job = jobById.get(application.job_id);
           const next = NEXT_STATUS[application.status];
           return (
             <article className="workspace-card workspace-application" key={application.id}>
               <div className="workspace-card-heading">
-                <div><span className="workspace-status">{application.status.replaceAll("_", " ")}</span><h2>{job?.title ?? "Application"}</h2><p>{job?.company ?? "Unknown company"} · {application.next_action}</p></div>
+                <div className="workspace-application-copy">
+                  <span className={`workspace-status workspace-status-${application.status}`}>{applicationStatusLabel(application.status)}</span>
+                  <h2>{job?.title ?? "Application"}</h2>
+                  <p>{job?.company ?? "Unknown company"} · {application.next_action}</p>
+                  <div className="workspace-job-meta">
+                    <span>{application.submitted_at ? `Applied ${formatDate(application.submitted_at)}` : `Tracked ${formatDate(application.created_at)}`}</span>
+                    <span>{WORKPLACE_OPTIONS.find(([value]) => value === (job?.spec.workplace_type ?? "unknown"))?.[1]}</span>
+                    <span>{companySizeLabel(job?.spec.company_size)}</span>
+                    {job?.canonical_url ? <a href={job.canonical_url} rel="noreferrer" target="_blank">View job ↗</a> : <span>No URL</span>}
+                  </div>
+                </div>
                 <div className="workspace-actions">
+                  <label className="workspace-status-editor">Status<select aria-label={`Status for ${job?.title ?? "application"}`} disabled={busyId === application.id} onChange={(event) => updateStatus(application, event.target.value)} value={application.status}>{APPLICATION_STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   {next ? <button disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: next.target, note: "Confirmed in local workspace" })} type="button">{next.label}</button> : null}
                   {application.status === "approved" ? <button disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/artifacts/generate`, application.id)} type="button">Generate application pack</button> : null}
                   {["ready", "form_filled"].includes(application.status) ? <button className="workspace-danger-safe" disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: "submitted", note: "User confirmed manual submission", confirmed_by_user: true })} type="button">I submitted it manually</button> : null}
@@ -733,6 +1009,7 @@ function ApplicationsPanel({
           );
         })}
         {!applications.length ? <div className="workspace-empty workspace-card"><strong>No applications tracked yet.</strong><span>Add a job, score it, then choose “Track application.”</span></div> : null}
+        {applications.length && !filteredApplications.length ? <div className="workspace-empty workspace-card"><strong>No applications match these filters.</strong><span>Clear one or more filters to see the rest of your pipeline.</span></div> : null}
       </div>
     </section>
   );

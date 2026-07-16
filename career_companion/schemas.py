@@ -55,6 +55,18 @@ class JobSpec(BaseModel):
     preferred: list[str] = Field(default_factory=list)
     seniority: str = "unknown"
     employment_type: str = "unknown"
+    workplace_type: Literal["onsite", "hybrid", "remote", "unknown"] = "unknown"
+    company_size: Literal[
+        "1-10",
+        "11-50",
+        "51-200",
+        "201-500",
+        "501-1000",
+        "1001-5000",
+        "5001-10000",
+        "10001+",
+        "unknown",
+    ] = "unknown"
     posted_date: date | None = None
     deadline: date | None = None
     source_url: HttpUrl | None = None
@@ -83,9 +95,19 @@ class ApplicationStatus(StrEnum):
     FORM_FILLED = "form_filled"
     SUBMITTED = "submitted"
     FOLLOWED_UP = "followed_up"
+    OA = "oa"
+    OA_FAILED = "oa_failed"
     INTERVIEW = "interview"
+    INTERVIEW_1 = "interview_1"
+    INTERVIEW_1_FAILED = "interview_1_failed"
+    INTERVIEW_2 = "interview_2"
+    INTERVIEW_2_FAILED = "interview_2_failed"
+    FINAL_INTERVIEW = "final_interview"
+    FINAL_INTERVIEW_FAILED = "final_interview_failed"
     OFFER = "offer"
+    ACCEPTED = "accepted"
     REJECTED = "rejected"
+    NO_RESPONSE = "no_response"
     WITHDRAWN = "withdrawn"
 
 
