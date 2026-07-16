@@ -260,9 +260,54 @@
 .workspace-card select { background: white; border: 1px solid #cbd2cc; border-radius: 10px; color: var(--workspace-ink); min-width: 0; padding: 0.72rem 0.8rem; width: 100%; }
 .workspace-card textarea { resize: vertical; }
 .workspace-wide { grid-column: 1 / -1; }
+.workspace-field { display: grid; gap: 0.4rem; min-width: 0; }
+.workspace-field > span { color: #42564e; font-size: 0.68rem; font-weight: 750; }
+.workspace-field > small { color: var(--workspace-muted); font-size: 0.58rem; font-weight: 500; }
+.workspace-inline-add { display: grid; gap: 0.45rem; grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-language-add { display: grid; gap: 0.45rem; grid-template-columns: minmax(150px, 0.8fr) minmax(210px, 1.2fr) auto; }
+.workspace-inline-add button,
+.workspace-language-add button { border-radius: 10px; min-width: 4.75rem; white-space: nowrap; }
+.workspace-language-add button { justify-self: start; min-height: 3.05rem; }
+.workspace-chip-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.workspace-chip-list > span {
+  align-items: center;
+  background: #e3ebe6;
+  border-radius: 99px;
+  color: #3d6556;
+  display: inline-flex;
+  font-size: 0.62rem;
+  font-weight: 750;
+  gap: 0.25rem;
+  padding: 0.3rem 0.55rem;
+}
+.workspace-card .workspace-chip-list > span > button {
+  background: transparent;
+  border: 0;
+  color: #567268;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+}
 .workspace-import-card { display: flex; flex-direction: column; }
 .workspace-import-card button { align-self: flex-start; margin-top: auto; }
 .workspace-claims-card { margin-top: 1rem; }
+
+.workspace-projects-card { margin-top: 1rem; }
+.workspace-project-list { display: grid; gap: 1rem; margin-top: 1rem; }
+.workspace-project { background: #f7f5ef; border: 1px solid #dfe2dc; border-radius: 16px; padding: 1rem; }
+.workspace-project + .workspace-project { margin-top: 0.25rem; }
+.workspace-project-actions { align-items: center; border-top: 1px solid #e0e3de; display: flex; gap: 0.65rem; margin-top: 1rem; padding-top: 0.85rem; }
+.workspace-project-actions > span { color: var(--workspace-muted); flex: 1; font-size: 0.58rem; }
+.workspace-project-empty { min-height: 130px; }
+.workspace-project-analysis { background: #edf2eb; border-radius: 14px; display: grid; gap: 1rem; margin-top: 1rem; padding: 1rem; }
+.workspace-project-analysis p { margin: 0.3rem 0 0.65rem; }
+.workspace-project-analysis-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.workspace-project-analysis h3 { font-size: 0.75rem; margin: 0 0 0.4rem; }
+.workspace-project-analysis ul { color: #52635b; font-size: 0.68rem; line-height: 1.5; margin: 0; padding-left: 1.1rem; }
+.workspace-project-analysis li + li { margin-top: 0.3rem; }
+.workspace-project-analysis details { color: var(--workspace-green); font-size: 0.65rem; }
+.workspace-project-analysis summary { cursor: pointer; font-weight: 750; }
+.workspace-project-analysis code { background: #e4e9e2; border-radius: 8px; color: #506058; display: block; margin-top: 0.5rem; overflow-x: auto; padding: 0.65rem; white-space: pre; }
 
 .workspace-card-heading { align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between; }
 .workspace-card-heading h2,
@@ -413,6 +458,8 @@
   .workspace-grid-two,
   .workspace-form-grid,
   .workspace-job-form { grid-template-columns: 1fr; }
+  .workspace-language-add,
+  .workspace-project-analysis-grid { grid-template-columns: 1fr; }
   .workspace-csv-import { align-items: stretch; grid-template-columns: 1fr; }
   .workspace-wide { grid-column: auto; }
   .workspace-metrics { grid-template-columns: 1fr 1fr; }
@@ -424,6 +471,7 @@
   .workspace-summary-heading { flex-direction: column; }
   .workspace-summary-metrics { width: 100%; }
   .workspace-claim { grid-template-columns: 1fr; }
+  .workspace-project-actions { align-items: stretch; flex-direction: column; }
   .workspace-claim-actions { justify-content: flex-start; }
   .workspace-actions { justify-content: flex-start; }
   .workspace-route { grid-template-columns: 1fr 1fr; }

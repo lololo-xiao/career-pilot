@@ -19,8 +19,11 @@ from career_companion.schemas import (
     CandidateProfile,
     ClaimStatus,
     EvidenceReference,
+    JobSpec,
     ModelRoute,
     ProfileClaim,
+    ProfileProject,
+    ProjectAnalysis,
 )
 from career_companion.services.applications import (
     create_application,
@@ -40,6 +43,7 @@ from career_companion.services.revisions import (
     evaluate_revision,
     rollback_revision,
 )
+from career_companion.services.tailoring import _interview_markdown
 
 
 @pytest.fixture
@@ -270,6 +274,34 @@ def test_language_keyword_alone_does_not_create_a_language() -> None:
     assert [(claim.key, claim.value) for claim in profile.claims] == [
         ("publication", "Chinese Legal LLM | Co-author, COLING 2025")
     ]
+
+
+def test_interview_plan_includes_analyzed_project_questions() -> None:
+    project = ProfileProject(
+        name="CareerPilot",
+        analysis=ProjectAnalysis(
+            source="local",
+            repository_name="CareerPilot",
+            analyzed_at=datetime.now(UTC),
+            file_count=120,
+            interview_questions=[
+                "Why did you choose FastAPI, and what alternative did you reject?"
+            ],
+        ),
+    )
+    markdown = _interview_markdown(
+        JobSpec(
+            title="AI Engineer",
+            company="Example GmbH",
+            description="Build reliable AI systems.",
+        ),
+        {"strong": [], "adjacent": [], "missing": []},
+        [project],
+    )
+
+    assert "## Project deep dives" in markdown
+    assert "### CareerPilot" in markdown
+    assert "Why did you choose FastAPI" in markdown
 
 
 def test_scheduled_routes_forbid_fallbacks_and_usage_must_match_route(session) -> None:

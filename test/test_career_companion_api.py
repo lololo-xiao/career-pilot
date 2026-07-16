@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from docx import Document
 from fastapi.testclient import TestClient
 
 from app.auth import AuthStore, AuthenticatedAccount, ProviderConnection
@@ -113,6 +115,84 @@ def test_profile_api_rejects_unsupported_verified_claim(client) -> None:
 
     assert response.status_code == 422
     assert "must include evidence" in response.json()["detail"]
+
+
+def test_profile_upload_keeps_the_original_filename_in_citations(client) -> None:
+    payload = BytesIO()
+    document = Document()
+    document.add_paragraph("Education")
+    document.add_paragraph("MSc Computer Science, Example University")
+    document.save(payload)
+
+    response = client.post(
+        "/api/v1/onboarding/import",
+        files={
+            "file": (
+                "Ada Candidate Resume.docx",
+                payload.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    claim = response.json()["profile"]["claims"][0]
+    assert claim["evidence"][0]["source_name"] == "Ada Candidate Resume.docx"
+    assert not claim["evidence"][0]["source_name"].startswith("upload-")
+
+
+def test_local_project_analysis_round_trips_with_profile(client, tmp_path) -> None:
+    repository = tmp_path / "sample-project"
+    repository.mkdir()
+    (repository / "package.json").write_text(
+        '{"dependencies":{"next":"16","react":"19"}}', encoding="utf-8"
+    )
+    (repository / "tsconfig.json").write_text("{}", encoding="utf-8")
+    (repository / "app.tsx").write_text("export default function App() {}", encoding="utf-8")
+    hidden_runtime = repository / ".runtime"
+    hidden_runtime.mkdir()
+    (hidden_runtime / "generated.c").write_text("generated", encoding="utf-8")
+
+    analyzed = client.post(
+        "/api/v1/onboarding/projects/analyze",
+        json={
+            "id": "project-1",
+            "name": "Sample project",
+            "local_path": str(repository),
+            "technologies": [],
+            "highlights": [],
+        },
+    )
+
+    assert analyzed.status_code == 200
+    analysis = analyzed.json()
+    assert analysis["source"] == "local"
+    assert analysis["file_count"] == 3
+    assert {"Next.js", "React", "TypeScript"}.issubset(analysis["technologies"])
+    assert analysis["improvement_suggestions"]
+    assert "Sample project" in analysis["interview_questions"][0]
+
+    saved = client.put(
+        "/api/v1/onboarding/profile",
+        json={
+            "display_name": "Ada Candidate",
+            "seniority": "senior",
+            "projects": [
+                {
+                    "id": "project-1",
+                    "name": "Sample project",
+                    "local_path": str(repository),
+                    "technologies": analysis["technologies"],
+                    "highlights": ["Built the main retrieval workflow"],
+                    "analysis": analysis,
+                }
+            ],
+        },
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["seniority"] == "senior"
+    assert saved.json()["projects"][0]["analysis"]["file_count"] == 3
 
 
 def test_application_state_api_requires_confirmed_submission(client) -> None:

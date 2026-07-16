@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -31,16 +32,41 @@ class ProfileClaim(BaseModel):
     user_verified_at: datetime | None = None
 
 
+class ProjectAnalysis(BaseModel):
+    source: Literal["local", "github"]
+    repository_name: str
+    analyzed_at: datetime
+    file_count: int = Field(ge=0)
+    primary_languages: list[str] = Field(default_factory=list)
+    technologies: list[str] = Field(default_factory=list)
+    notable_files: list[str] = Field(default_factory=list)
+    improvement_suggestions: list[str] = Field(default_factory=list)
+    interview_questions: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class ProfileProject(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    name: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=3000)
+    repository_url: HttpUrl | None = None
+    local_path: str = Field(default="", max_length=1200)
+    technologies: list[str] = Field(default_factory=list)
+    highlights: list[str] = Field(default_factory=list)
+    analysis: ProjectAnalysis | None = None
+
+
 class CandidateProfile(BaseModel):
     id: str | None = None
     display_name: str = ""
-    headline: str = ""
+    seniority: str = ""
     email: str = ""
     phone: str = ""
     claims: list[ProfileClaim] = Field(default_factory=list)
     target_roles: list[str] = Field(default_factory=list)
     preferred_locations: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
+    projects: list[ProfileProject] = Field(default_factory=list)
     work_authorization: list[ProfileClaim] = Field(default_factory=list)
     source_documents: list[str] = Field(default_factory=list)
     updated_at: datetime | None = None

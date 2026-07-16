@@ -17,16 +17,41 @@ export interface ProfileClaim {
   user_verified_at?: string;
 }
 
+export interface ProjectAnalysis {
+  source: "local" | "github";
+  repository_name: string;
+  analyzed_at: string;
+  file_count: number;
+  primary_languages: string[];
+  technologies: string[];
+  notable_files: string[];
+  improvement_suggestions: string[];
+  interview_questions: string[];
+  summary: string;
+}
+
+export interface ProfileProject {
+  id: string;
+  name: string;
+  description: string;
+  repository_url?: string;
+  local_path: string;
+  technologies: string[];
+  highlights: string[];
+  analysis?: ProjectAnalysis;
+}
+
 export interface CandidateProfile {
   id?: string;
   display_name: string;
-  headline: string;
+  seniority: string;
   email: string;
   phone: string;
   claims: ProfileClaim[];
   target_roles: string[];
   preferred_locations: string[];
   languages: string[];
+  projects: ProfileProject[];
   work_authorization: ProfileClaim[];
   source_documents: string[];
   updated_at?: string;

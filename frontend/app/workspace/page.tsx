@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -21,6 +22,8 @@ import type {
   Job,
   ModelRoute,
   ProfileClaim,
+  ProfileProject,
+  ProjectAnalysis,
   Revision,
 } from "./types";
 
@@ -61,6 +64,42 @@ const COMPANY_SIZE_OPTIONS = [
   ["5001-10000", "5,001–10,000 employees"],
   ["10001+", "10,001+ employees"],
   ["unknown", "Not specified"],
+] as const;
+
+const SENIORITY_OPTIONS = [
+  ["", "Choose a level"],
+  ["intern", "Intern"],
+  ["entry", "Entry level"],
+  ["junior", "Junior"],
+  ["mid", "Mid-level"],
+  ["senior", "Senior"],
+  ["lead", "Lead"],
+  ["staff", "Staff"],
+  ["principal", "Principal"],
+  ["manager", "Engineering / people manager"],
+  ["director", "Director"],
+  ["executive", "Executive"],
+  ["flexible", "Flexible / depends on role"],
+] as const;
+
+const LANGUAGE_PROFICIENCY_GROUPS = [
+  {
+    label: "Native proficiency",
+    options: ["Native / bilingual"],
+  },
+  {
+    label: "CEFR standard",
+    options: ["CEFR A1", "CEFR A2", "CEFR B1", "CEFR B2", "CEFR C1", "CEFR C2"],
+  },
+  {
+    label: "Working proficiency",
+    options: [
+      "Elementary proficiency",
+      "Limited working proficiency",
+      "Professional working proficiency",
+      "Full professional proficiency",
+    ],
+  },
 ] as const;
 
 const APPLICATION_STATUS_OPTIONS = [
@@ -138,13 +177,14 @@ function companySizeLabel(size?: string): string {
 
 const EMPTY_PROFILE: CandidateProfile = {
   display_name: "",
-  headline: "",
+  seniority: "",
   email: "",
   phone: "",
   claims: [],
   target_roles: [],
   preferred_locations: [],
   languages: [],
+  projects: [],
   work_authorization: [],
   source_documents: [],
 };
@@ -182,7 +222,17 @@ function normalizeProfile(profile: CandidateProfile): CandidateProfile {
     ...profile,
     email: profile.email || legacyEmail,
     phone: profile.phone || legacyPhone,
+    seniority: profile.seniority || "",
     languages: Array.from(new Set([...(profile.languages ?? []), ...importedLanguages])),
+    projects: (profile.projects ?? []).map((project, index) => ({
+      ...project,
+      id: project.id || `project-${index + 1}`,
+      name: project.name || "",
+      description: project.description || "",
+      local_path: project.local_path || "",
+      technologies: project.technologies ?? [],
+      highlights: project.highlights ?? [],
+    })),
     claims: profile.claims
       .filter((claim) => !["email", "phone"].includes(claim.key) && !languageClaims.includes(claim))
       .map((claim) => claim.key === "language" && PUBLICATION_HINT_PATTERN.test(claim.value)
@@ -541,6 +591,7 @@ function ProfilePanel({
   setProfile: (profile: CandidateProfile) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [analyzingProjectId, setAnalyzingProjectId] = useState<string | null>(null);
 
   async function importCV(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -576,15 +627,33 @@ function ProfilePanel({
     }
   }
 
-  function updateList(field: "target_roles" | "preferred_locations" | "languages", value: string) {
-    const separator = field === "preferred_locations" ? ";" : ",";
-    setProfile({
-      ...profile,
-      [field]: value
-        .split(separator)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    });
+  async function analyzeProfileProject(project: ProfileProject, index: number) {
+    setAnalyzingProjectId(project.id);
+    try {
+      const analysis = await apiRequest<ProjectAnalysis>(
+        "/api/v1/onboarding/projects/analyze",
+        { method: "POST", body: JSON.stringify(project) },
+      );
+      const projects = [...profile.projects];
+      const previouslyDetected = new Set([
+        ...(project.analysis?.technologies ?? []),
+        ...(project.analysis?.primary_languages ?? []),
+      ]);
+      projects[index] = {
+        ...project,
+        analysis,
+        technologies: Array.from(new Set([
+          ...project.technologies.filter((technology) => !previouslyDetected.has(technology)),
+          ...analysis.technologies,
+        ])),
+      };
+      setProfile({ ...profile, projects });
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The repository could not be analyzed.");
+    } finally {
+      setAnalyzingProjectId(null);
+    }
   }
 
   return (
@@ -605,14 +674,33 @@ function ProfilePanel({
         </form>
         <div className="workspace-card workspace-form-grid">
           <label>Your name<input value={profile.display_name} onChange={(event) => setProfile({ ...profile, display_name: event.target.value })} /></label>
-          <label>Headline<input value={profile.headline} onChange={(event) => setProfile({ ...profile, headline: event.target.value })} /></label>
+          <label>Seniority<select value={profile.seniority} onChange={(event) => setProfile({ ...profile, seniority: event.target.value })}>{SENIORITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Email<input inputMode="email" value={profile.email} onChange={(event) => setProfile({ ...profile, email: event.target.value })} /></label>
           <label>Phone<input inputMode="tel" value={profile.phone} onChange={(event) => setProfile({ ...profile, phone: event.target.value })} /></label>
-          <label>Target roles<input value={profile.target_roles.join(", ")} onChange={(event) => updateList("target_roles", event.target.value)} /></label>
-          <label>Preferred locations<input placeholder="Berlin, Germany; Munich, Germany" value={profile.preferred_locations.join("; ")} onChange={(event) => updateList("preferred_locations", event.target.value)} /></label>
-          <label className="workspace-wide">Languages<input value={profile.languages.join(", ")} onChange={(event) => updateList("languages", event.target.value)} /></label>
+          <MultiValueEditor
+            items={profile.target_roles}
+            label="Target roles"
+            onChange={(target_roles) => setProfile({ ...profile, target_roles })}
+            placeholder="AI Engineer"
+          />
+          <MultiValueEditor
+            items={profile.preferred_locations}
+            label="Preferred locations"
+            onChange={(preferred_locations) => setProfile({ ...profile, preferred_locations })}
+            placeholder="Berlin, Germany"
+          />
+          <LanguageEditor
+            languages={profile.languages}
+            onChange={(languages) => setProfile({ ...profile, languages })}
+          />
         </div>
       </div>
+      <ProjectsEditor
+        analyzingProjectId={analyzingProjectId}
+        onAnalyze={(project, index) => void analyzeProfileProject(project, index)}
+        onChange={(projects) => setProfile({ ...profile, projects })}
+        projects={profile.projects}
+      />
       <div className="workspace-card workspace-claims-card">
         <div className="workspace-card-heading">
           <div>
@@ -644,6 +732,266 @@ function ProfilePanel({
         ) : <div className="workspace-empty"><strong>No career facts waiting for review.</strong><span>Import a PDF or DOCX CV above to get started.</span></div>}
       </div>
     </section>
+  );
+}
+
+function MultiValueEditor({
+  className = "",
+  items,
+  label,
+  onChange,
+  placeholder,
+}: {
+  className?: string;
+  items: string[];
+  label: string;
+  onChange: (items: string[]) => void;
+  placeholder: string;
+}) {
+  const [draft, setDraft] = useState("");
+
+  function addItem() {
+    const value = draft.trim();
+    if (!value) return;
+    if (!items.some((item) => item.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+      onChange([...items, value]);
+    }
+    setDraft("");
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addItem();
+  }
+
+  return (
+    <div className={`workspace-field ${className}`.trim()}>
+      <span>{label}</span>
+      {items.length ? (
+        <div className="workspace-chip-list">
+          {items.map((item) => (
+            <span key={item}>
+              {item}
+              <button
+                aria-label={`Remove ${item}`}
+                onClick={() => onChange(items.filter((value) => value !== item))}
+                type="button"
+              >×</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="workspace-inline-add">
+        <input
+          aria-label={label}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          value={draft}
+        />
+        <button disabled={!draft.trim()} onClick={addItem} type="button">Add</button>
+      </div>
+      <small>Type the full value, including spaces, then press Enter or Add.</small>
+    </div>
+  );
+}
+
+function LanguageEditor({
+  languages,
+  onChange,
+}: {
+  languages: string[];
+  onChange: (languages: string[]) => void;
+}) {
+  const [name, setName] = useState("");
+  const [proficiency, setProficiency] = useState("Professional working proficiency");
+
+  function addLanguage() {
+    const languageName = name.trim();
+    if (!languageName) return;
+    const value = `${languageName} (${proficiency})`;
+    const normalizedName = languageName.toLocaleLowerCase();
+    onChange([
+      ...languages.filter(
+        (language) => languageNameFromValue(language).toLocaleLowerCase() !== normalizedName,
+      ),
+      value,
+    ]);
+    setName("");
+  }
+
+  return (
+    <div className="workspace-field workspace-wide">
+      <span>Languages</span>
+      {languages.length ? (
+        <div className="workspace-chip-list">
+          {languages.map((language) => (
+            <span key={language}>
+              {language}
+              <button
+                aria-label={`Remove ${language}`}
+                onClick={() => onChange(languages.filter((value) => value !== language))}
+                type="button"
+              >×</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="workspace-language-add">
+        <input
+          aria-label="Language name"
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addLanguage();
+            }
+          }}
+          placeholder="Language, e.g. Chinese"
+          value={name}
+        />
+        <select
+          aria-label="Language proficiency"
+          onChange={(event) => setProficiency(event.target.value)}
+          value={proficiency}
+        >
+          {LANGUAGE_PROFICIENCY_GROUPS.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.options.map((option) => <option key={option}>{option}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        <button disabled={!name.trim()} onClick={addLanguage} type="button">Add</button>
+      </div>
+      <small>Choose a CEFR or working-proficiency standard so Pilot can compare role requirements consistently.</small>
+    </div>
+  );
+}
+
+function languageNameFromValue(value: string): string {
+  return value.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+function ProjectsEditor({
+  analyzingProjectId,
+  onAnalyze,
+  onChange,
+  projects,
+}: {
+  analyzingProjectId: string | null;
+  onAnalyze: (project: ProfileProject, index: number) => void;
+  onChange: (projects: ProfileProject[]) => void;
+  projects: ProfileProject[];
+}) {
+  function addProject() {
+    onChange([
+      ...projects,
+      {
+        id: globalThis.crypto?.randomUUID?.() ?? `project-${Date.now()}`,
+        name: "",
+        description: "",
+        local_path: "",
+        technologies: [],
+        highlights: [],
+      },
+    ]);
+  }
+
+  function updateProject(index: number, update: Partial<ProfileProject>) {
+    const updated = [...projects];
+    updated[index] = { ...updated[index], ...update };
+    onChange(updated);
+  }
+
+  return (
+    <div className="workspace-card workspace-projects-card">
+      <div className="workspace-card-heading">
+        <div>
+          <h2>Projects and codebases</h2>
+          <p>Link evidence to a public GitHub repository or a local checkout, then generate focused improvements and interview questions.</p>
+        </div>
+        <button onClick={addProject} type="button">Add project</button>
+      </div>
+      {projects.length ? (
+        <div className="workspace-project-list">
+          {projects.map((project, index) => {
+            const analyzing = analyzingProjectId === project.id;
+            return (
+              <article className="workspace-project" key={project.id}>
+                <div className="workspace-form-grid">
+                  <label>Project name<input placeholder="CareerPilot" value={project.name} onChange={(event) => updateProject(index, { name: event.target.value })} /></label>
+                  <label>Public GitHub repository<input inputMode="url" placeholder="https://github.com/owner/repository" value={project.repository_url ?? ""} onChange={(event) => updateProject(index, { repository_url: event.target.value || undefined, analysis: undefined })} /></label>
+                  <label className="workspace-wide">What it does<textarea rows={3} placeholder="The problem, your contribution, and the outcome." value={project.description} onChange={(event) => updateProject(index, { description: event.target.value })} /></label>
+                  <label className="workspace-wide">Local codebase path<input placeholder="/Users/you/code/project" value={project.local_path} onChange={(event) => updateProject(index, { local_path: event.target.value, analysis: undefined })} /></label>
+                  <MultiValueEditor
+                    className="workspace-wide"
+                    items={project.technologies}
+                    label="Technologies"
+                    onChange={(technologies) => updateProject(index, { technologies })}
+                    placeholder="FastAPI"
+                  />
+                  <MultiValueEditor
+                    className="workspace-wide"
+                    items={project.highlights}
+                    label="Evidence highlights"
+                    onChange={(highlights) => updateProject(index, { highlights })}
+                    placeholder="Reduced retrieval latency by 35%"
+                  />
+                </div>
+                <div className="workspace-project-actions">
+                  <button
+                    disabled={analyzing || (!project.local_path.trim() && !project.repository_url)}
+                    onClick={() => onAnalyze(project, index)}
+                    type="button"
+                  >{analyzing ? "Analyzing…" : project.analysis ? "Analyze again" : "Analyze codebase"}</button>
+                  <span>Read-only scan; repository code is never executed. Public GitHub repositories do not need a token.</span>
+                  <button className="workspace-button-danger" onClick={() => onChange(projects.filter((_, projectIndex) => projectIndex !== index))} type="button">Remove project</button>
+                </div>
+                {project.analysis ? <ProjectAnalysisView analysis={project.analysis} /> : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="workspace-empty workspace-project-empty">
+          <strong>No projects linked yet.</strong>
+          <span>Add one to turn code evidence into improvements and interview preparation.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectAnalysisView({ analysis }: { analysis: ProjectAnalysis }) {
+  return (
+    <div className="workspace-project-analysis">
+      <div>
+        <span className="workspace-kicker">LATEST REPOSITORY REVIEW</span>
+        <p>{analysis.summary}</p>
+        <div className="workspace-chip-list">
+          <span>{analysis.file_count} files</span>
+          {analysis.technologies.map((technology) => <span key={technology}>{technology}</span>)}
+          {analysis.primary_languages.filter((language) => !analysis.technologies.includes(language)).map((language) => <span key={language}>{language}</span>)}
+        </div>
+      </div>
+      <div className="workspace-project-analysis-grid">
+        <div>
+          <h3>Suggested improvements</h3>
+          <ul>{analysis.improvement_suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>
+        </div>
+        <div>
+          <h3>Interview questions</h3>
+          <ul>{analysis.interview_questions.map((question) => <li key={question}>{question}</li>)}</ul>
+        </div>
+      </div>
+      {analysis.notable_files.length ? (
+        <details>
+          <summary>Files used to understand the repository</summary>
+          <code>{analysis.notable_files.join("\n")}</code>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
