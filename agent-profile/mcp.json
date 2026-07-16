@@ -1,0 +1,25 @@
+{
+  "presets": [
+    {
+      "name": "google-sheets",
+      "transport": "http",
+      "url_env": "GOOGLE_SHEETS_MCP_URL",
+      "enabled": false,
+      "tool_allowlist": ["list_spreadsheets", "read_sheet"]
+    },
+    {
+      "name": "gmail",
+      "transport": "http",
+      "url_env": "GMAIL_MCP_URL",
+      "enabled": false,
+      "tool_allowlist": ["search_messages", "read_message", "create_draft"]
+    },
+    {
+      "name": "google-calendar",
+      "transport": "http",
+      "url_env": "GOOGLE_CALENDAR_MCP_URL",
+      "enabled": false,
+      "tool_allowlist": ["list_events"]
+    }
+  ]
+}

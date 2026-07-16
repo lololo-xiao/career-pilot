@@ -1,0 +1,27 @@
+{
+  "enabled": false,
+  "note": "These are opt-in presets. Installation never schedules them automatically.",
+  "jobs": [
+    {
+      "name": "Daily job discovery",
+      "schedule": "0 8 * * 1-5",
+      "route": "cron",
+      "prompt": "Check only explicitly configured public job sources, add new jobs, and produce a review queue. Never take an external action.",
+      "requires_approval": true
+    },
+    {
+      "name": "Deadline and follow-up review",
+      "schedule": "0 18 * * *",
+      "route": "cron",
+      "prompt": "Review local deadlines and next actions. Draft reminders locally. Do not send them.",
+      "requires_approval": true
+    },
+    {
+      "name": "Weekly outcome review",
+      "schedule": "0 17 * * 5",
+      "route": "cron",
+      "prompt": "Summarize application outcomes and propose one versioned ranking-rubric improvement for replay evaluation.",
+      "requires_approval": true
+    }
+  ]
+}

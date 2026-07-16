@@ -1,0 +1,33 @@
+# Hermes runtime state and credentials must never enter the distribution.
+auth.json
+.env
+state.db*
+hermes_state.db
+response_store.db*
+gateway.pid
+gateway_state.json
+processes.json
+auth.lock
+active_profile
+.update_check
+.hermes_history
+errors.log
+
+# User-owned and generated profile content.
+memories/
+sessions/
+logs/
+plans/
+workspace/
+home/
+local/
+checkpoints/
+sandboxes/
+backups/
+cache/
+*_cache/
+hermes-agent/
+.worktrees/
+profiles/
+bin/
+node_modules/

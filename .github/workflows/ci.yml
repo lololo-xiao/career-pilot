@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      LANGFUSE_TRACING_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Sync locked dependencies
+        run: uv sync --frozen --dev --extra companion
+      - name: Compile packages
+        run: uv run --frozen --extra companion python -m compileall -q app career_companion job_pipeline test
+      - name: Run tests
+        run: uv run --frozen --extra companion python -m pytest -p no:cacheprovider -q
+      - name: Validate fixed evaluation data
+        if: runner.os == 'Linux'
+        run: uv run --frozen --extra companion python -m evals.run_evals
+      - name: Smoke CLI package
+        run: uv run --frozen --extra companion career-companion --help
+      - name: Build public Python artifacts
+        if: runner.os == 'Linux'
+        run: uv build --out-dir dist
+      - name: Validate shell installer syntax
+        if: runner.os != 'Windows'
+        run: bash -n install.sh
+      - name: Validate PowerShell installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1),
+            [ref]$null,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Audit moderate and higher advisories
+        run: npm audit --audit-level=moderate
+      - name: Build standalone image bundle
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+        run: npm run build
+      - name: Build same-origin local bundle
+        env:
+          CAREERPILOT_STATIC_EXPORT: "true"
+          NEXT_PUBLIC_API_BASE_URL: ""
+        run: npm run build
+
+  hermes-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+      - name: Install pinned Hermes in isolation
+        run: |
+          uv venv .hermes-ci
+          uv pip install --python .hermes-ci/bin/python -r agent-profile/requirements-hermes.txt
+      - name: Install sanitized profile through Hermes
+        env:
+          HERMES_HOME: ${{ runner.temp }}/career-companion-hermes
+        run: |
+          .hermes-ci/bin/hermes --version
+          .hermes-ci/bin/hermes profile install ./agent-profile --name career-companion --yes
+          test -f "$HERMES_HOME/profiles/career-companion/config.yaml"
+          test -f "$HERMES_HOME/profiles/career-companion/plugins/career-companion/plugin.yaml"

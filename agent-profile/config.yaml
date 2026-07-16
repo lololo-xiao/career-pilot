@@ -1,0 +1,61 @@
+model:
+  provider: openai-codex
+  default: gpt-5.4
+agent:
+  tool_use_enforcement: auto
+  disabled_toolsets:
+    - delegation
+    - messaging
+    - browser
+    - memory
+    - cronjob
+plugins:
+  enabled:
+    - career-companion
+  disabled: []
+platform_toolsets:
+  api_server:
+    - career-web
+    - web
+    - terminal
+    - file
+    - code_execution
+    - todo
+    - session_search
+    - skills
+    - clarify
+approvals:
+  mode: manual
+  cron_mode: deny
+  mcp_reload_confirm: true
+  destructive_slash_confirm: true
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: true
+skills:
+  write_approval: true
+security:
+  allow_lazy_installs: false
+mcp_servers:
+  google-sheets:
+    enabled: false
+    url: "${GOOGLE_SHEETS_MCP_URL}"
+    tools:
+      include: [list_spreadsheets, read_sheet]
+      prompts: false
+      resources: false
+  gmail:
+    enabled: false
+    url: "${GMAIL_MCP_URL}"
+    tools:
+      include: [search_messages, read_message, create_draft]
+      prompts: false
+      resources: false
+  google-calendar:
+    enabled: false
+    url: "${GOOGLE_CALENDAR_MCP_URL}"
+    tools:
+      include: [list_events]
+      prompts: false
+      resources: false

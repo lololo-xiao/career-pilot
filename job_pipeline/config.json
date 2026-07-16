@@ -1,0 +1,176 @@
+{
+  "daily_application_target": 5,
+  "tracker": {
+    "spreadsheet_id": "",
+    "sheet_gid": "",
+    "columns": [
+      "company",
+      "role",
+      "country",
+      "city",
+      "source",
+      "job_url",
+      "posted_date",
+      "deadline",
+      "company_size",
+      "track",
+      "score",
+      "tier",
+      "status",
+      "application_folder",
+      "cv_track",
+      "cover_letter",
+      "skills_added",
+      "prep_gaps",
+      "next_action",
+      "follow_up_date",
+      "result"
+    ]
+  },
+  "status_flow": [
+    "found",
+    "scored",
+    "approved",
+    "tailored",
+    "submitted",
+    "followed_up",
+    "interview",
+    "rejected",
+    "offer",
+    "backlog"
+  ],
+  "tier_thresholds": {
+    "A": 85,
+    "B": 65
+  },
+  "country_priority": {
+    "Switzerland": 10,
+    "Germany": 8,
+    "Netherlands": 7,
+    "United Kingdom": 6,
+    "UK": 6,
+    "Ireland": 6
+  },
+  "city_priority": {
+    "Zurich": 8,
+    "Basel": 5,
+    "Berlin": 7,
+    "Munich": 7,
+    "Amsterdam": 7,
+    "London": 6,
+    "Dublin": 6,
+    "Hamburg": 3,
+    "Frankfurt": 3
+  },
+  "source_priority": {
+    "company": 6,
+    "career": 6,
+    "greenhouse": 5,
+    "lever": 5,
+    "workday": 5,
+    "linkedin": 4,
+    "eures": 3,
+    "job board": 2,
+    "indeed": 2
+  },
+  "track_keywords": {
+    "ai_ml": {
+      "strong": [
+        "ai engineer",
+        "machine learning engineer",
+        "ml engineer",
+        "llm",
+        "large language model",
+        "agent",
+        "agentic",
+        "rag",
+        "retrieval",
+        "embedding",
+        "vector",
+        "pytorch",
+        "hugging face",
+        "post-training",
+        "fine-tuning",
+        "evaluation",
+        "llmops",
+        "applied scientist"
+      ],
+      "adjacent": [
+        "data scientist",
+        "nlp",
+        "generative ai",
+        "prompt",
+        "model serving",
+        "mlops",
+        "research engineer"
+      ]
+    },
+    "sde": {
+      "strong": [
+        "software engineer",
+        "backend engineer",
+        "back-end engineer",
+        "go",
+        "golang",
+        "python backend",
+        "distributed system",
+        "microservice",
+        "api",
+        "websocket",
+        "mysql",
+        "redis",
+        "kubernetes",
+        "docker"
+      ],
+      "adjacent": [
+        "platform engineer",
+        "site reliability",
+        "sre",
+        "java",
+        "kotlin",
+        "spring",
+        "postgres",
+        "cloud"
+      ]
+    }
+  },
+  "positive_keywords": [
+    "graduate",
+    "new grad",
+    "junior",
+    "associate",
+    "entry level",
+    "early career",
+    "university graduate",
+    "working student",
+    "internship",
+    "trainee"
+  ],
+  "risk_keywords": [
+    "senior",
+    "staff",
+    "principal",
+    "lead engineer",
+    "engineering manager",
+    "architect",
+    "5+ years",
+    "6+ years",
+    "7+ years",
+    "8+ years",
+    "10+ years"
+  ],
+  "company_size_bonus": {
+    "5000_plus": 12,
+    "1000_to_4999": 6,
+    "200_to_999": 2,
+    "small": -6,
+    "unknown": 0
+  },
+  "guardrails": {
+    "linkedin": "No scraping or automated submission. Use saved searches, alerts, and manual messages.",
+    "uk_switzerland": "Apply a work-authorization penalty unless the employer is large enough to plausibly sponsor.",
+    "remote": "Flag fully remote roles without a real office.",
+    "cover_letter": "Do not spend cover-letter time on Tier B roles unless required.",
+    "skills": "Every added-but-unknown CV skill must be logged in skills-to-learn.md."
+  }
+}

@@ -1,0 +1,941 @@
+import asyncio
+import json
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
+from typing import Annotated
+
+import httpx
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from app.auth import (
+    AuthCredentialError,
+    AuthStore,
+    AuthenticatedAccount,
+    validate_openai_api_key,
+)
+from app.capabilities import WEB_SEARCH_SERVICE, build_capability_settings
+from app.browser_security import browser_request_guard
+from app.codex_runtime import (
+    CodexAccountSnapshot,
+    CodexOAuthManager,
+    CodexProtocolError,
+    CodexUnavailableError,
+    get_codex_oauth_manager,
+    read_codex_account_snapshot,
+)
+from app.companion import (
+    CompanionError,
+    build_hermes_run_payload,
+    chat_with_companion,
+    chat_with_companion_codex,
+)
+from app.config import get_frontend_origins
+from app.dependencies import (
+    get_companion_paths,
+    get_current_account,
+    get_store,
+    require_current_account,
+    require_provider_account,
+)
+from app.ingestion import (
+    CVParseError,
+    CVTooLargeError,
+    UnsupportedCVTypeError,
+    parse_cv_document,
+)
+from app.hermes_runtime import (
+    HermesProviderConfigurationError,
+    HermesRuntimeManager,
+    HermesRuntimeUnavailable,
+)
+from app.matching import (
+    MatchConfigurationError,
+    MatchError,
+    match_candidate_v2,
+    match_candidate_with_codex,
+)
+from app.schemas import (
+    AgentAccountUsage,
+    AgentCredits,
+    AgentIndividualLimit,
+    AgentModelOption,
+    AgentRateLimits,
+    AgentRateLimitWindow,
+    AgentReasoningEffortOption,
+    AgentSettingsRequest,
+    AgentSettingsResponse,
+    ApiKeyConnectionRequest,
+    AuthSessionResponse,
+    CodexLoginStartResponse,
+    CodexLoginStatusResponse,
+    CapabilitySettingsResponse,
+    CompanionApprovalRequest,
+    CompanionChatRequest,
+    CompanionChatResponse,
+    EvidenceSnippet,
+    MatchRequest,
+    MatchResponse,
+    ParsedCVResponse,
+    ProviderMethod,
+    ProviderSelectionRequest,
+    ProviderSettingsResponse,
+    WebSearchConnectionRequest,
+)
+from app.static_frontend import mount_static_frontend
+from app.workflow import match_candidate_v3
+from career_companion.hermes_bridge import router as hermes_bridge_router
+from career_companion.database import ModelRouteRecord
+from career_companion.paths import CompanionPaths
+from career_companion.persistence import account_session
+from career_companion.router import router as career_companion_router
+from career_companion.schemas import ModelRoute
+from career_companion.services.model_routes import ensure_default_routes, upsert_route
+from career_companion.web import frontend_build_directory
+
+
+_hermes_runtime_manager = HermesRuntimeManager()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await _hermes_runtime_manager.close()
+
+
+app = FastAPI(title="CareerPilot API", version="1.0.0", lifespan=lifespan)
+_frontend_origins = get_frontend_origins()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_frontend_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
+app.middleware("http")(browser_request_guard(set(_frontend_origins)))
+app.include_router(career_companion_router)
+app.include_router(hermes_bridge_router)
+
+MatchFunction = Callable[[MatchRequest], MatchResponse]
+CompanionFunction = Callable[[CompanionChatRequest], CompanionChatResponse]
+ApiKeyValidator = Callable[[str], None]
+
+
+def get_api_key_validator() -> ApiKeyValidator:
+    return validate_openai_api_key
+
+
+def get_oauth_manager() -> CodexOAuthManager:
+    return get_codex_oauth_manager()
+
+
+def get_hermes_runtime_manager() -> HermesRuntimeManager:
+    return _hermes_runtime_manager
+
+
+def _prevent_auth_caching(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
+_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+
+
+def _rate_limit_window(payload: object) -> AgentRateLimitWindow | None:
+    if not isinstance(payload, dict):
+        return None
+    used_percent = payload.get("usedPercent")
+    if not isinstance(used_percent, int):
+        return None
+    resets_at = payload.get("resetsAt")
+    duration = payload.get("windowDurationMins")
+    return AgentRateLimitWindow(
+        used_percent=max(0, used_percent),
+        resets_at=resets_at if isinstance(resets_at, int) else None,
+        window_duration_minutes=(duration if isinstance(duration, int) and duration > 0 else None),
+    )
+
+
+def _normalize_rate_limits(payload: dict[str, object] | None) -> AgentRateLimits | None:
+    snapshot = payload.get("rateLimits") if isinstance(payload, dict) else None
+    if not isinstance(snapshot, dict):
+        return None
+    individual_payload = snapshot.get("individualLimit")
+    individual = None
+    if isinstance(individual_payload, dict):
+        limit = individual_payload.get("limit")
+        used = individual_payload.get("used")
+        remaining = individual_payload.get("remainingPercent")
+        resets_at = individual_payload.get("resetsAt")
+        if (
+            isinstance(limit, str)
+            and isinstance(used, str)
+            and isinstance(remaining, int)
+            and isinstance(resets_at, int)
+        ):
+            individual = AgentIndividualLimit(
+                limit=limit,
+                used=used,
+                remaining_percent=max(0, remaining),
+                resets_at=resets_at,
+            )
+    credits_payload = snapshot.get("credits")
+    credits = None
+    if isinstance(credits_payload, dict):
+        has_credits = credits_payload.get("hasCredits")
+        unlimited = credits_payload.get("unlimited")
+        balance = credits_payload.get("balance")
+        if isinstance(has_credits, bool) and isinstance(unlimited, bool):
+            credits = AgentCredits(
+                has_credits=has_credits,
+                unlimited=unlimited,
+                balance=balance if isinstance(balance, str) else None,
+            )
+    return AgentRateLimits(
+        plan_type=(str(snapshot["planType"]) if snapshot.get("planType") else None),
+        limit_name=(str(snapshot["limitName"]) if snapshot.get("limitName") else None),
+        reached_type=(
+            str(snapshot["rateLimitReachedType"])
+            if snapshot.get("rateLimitReachedType")
+            else None
+        ),
+        primary=_rate_limit_window(snapshot.get("primary")),
+        secondary=_rate_limit_window(snapshot.get("secondary")),
+        individual=individual,
+        credits=credits,
+    )
+
+
+def _normalize_account_usage(payload: dict[str, object] | None) -> AgentAccountUsage | None:
+    summary = payload.get("summary") if isinstance(payload, dict) else None
+    if not isinstance(summary, dict):
+        return None
+
+    def optional_nonnegative(name: str) -> int | None:
+        value = summary.get(name)
+        return value if isinstance(value, int) and value >= 0 else None
+
+    return AgentAccountUsage(
+        lifetime_tokens=optional_nonnegative("lifetimeTokens"),
+        peak_daily_tokens=optional_nonnegative("peakDailyTokens"),
+        current_streak_days=optional_nonnegative("currentStreakDays"),
+    )
+
+
+def _normalize_models(
+    snapshot: CodexAccountSnapshot,
+    *,
+    current_model: str,
+    current_effort: str,
+) -> list[AgentModelOption]:
+    models: list[AgentModelOption] = []
+    for item in snapshot.models:
+        model = item.get("model")
+        if not isinstance(model, str) or not model.strip():
+            continue
+        effort_options: list[AgentReasoningEffortOption] = []
+        raw_efforts = item.get("supportedReasoningEfforts")
+        if isinstance(raw_efforts, list):
+            for raw_effort in raw_efforts:
+                if not isinstance(raw_effort, dict):
+                    continue
+                effort = raw_effort.get("reasoningEffort")
+                if not isinstance(effort, str) or effort not in _REASONING_EFFORTS:
+                    continue
+                description = raw_effort.get("description")
+                effort_options.append(
+                    AgentReasoningEffortOption(
+                        reasoning_effort=effort,  # type: ignore[arg-type]
+                        description=description if isinstance(description, str) else "",
+                    )
+                )
+        default_effort = item.get("defaultReasoningEffort")
+        if not isinstance(default_effort, str) or default_effort not in _REASONING_EFFORTS:
+            default_effort = effort_options[0].reasoning_effort if effort_options else "medium"
+        if not effort_options:
+            effort_options = [
+                AgentReasoningEffortOption(
+                    reasoning_effort=default_effort,  # type: ignore[arg-type]
+                    description="",
+                )
+            ]
+        models.append(
+            AgentModelOption(
+                model=model,
+                display_name=(
+                    str(item["displayName"]) if item.get("displayName") else model
+                ),
+                description=(
+                    str(item["description"]) if item.get("description") else ""
+                ),
+                is_default=bool(item.get("isDefault")),
+                default_reasoning_effort=default_effort,  # type: ignore[arg-type]
+                supported_reasoning_efforts=effort_options,
+                context_window=snapshot.context_windows.get(model),
+            )
+        )
+    if current_model not in {model.model for model in models}:
+        models.append(
+            AgentModelOption(
+                model=current_model,
+                display_name=current_model,
+                default_reasoning_effort=current_effort,  # type: ignore[arg-type]
+                supported_reasoning_efforts=[
+                    AgentReasoningEffortOption(
+                        reasoning_effort=current_effort,  # type: ignore[arg-type]
+                        description="Current configured effort",
+                    )
+                ],
+                context_window=snapshot.context_windows.get(current_model),
+            )
+        )
+    return models
+
+
+async def _agent_settings_response(
+    account: AuthenticatedAccount,
+    store: AuthStore,
+    paths: CompanionPaths,
+) -> AgentSettingsResponse:
+    with account_session(paths) as session:
+        ensure_default_routes(session)
+        session.flush()
+        route = session.get(ModelRouteRecord, "interactive")
+        if route is None:
+            raise HTTPException(status_code=500, detail="Pilot's model route is missing")
+        provider = str(route.provider)
+        model = str(route.model)
+        reasoning_effort = str(route.reasoning_effort)
+        token_limit = int(route.token_limit)
+
+    models: list[AgentModelOption] = []
+    rate_limits = None
+    account_usage = None
+    warnings: list[str] = []
+    if provider == "openai-codex":
+        connection = store.load_provider_connection(account.user_id, "codex")
+        if connection is None:
+            warnings.append("Connect ChatGPT / Codex to load its models and usage limits")
+        else:
+            try:
+                snapshot = await asyncio.to_thread(
+                    read_codex_account_snapshot, connection.credential
+                )
+            except CodexUnavailableError as exc:
+                warnings.append(str(exc))
+            except CodexProtocolError as exc:
+                warnings.append(f"Codex account status is unavailable: {exc}")
+            else:
+                models = _normalize_models(
+                    snapshot,
+                    current_model=model,
+                    current_effort=reasoning_effort,
+                )
+                rate_limits = _normalize_rate_limits(snapshot.rate_limits)
+                account_usage = _normalize_account_usage(snapshot.account_usage)
+                warnings.extend(snapshot.warnings)
+                if snapshot.refreshed_credentials != connection.credential:
+                    store.update_provider_credentials(
+                        account.user_id, "codex", snapshot.refreshed_credentials
+                    )
+    if not models:
+        models = [
+            AgentModelOption(
+                model=model,
+                display_name=model,
+                default_reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
+                supported_reasoning_efforts=[
+                    AgentReasoningEffortOption(
+                        reasoning_effort=effort,  # type: ignore[arg-type]
+                        description="",
+                    )
+                    for effort in ("minimal", "low", "medium", "high", "xhigh")
+                ],
+            )
+        ]
+    return AgentSettingsResponse(
+        provider=provider,  # type: ignore[arg-type]
+        model=model,
+        reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
+        token_limit=token_limit,
+        models=models,
+        rate_limits=rate_limits,
+        account_usage=account_usage,
+        warnings=warnings,
+    )
+
+
+def _owned_codex_attempt(
+    manager: CodexOAuthManager,
+    attempt_id: str,
+    user_id: str,
+):
+    attempt = manager.get(attempt_id)
+    if attempt is None or attempt.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ChatGPT connection attempt not found",
+        )
+    return attempt
+
+
+def get_matcher(
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+) -> MatchFunction:
+    """Resolve matching from the account's active OpenAI connection."""
+
+    connection = account.provider_connection
+    if connection is None or account.active_provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Choose an AI connection in Settings before running a match",
+        )
+
+    if connection.provider == "api_key":
+        api_key = connection.credential.decode("utf-8")
+
+        def generate_with_api_key(
+            request: MatchRequest,
+            evidence: Sequence[EvidenceSnippet],
+        ) -> MatchResponse:
+            return match_candidate_v2(request, api_key=api_key, evidence=evidence)
+
+        return lambda request: match_candidate_v3(
+            request,
+            generator=generate_with_api_key,
+        )
+
+    def generate_with_codex(
+        request: MatchRequest,
+        evidence: Sequence[EvidenceSnippet],
+    ) -> MatchResponse:
+        report, refreshed_credentials = match_candidate_with_codex(
+            request,
+            credentials=connection.credential,
+            evidence=evidence,
+        )
+        store.update_provider_credentials(
+            account.user_id,
+            "codex",
+            refreshed_credentials,
+        )
+        return report
+
+    return lambda request: match_candidate_v3(
+        request,
+        generator=generate_with_codex,
+    )
+
+
+def get_companion(
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+) -> CompanionFunction:
+    """Resolve Pilot chat from the account's active OpenAI connection."""
+
+    connection = account.provider_connection
+    if connection is None or account.active_provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Choose an AI connection in Settings before talking with Pilot",
+        )
+
+    if connection.provider == "api_key":
+        api_key = connection.credential.decode("utf-8")
+        return lambda request: chat_with_companion(request, api_key=api_key)
+
+    def generate_with_codex(
+        request: CompanionChatRequest,
+    ) -> CompanionChatResponse:
+        reply, refreshed_credentials = chat_with_companion_codex(
+            request,
+            credentials=connection.credential,
+        )
+        store.update_provider_credentials(
+            account.user_id,
+            "codex",
+            refreshed_credentials,
+        )
+        return reply
+
+    return generate_with_codex
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/local/session", response_model=AuthSessionResponse)
+def read_local_session(
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(get_current_account)],
+) -> AuthSessionResponse:
+    _prevent_auth_caching(response)
+    return AuthSessionResponse(
+        authenticated=True,
+        user=account.to_response(),
+    )
+
+
+@app.get("/settings/providers", response_model=ProviderSettingsResponse)
+def read_provider_settings(
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+) -> ProviderSettingsResponse:
+    _prevent_auth_caching(response)
+    return store.provider_settings(account.user_id)
+
+
+@app.get("/settings/capabilities", response_model=CapabilitySettingsResponse)
+def read_capability_settings(
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+) -> CapabilitySettingsResponse:
+    _prevent_auth_caching(response)
+    return build_capability_settings(account, store)
+
+
+@app.put("/settings/capabilities/web-search", response_model=CapabilitySettingsResponse)
+async def connect_web_search(
+    request: WebSearchConnectionRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> CapabilitySettingsResponse:
+    store.save_service_credential(
+        account.user_id,
+        WEB_SEARCH_SERVICE,
+        request.api_key.encode("utf-8"),
+    )
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return build_capability_settings(account, store)
+
+
+@app.delete(
+    "/settings/capabilities/web-search",
+    response_model=CapabilitySettingsResponse,
+)
+async def disconnect_web_search(
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> CapabilitySettingsResponse:
+    store.delete_service_credential(account.user_id, WEB_SEARCH_SERVICE)
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return build_capability_settings(account, store)
+
+
+@app.get("/settings/agent", response_model=AgentSettingsResponse)
+async def read_agent_settings(
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_provider_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_companion_paths)],
+) -> AgentSettingsResponse:
+    _prevent_auth_caching(response)
+    return await _agent_settings_response(account, store, paths)
+
+
+@app.put("/settings/agent", response_model=AgentSettingsResponse)
+async def update_agent_settings(
+    request: AgentSettingsRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_provider_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_companion_paths)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> AgentSettingsResponse:
+    with account_session(paths) as session:
+        ensure_default_routes(session)
+        session.flush()
+        record = session.get(ModelRouteRecord, "interactive")
+        if record is None:
+            raise HTTPException(status_code=500, detail="Pilot's model route is missing")
+        route = ModelRoute(
+            **{
+                key: value
+                for key, value in record.__dict__.items()
+                if not key.startswith("_")
+            }
+        ).model_copy(
+            update={
+                "model": request.model,
+                "reasoning_effort": request.reasoning_effort,
+            }
+        )
+        upsert_route(session, route)
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return await _agent_settings_response(account, store, paths)
+
+
+@app.post("/settings/providers/api-key", response_model=AuthSessionResponse)
+async def connect_api_key(
+    request: ApiKeyConnectionRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    validator: Annotated[ApiKeyValidator, Depends(get_api_key_validator)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> AuthSessionResponse:
+    try:
+        validator(request.api_key)
+    except AuthCredentialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    store.save_provider_connection(
+        account_id=account.user_id,
+        provider="api_key",
+        credential=request.api_key.encode("utf-8"),
+        plan_type="usage-based",
+    )
+    await runtime.invalidate(account.user_id)
+    updated = store.load_account(account.user_id, account.identity_method)
+    _prevent_auth_caching(response)
+    return AuthSessionResponse(authenticated=True, user=updated.to_response())
+
+
+@app.post("/settings/providers/select", response_model=AuthSessionResponse)
+async def select_provider(
+    request: ProviderSelectionRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> AuthSessionResponse:
+    if not store.select_provider(account.user_id, request.provider):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Connect this provider before selecting it",
+        )
+    await runtime.invalidate(account.user_id)
+    updated = store.load_account(account.user_id, account.identity_method)
+    _prevent_auth_caching(response)
+    return AuthSessionResponse(authenticated=True, user=updated.to_response())
+
+
+@app.delete(
+    "/settings/providers/{provider}",
+    response_model=ProviderSettingsResponse,
+)
+async def disconnect_provider(
+    provider: ProviderMethod,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> ProviderSettingsResponse:
+    store.disconnect_provider(account.user_id, provider)
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return store.provider_settings(account.user_id)
+
+
+@app.post(
+    "/settings/providers/codex/start",
+    response_model=CodexLoginStartResponse,
+)
+def start_codex_login(
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    manager: Annotated[CodexOAuthManager, Depends(get_oauth_manager)],
+) -> CodexLoginStartResponse:
+    _prevent_auth_caching(response)
+    try:
+        attempt = manager.start(account.user_id)
+    except CodexUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except CodexProtocolError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    return CodexLoginStartResponse(
+        attempt_id=attempt.attempt_id,
+        verification_url=attempt.verification_url,
+        user_code=attempt.user_code,
+        expires_at=attempt.expires_at,
+    )
+
+
+@app.post(
+    "/settings/providers/codex/status/{attempt_id}",
+    response_model=CodexLoginStatusResponse,
+)
+async def read_codex_login_status(
+    attempt_id: str,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    manager: Annotated[CodexOAuthManager, Depends(get_oauth_manager)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> CodexLoginStatusResponse:
+    _prevent_auth_caching(response)
+    _owned_codex_attempt(manager, attempt_id, account.user_id)
+    attempt = manager.poll(attempt_id)
+    if attempt is None:
+        return CodexLoginStatusResponse(status="expired")
+    if attempt.status == "pending":
+        return CodexLoginStatusResponse(status="pending")
+    if attempt.status == "failed":
+        error = attempt.error or "ChatGPT connection failed"
+        manager.finish(attempt_id)
+        return CodexLoginStatusResponse(status="failed", error=error)
+    if attempt.credentials is None:
+        manager.finish(attempt_id)
+        return CodexLoginStatusResponse(
+            status="failed",
+            error="Codex completed login without credentials",
+        )
+
+    store.save_provider_connection(
+        account_id=account.user_id,
+        provider="codex",
+        credential=attempt.credentials,
+        provider_email=attempt.email,
+        plan_type=attempt.plan_type,
+    )
+    await runtime.invalidate(account.user_id)
+    updated = store.load_account(account.user_id, account.identity_method)
+    manager.finish(attempt_id)
+    return CodexLoginStatusResponse(
+        status="completed",
+        user=updated.to_response(),
+    )
+
+
+@app.delete(
+    "/settings/providers/codex/attempts/{attempt_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def cancel_codex_login(
+    attempt_id: str,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    manager: Annotated[CodexOAuthManager, Depends(get_oauth_manager)],
+) -> None:
+    _prevent_auth_caching(response)
+    _owned_codex_attempt(manager, attempt_id, account.user_id)
+    manager.cancel(attempt_id)
+
+
+@app.post("/parse-cv", response_model=ParsedCVResponse)
+async def parse_cv(
+    file: Annotated[UploadFile, File(description="PDF, DOCX, or UTF-8 text CV")],
+    _account: Annotated[AuthenticatedAccount, Depends(require_provider_account)],
+) -> ParsedCVResponse:
+    filename = file.filename or ""
+    try:
+        data = await file.read(5 * 1024 * 1024 + 1)
+    finally:
+        await file.close()
+
+    try:
+        return parse_cv_document(filename, data)
+    except CVTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except UnsupportedCVTypeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=str(exc),
+        ) from exc
+    except CVParseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post("/match", response_model=MatchResponse)
+def create_match(
+    request: MatchRequest,
+    matcher: Annotated[MatchFunction, Depends(get_matcher)],
+) -> MatchResponse:
+    try:
+        return matcher(request)
+    except MatchConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except MatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post("/companion/chat", response_model=CompanionChatResponse)
+def create_companion_reply(
+    request: CompanionChatRequest,
+    companion: Annotated[CompanionFunction, Depends(get_companion)],
+) -> CompanionChatResponse:
+    try:
+        return companion(request)
+    except CompanionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@app.post("/companion/chat/stream")
+async def stream_companion_reply(
+    request: CompanionChatRequest,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> StreamingResponse:
+    try:
+        prepared = await runtime.prepare(account, store)
+    except HermesProviderConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except HermesRuntimeUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    payload = build_hermes_run_payload(request, model=prepared.model)
+    session_key = f"career-companion:web:{prepared.account_key}"
+
+    async def events() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in prepared.supervisor.proxy_stream(
+                "/v1/runs",
+                payload,
+                session_key=session_key,
+            ):
+                yield chunk
+        except httpx.HTTPError:
+            failure = {
+                "event": "run.failed",
+                "error": "Pilot lost contact with the local Hermes runtime",
+            }
+            yield f"data: {json.dumps(failure)}\n\n".encode("utf-8")
+        finally:
+            try:
+                refreshed = await runtime.capture_refreshed_codex_credentials(
+                    account.user_id
+                )
+            except HermesProviderConfigurationError:
+                refreshed = None
+            if refreshed is not None:
+                store.update_provider_credentials(
+                    account.user_id,
+                    "codex",
+                    refreshed,
+                )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/companion/chat/runs/{run_id}/approval")
+async def resolve_companion_run_approval(
+    run_id: str,
+    request: CompanionApprovalRequest,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    store: Annotated[AuthStore, Depends(get_store)],
+    runtime: Annotated[
+        HermesRuntimeManager,
+        Depends(get_hermes_runtime_manager),
+    ],
+) -> dict[str, object]:
+    try:
+        prepared = await runtime.prepare(account, store)
+        return await prepared.supervisor.resolve_run_approval(
+            run_id,
+            request.choice,
+            session_key=f"career-companion:web:{prepared.account_key}",
+        )
+    except HermesProviderConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except HermesRuntimeUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pilot could not apply that approval. It may have expired.",
+        ) from exc
+
+
+@app.api_route(
+    "/api/{unmatched_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
+def reject_unknown_api_path(unmatched_path: str) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Unknown API path: /api/{unmatched_path}",
+    )
+
+
+mount_static_frontend(app, frontend_build_directory())

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "dataset": "cases.json",
+  "minimum_cases": 20,
+  "maximum_cases": 30,
+  "activation_thresholds": {
+    "ranking_pass_rate_min": 0.8,
+    "unsupported_claims_max": 0,
+    "keyword_coverage_min": 0.75,
+    "one_page_success_rate_min": 0.9,
+    "security_failures_max": 0,
+    "estimated_cost_increase_max_ratio": 0.0
+  },
+  "observed_metrics": [
+    "ranking_quality",
+    "unsupported_claims",
+    "keyword_coverage",
+    "one_page_success",
+    "latency_ms",
+    "input_tokens",
+    "output_tokens",
+    "estimated_cost_usd"
+  ],
+  "activation_rule": "A skill or rubric candidate must meet every threshold and must not regress unsupported claims, security, or estimated cost against the active baseline."
+}

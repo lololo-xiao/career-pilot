@@ -1,0 +1,7 @@
+# Hermes runs in a separate isolated environment because Hermes 0.18.2 pins an
+# OpenAI SDK version older than CareerPilot's application runtime.
+hermes-agent==0.18.2
+# Hermes' gateway API-server adapter imports aiohttp, but the base package does
+# not declare it. Keep the adapter dependency aligned with Hermes' messaging
+# extra so first-run Pilot conversations can start the local gateway.
+aiohttp==3.14.1

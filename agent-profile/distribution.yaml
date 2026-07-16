@@ -1,0 +1,18 @@
+name: career-companion
+version: 0.1.0
+description: "A candid, evidence-aware career partner for international tech graduates in Germany and the EU."
+hermes_requires: "==0.18.2"
+author: "Career Companion contributors"
+license: "MIT"
+env_requires:
+  - name: OPENAI_API_KEY
+    description: "Optional direct OpenAI API access. Not needed when using Codex OAuth."
+    required: false
+distribution_owned:
+  - SOUL.md
+  - config.yaml
+  - mcp.json
+  - skills/
+  - cron/
+  - distribution.yaml
+  - plugins/career-companion/
