@@ -109,7 +109,9 @@ trusted host-level access control. Do not expose it directly to the public inter
 - Browser assistance fills approved fields and files, then removes its temporary form
   and mutating-request guard so the user can review and submit manually. It never clicks
   the final submit control.
-- LinkedIn stays manual.
+- LinkedIn applications stay manual. The community LinkedIn search MCP is off by
+  default and, when explicitly enabled, exposes only job search and job-detail reads.
+  It uses the user's local browser session and is not an official LinkedIn API.
 - Messaging gateways and integration presets ship disabled.
 - Image-only PDFs require OCR outside v1.
 - Real provider authorization and employer forms cannot be exercised by CI. Release

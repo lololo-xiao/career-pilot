@@ -43,6 +43,7 @@ from app.config import get_frontend_origins
 from app.dependencies import (
     get_companion_paths,
     get_current_account,
+    get_local_companion_paths,
     get_store,
     require_current_account,
     require_provider_account,
@@ -57,6 +58,7 @@ from app.hermes_runtime import (
     HermesProviderConfigurationError,
     HermesRuntimeManager,
     HermesRuntimeUnavailable,
+    profile_distribution_directory,
 )
 from app.matching import (
     MatchConfigurationError,
@@ -66,6 +68,9 @@ from app.matching import (
 )
 from app.schemas import (
     AgentAccountUsage,
+    AgentAssetKind,
+    AgentAssetRequest,
+    AgentAssetSettingsResponse,
     AgentCredits,
     AgentIndividualLimit,
     AgentModelOption,
@@ -85,6 +90,8 @@ from app.schemas import (
     EvidenceSnippet,
     MatchRequest,
     MatchResponse,
+    MCPServerSettingsRequest,
+    MCPSettingsResponse,
     ParsedCVResponse,
     ProviderMethod,
     ProviderSelectionRequest,
@@ -94,12 +101,25 @@ from app.schemas import (
 from app.static_frontend import mount_static_frontend
 from app.workflow import match_candidate_v3
 from career_companion.hermes_bridge import router as hermes_bridge_router
-from career_companion.database import ModelRouteRecord
+from career_companion.database import MCPServerRecord, ModelRouteRecord
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.router import router as career_companion_router
 from career_companion.schemas import ModelRoute
 from career_companion.services.model_routes import ensure_default_routes, upsert_route
+from career_companion.services.agent_assets import (
+    delete_agent_asset,
+    list_agent_assets,
+    save_agent_asset,
+    synchronize_managed_profile_assets,
+)
+from career_companion.services.mcp_servers import (
+    delete_mcp_server,
+    ensure_default_mcp_servers,
+    list_mcp_servers,
+    synchronize_mcp_profile_config,
+    upsert_mcp_server,
+)
 from career_companion.web import frontend_build_directory
 
 
@@ -505,9 +525,10 @@ def read_capability_settings(
     response: Response,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
 ) -> CapabilitySettingsResponse:
     _prevent_auth_caching(response)
-    return build_capability_settings(account, store)
+    return build_capability_settings(account, store, paths)
 
 
 @app.put("/settings/capabilities/web-search", response_model=CapabilitySettingsResponse)
@@ -516,6 +537,7 @@ async def connect_web_search(
     response: Response,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[
         HermesRuntimeManager,
         Depends(get_hermes_runtime_manager),
@@ -528,7 +550,7 @@ async def connect_web_search(
     )
     await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
-    return build_capability_settings(account, store)
+    return build_capability_settings(account, store, paths)
 
 
 @app.delete(
@@ -539,6 +561,7 @@ async def disconnect_web_search(
     response: Response,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[
         HermesRuntimeManager,
         Depends(get_hermes_runtime_manager),
@@ -547,7 +570,213 @@ async def disconnect_web_search(
     store.delete_service_credential(account.user_id, WEB_SEARCH_SERVICE)
     await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
-    return build_capability_settings(account, store)
+    return build_capability_settings(account, store, paths)
+
+
+def _agent_asset_settings(paths: CompanionPaths) -> AgentAssetSettingsResponse:
+    payload = list_agent_assets(paths, profile_distribution_directory())
+    return AgentAssetSettingsResponse.model_validate(payload)
+
+
+def _mcp_settings(paths: CompanionPaths) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    with account_session(paths) as session:
+        servers = list_mcp_servers(session, distribution)
+    return MCPSettingsResponse.model_validate({"servers": servers})
+
+
+@app.get(
+    "/settings/agent-resources",
+    response_model=AgentAssetSettingsResponse,
+)
+def read_agent_resources(
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> AgentAssetSettingsResponse:
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.post(
+    "/settings/agent-resources/{kind}",
+    response_model=AgentAssetSettingsResponse,
+)
+async def create_agent_resource(
+    kind: AgentAssetKind,
+    request: AgentAssetRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentAssetSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        save_agent_asset(
+            paths,
+            distribution,
+            kind=kind,
+            name=request.name,
+            content=request.content,
+        )
+        synchronize_managed_profile_assets(paths, distribution)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.put(
+    "/settings/agent-resources/{kind}/{name}",
+    response_model=AgentAssetSettingsResponse,
+)
+async def update_agent_resource(
+    kind: AgentAssetKind,
+    name: str,
+    request: AgentAssetRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentAssetSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        save_agent_asset(
+            paths,
+            distribution,
+            kind=kind,
+            name=request.name,
+            content=request.content,
+            previous_name=name,
+        )
+        synchronize_managed_profile_assets(paths, distribution)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.delete(
+    "/settings/agent-resources/{kind}/{name}",
+    response_model=AgentAssetSettingsResponse,
+)
+async def remove_agent_resource(
+    kind: AgentAssetKind,
+    name: str,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentAssetSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        delete_agent_asset(paths, distribution, kind=kind, name=name)
+        synchronize_managed_profile_assets(paths, distribution)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.get("/settings/mcp", response_model=MCPSettingsResponse)
+def read_mcp_settings(
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> MCPSettingsResponse:
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
+
+
+@app.post("/settings/mcp", response_model=MCPSettingsResponse)
+async def create_mcp_setting(
+    request: MCPServerSettingsRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    with account_session(paths) as session:
+        ensure_default_mcp_servers(session, distribution)
+        if session.get(MCPServerRecord, request.name) is not None:
+            raise HTTPException(status_code=409, detail="An MCP server with that name already exists")
+        upsert_mcp_server(session, request.model_dump(mode="json"))
+    try:
+        synchronize_mcp_profile_config(paths, distribution)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
+
+
+@app.put("/settings/mcp/{name}", response_model=MCPSettingsResponse)
+async def update_mcp_setting(
+    name: str,
+    request: MCPServerSettingsRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    if name == "linkedin-search" and request.name != name:
+        raise HTTPException(status_code=400, detail="The LinkedIn preset cannot be renamed")
+    try:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, distribution)
+            upsert_mcp_server(
+                session,
+                request.model_dump(mode="json"),
+                previous_name=name,
+            )
+        synchronize_mcp_profile_config(paths, distribution)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
+
+
+@app.delete("/settings/mcp/{name}", response_model=MCPSettingsResponse)
+async def remove_mcp_setting(
+    name: str,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, distribution)
+            delete_mcp_server(session, name)
+        synchronize_mcp_profile_config(paths, distribution)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
 
 
 @app.get("/settings/agent", response_model=AgentSettingsResponse)

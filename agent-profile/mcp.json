@@ -2,6 +2,8 @@
   "presets": [
     {
       "name": "google-sheets",
+      "display_name": "Google Sheets",
+      "description": "Read selected spreadsheet data through a separately configured MCP endpoint.",
       "transport": "http",
       "url_env": "GOOGLE_SHEETS_MCP_URL",
       "enabled": false,
@@ -9,6 +11,8 @@
     },
     {
       "name": "gmail",
+      "display_name": "Gmail",
+      "description": "Search and read mail or create drafts through an allowlisted MCP endpoint.",
       "transport": "http",
       "url_env": "GMAIL_MCP_URL",
       "enabled": false,
@@ -16,10 +20,25 @@
     },
     {
       "name": "google-calendar",
+      "display_name": "Google Calendar",
+      "description": "Read calendar events through a separately configured MCP endpoint.",
       "transport": "http",
       "url_env": "GOOGLE_CALENDAR_MCP_URL",
       "enabled": false,
       "tool_allowlist": ["list_events"]
+    },
+    {
+      "name": "linkedin-search",
+      "display_name": "LinkedIn job search",
+      "description": "Search LinkedIn jobs and read job details through a local, community-maintained browser session.",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-linkedin@latest"],
+      "environment": {"UV_HTTP_TIMEOUT": "300"},
+      "enabled": false,
+      "tool_allowlist": ["search_jobs", "get_job_details"],
+      "source_url": "https://github.com/stickerdaniel/linkedin-mcp-server",
+      "warning": "Independent community integration, not an official LinkedIn API. Enabling it uses your local LinkedIn browser session; review LinkedIn's terms and your account-risk tolerance first. CareerPilot does not allow messaging, connection requests, or applications through this server."
     }
   ]
 }

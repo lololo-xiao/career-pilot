@@ -112,7 +112,7 @@ flowchart TD
 | Local credential store | Keep the stable device identity and encrypt provider and optional search credentials | Persist career documents or workflow state |
 | Operational store | Persist reviewed evidence, jobs, applications, artifacts, approvals, routes, schedules, audit events, and revisions in the local `career.db` | Store provider credentials |
 | Hermes supervisor | Resolve the interactive route, synchronize one connected provider, verify authenticated readiness, proxy SSE, and stop the child at invalidation or shutdown | Send provider, API-server, or bridge secrets to the browser |
-| Hermes profile | Supply personality, session history, read-only skills, and restricted career tools | Open `career.db`, receive provider secrets, submit applications, or mutate raw memory/skills/cron |
+| Hermes profile | Supply personality, session history, visible built-in skills, user-owned memory/skills, and restricted career/MCP tools synchronized from local Settings | Open `career.db`, receive provider secrets, submit applications, or let retrieved content mutate memory/skills/MCP/cron |
 | Hermes bridge | Authenticate one opaque workspace key plus a local bearer token and invoke validated services | Expose itself remotely or return provider credentials |
 | Codex app-server | Own ChatGPT OAuth refresh and plan-backed structured turns | Receive writable filesystem or network permission from CareerPilot |
 | CV ingestion | Extract bounded PDF/DOCX/TXT text in memory | OCR images or persist uploads |

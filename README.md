@@ -34,6 +34,12 @@ Langfuse tracing. Automated tests never make provider or telemetry calls.
   tool and behavior, and keep technical code collapsed unless the user opens it.
 - **Visible setup state:** Settings shows which tools and MCP connections are ready,
   limited, disabled, or require configuration, including live web search.
+- **Editable agent workspace:** Settings exposes local memory files, built-in and
+  user-owned skills, and MCP server configuration with guarded create, edit, and remove
+  flows.
+- **Opt-in LinkedIn search:** A disabled-by-default community MCP preset can search jobs
+  and read job details through `uvx`; messaging, connection, posting, and application
+  tools are not allowlisted.
 - **Human-controlled evidence:** extracted claims can be corrected, recategorized,
   verified, or removed before Pilot relies on them.
 - **Honesty by design:** candidate-specific advice is grounded in supplied evidence, and
@@ -158,6 +164,12 @@ Useful endpoints:
   Search key without changing the selected AI provider.
 - `DELETE /settings/capabilities/web-search` — remove the saved search key and disable
   live web search.
+- `GET /settings/agent-resources` — list editable memory files and visible skills.
+- `POST|PUT|DELETE /settings/agent-resources/{kind}/...` — create, edit, or remove
+  user-owned memory and skill files; built-in skills remain read-only.
+- `GET /settings/mcp` — list MCP presets and custom server settings.
+- `POST|PUT|DELETE /settings/mcp/...` — add, edit, enable, disable, or remove an MCP
+  server with an explicit tool allowlist.
 - `POST /settings/providers/api-key` — validate, encrypt, and activate an OpenAI key.
 - `POST /settings/providers/codex/start` — start local-workspace Codex authorization.
 - `POST /settings/providers/select` — switch between existing provider connections.

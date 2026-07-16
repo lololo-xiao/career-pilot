@@ -4,7 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import AuthCredentialError, AuthStore
+from app.dependencies import get_local_companion_paths
 from app.main import app, get_api_key_validator, get_oauth_manager, get_store
+from career_companion.paths import CompanionPaths
 
 
 client = TestClient(app)
@@ -13,7 +15,10 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def isolated_local_dependencies(tmp_path):
     store = AuthStore(tmp_path / "auth.db", "a" * 48)
+    paths = CompanionPaths.at_root(tmp_path / "companion")
+    paths.create()
     app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_local_companion_paths] = lambda: paths
     app.dependency_overrides[get_api_key_validator] = lambda: lambda _key: None
     yield store
     app.dependency_overrides.clear()
@@ -62,6 +67,7 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
         "gmail",
         "google-calendar",
         "google-sheets",
+        "linkedin-search",
     }
     assert not any(server["enabled"] for server in payload["mcp_servers"])
 

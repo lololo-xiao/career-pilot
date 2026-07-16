@@ -50,12 +50,24 @@ def require_provider_account(
     return account
 
 
-def get_companion_paths(
-    account: Annotated[AuthenticatedAccount, Depends(require_provider_account)],
-) -> CompanionPaths:
+def _account_paths(account: AuthenticatedAccount) -> CompanionPaths:
     paths = CompanionPaths.discover().scoped_to(account.user_id)
     initialize_account_workspace(paths)
     return paths
+
+
+def get_local_companion_paths(
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+) -> CompanionPaths:
+    """Resolve local settings data without requiring an AI provider connection."""
+
+    return _account_paths(account)
+
+
+def get_companion_paths(
+    account: Annotated[AuthenticatedAccount, Depends(require_provider_account)],
+) -> CompanionPaths:
+    return _account_paths(account)
 
 
 def get_companion_session(

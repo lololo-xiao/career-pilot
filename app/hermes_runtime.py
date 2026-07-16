@@ -26,6 +26,8 @@ from career_companion.hermes import (
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.services.audit import record_audit
+from career_companion.services.agent_assets import synchronize_managed_profile_assets
+from career_companion.services.mcp_servers import synchronize_mcp_profile_config
 from career_companion.services.model_routes import ensure_default_routes
 
 
@@ -469,6 +471,35 @@ class HermesRuntimeManager:
                 self._active = None
 
             await self._ensure_profile(paths, config)
+
+            try:
+                await asyncio.to_thread(
+                    synchronize_managed_profile_assets,
+                    paths,
+                    self._distribution_path,
+                )
+                forwarded_mcp_environment = await asyncio.to_thread(
+                    synchronize_mcp_profile_config,
+                    paths,
+                    self._distribution_path,
+                )
+            except (OSError, ValueError) as exc:
+                raise HermesProviderConfigurationError(
+                    "Pilot's editable agent or MCP settings could not be synchronized"
+                ) from exc
+            if forwarded_mcp_environment:
+                config = config.model_copy(
+                    update={
+                        "mcp_env_allowlist": list(
+                            dict.fromkeys(
+                                [
+                                    *config.mcp_env_allowlist,
+                                    *forwarded_mcp_environment,
+                                ]
+                            )
+                        )
+                    }
+                )
 
             provider_environment = synchronize_hermes_provider(
                 paths,

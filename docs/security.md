@@ -21,6 +21,15 @@ loopback FastAPI process, not the language model.
   session search and skills, optional web search, and allowlisted MCP tools. Raw memory
   writes, delegation, messaging, cron mutation, and general browser automation are
   excluded. The dedicated form-fill tool remains approval-bound and cannot submit.
+- The local Settings UI—not retrieved content or the agent—may create, edit, and remove
+  user-owned memory and skill files. Names are slug-validated, paths are derived by the
+  server, symlinks are rejected, built-in skills are immutable, and edits are synchronized
+  into the isolated Hermes profile before restart.
+- MCP servers require an exact tool allowlist before they can be enabled. Remote endpoints
+  require HTTPS (except loopback HTTP), runtime-reserved environment variables cannot be
+  forwarded, and the UI warns that stdio commands execute with the CareerPilot process's
+  local permissions. The LinkedIn preset is disabled by default and allowlists only
+  `search_jobs` and `get_job_details`.
 - Approvals bind action type to an exact payload digest, expire, and can be consumed only
   once. Submission, LinkedIn apply, and employer contact can never obtain an approval.
 - Tectonic runs with untrusted mode forced. TeX file/execution commands, escaping asset

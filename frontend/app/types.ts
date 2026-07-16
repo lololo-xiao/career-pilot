@@ -120,6 +120,46 @@ export interface MCPServerCapability {
   tools: string[];
 }
 
+export type AgentAssetKind = "memory" | "skill";
+
+export interface AgentAsset {
+  kind: AgentAssetKind;
+  name: string;
+  title: string;
+  description: string | null;
+  content: string;
+  path: string;
+  built_in: boolean;
+  editable: boolean;
+}
+
+export interface AgentAssetSettingsResponse {
+  memories: AgentAsset[];
+  skills: AgentAsset[];
+}
+
+export interface MCPServerSettings {
+  name: string;
+  display_name: string;
+  description: string;
+  transport: "http" | "stdio";
+  command: string | null;
+  args: string[];
+  url: string | null;
+  tool_allowlist: string[];
+  forwarded_environment: string[];
+  environment: Record<string, string>;
+  source_url: string | null;
+  warning: string | null;
+  enabled: boolean;
+  preset: boolean;
+  command_available: boolean | null;
+}
+
+export interface MCPSettingsResponse {
+  servers: MCPServerSettings[];
+}
+
 export interface CapabilitySettingsResponse {
   enabled_toolsets: string[];
   disabled_toolsets: string[];

@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-
-import yaml
-
 from app.auth import AuthStore, AuthenticatedAccount
 from app.hermes_runtime import (
     PILOT_API_SERVER_TOOLSETS,
     PILOT_DISABLED_TOOLSETS,
-    installed_profile_directory,
     profile_distribution_directory,
 )
 from app.schemas import (
@@ -19,6 +13,8 @@ from app.schemas import (
     WebSearchSettingsResponse,
 )
 from career_companion.paths import CompanionPaths
+from career_companion.persistence import account_session
+from career_companion.services.mcp_servers import list_mcp_servers
 
 
 WEB_SEARCH_SERVICE = "brave_search"
@@ -36,40 +32,19 @@ _CAREER_TOOLS = [
 ]
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _profile_config(paths: CompanionPaths) -> dict[str, Any]:
-    installed = installed_profile_directory(paths) / "config.yaml"
-    if installed.is_file():
-        return _read_yaml(installed)
-    return _read_yaml(profile_distribution_directory() / "config.yaml")
-
-
 def _mcp_servers(paths: CompanionPaths) -> list[MCPServerCapabilityResponse]:
-    raw_servers = _profile_config(paths).get("mcp_servers")
-    if not isinstance(raw_servers, dict):
-        return []
+    distribution = profile_distribution_directory()
+    with account_session(paths) as session:
+        configured = list_mcp_servers(session, distribution)
     servers: list[MCPServerCapabilityResponse] = []
-    for name, raw in sorted(raw_servers.items()):
-        if not isinstance(name, str) or not isinstance(raw, dict):
-            continue
-        raw_tools = raw.get("tools")
-        included = raw_tools.get("include", []) if isinstance(raw_tools, dict) else []
-        tools = [str(tool) for tool in included if isinstance(tool, str)]
-        transport = "stdio" if raw.get("command") else "http"
+    for server in configured:
         servers.append(
             MCPServerCapabilityResponse(
-                name=name,
-                display_name=name.replace("-", " ").title(),
-                enabled=bool(raw.get("enabled")),
-                transport=transport,
-                tools=tools,
+                name=server["name"],
+                display_name=server["display_name"],
+                enabled=server["enabled"],
+                transport=server["transport"],
+                tools=server["tool_allowlist"],
             )
         )
     return servers
@@ -78,8 +53,8 @@ def _mcp_servers(paths: CompanionPaths) -> list[MCPServerCapabilityResponse]:
 def build_capability_settings(
     account: AuthenticatedAccount,
     store: AuthStore,
+    paths: CompanionPaths,
 ) -> CapabilitySettingsResponse:
-    paths = CompanionPaths.discover().scoped_to(account.user_id)
     web_search_configured = (
         store.load_service_credential(account.user_id, WEB_SEARCH_SERVICE) is not None
     )
@@ -113,9 +88,9 @@ def build_capability_settings(
             state_label="Ready" if web_search_configured else "Needs setup",
             tools=["web_search"],
             note=(
-                "Brave Search is connected. LinkedIn remains manual."
+                "Brave Search is connected. LinkedIn search is separately opt-in."
                 if web_search_configured
-                else "Connect a Brave Search key below. LinkedIn remains manual."
+                else "Connect a Brave Search key below. LinkedIn search is separately opt-in."
             ),
         ),
         CapabilityGroupResponse(
