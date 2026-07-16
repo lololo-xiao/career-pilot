@@ -149,6 +149,10 @@ class AgentIdentityRequest(StrictModel):
 
 
 class AgentIdentityResponse(AgentIdentityRequest):
+    core_soul: str
+    effective_soul: str
+    identity_path: str
+    soul_path: str
     updated_at: datetime
 
 

@@ -549,7 +549,11 @@ def read_agent_identity(
 ) -> AgentIdentityResponse:
     with account_session(paths) as session:
         profile = ensure_agent_profile(session, paths)
-        payload = agent_profile_json(profile)
+        payload = agent_profile_json(
+            profile,
+            paths,
+            profile_distribution_directory(),
+        )
     _prevent_auth_caching(response)
     return AgentIdentityResponse.model_validate(payload)
 
@@ -571,7 +575,11 @@ async def save_agent_identity(
                 name=request.name,
                 soul=request.soul,
             )
-            payload = agent_profile_json(profile)
+            payload = agent_profile_json(
+                profile,
+                paths,
+                profile_distribution_directory(),
+            )
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     await runtime.invalidate(account.user_id)

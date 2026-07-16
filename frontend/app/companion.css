@@ -67,10 +67,24 @@
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 15px;
+  color: white;
+  cursor: pointer;
   display: flex;
+  font: inherit;
   gap: 0.75rem;
   margin: 2.2rem 0 1.6rem;
   padding: 0.85rem;
+  text-align: left;
+  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+  width: 100%;
+}
+
+.pilot-agent-card:hover,
+.pilot-agent-card:focus-visible {
+  background: rgba(255, 255, 255, 0.11);
+  border-color: rgba(255, 255, 255, 0.22);
+  outline: none;
+  transform: translateY(-1px);
 }
 
 .pilot-agent-card > div:last-child {
@@ -98,6 +112,13 @@
   box-shadow: 0 0 0 3px rgba(135, 214, 179, 0.12);
   height: 5px;
   width: 5px;
+}
+
+.pilot-agent-card small {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.52rem;
+  font-weight: 700;
+  margin-top: 0.32rem;
 }
 
 .pilot-avatar {
@@ -369,6 +390,7 @@
     radial-gradient(circle at 50% 10%, rgba(231, 240, 234, 0.54), transparent 25rem),
     #fbfaf6;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
@@ -436,6 +458,12 @@
 .pilot-header-actions button:hover,
 .pilot-header-actions a:hover {
   border-color: rgba(27, 116, 90, 0.35);
+  color: var(--pilot-green);
+}
+
+.pilot-header-actions .pilot-identity-shortcut {
+  background: var(--pilot-mint);
+  border-color: #d4e5db;
   color: var(--pilot-green);
 }
 
@@ -1707,6 +1735,209 @@
   color: white;
 }
 
+.pilot-modal-footer .pilot-modal-save:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pilot-identity-modal {
+  max-height: calc(100dvh - 3rem);
+  max-width: 760px;
+  overflow-y: auto;
+}
+
+.pilot-identity-tabs {
+  background: #eeeee8;
+  border-radius: 10px;
+  display: grid;
+  gap: 0.2rem;
+  grid-template-columns: 1fr 1fr;
+  margin: 1rem 0;
+  padding: 0.2rem;
+}
+
+.pilot-identity-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--pilot-muted);
+  cursor: pointer;
+  font-size: 0.67rem;
+  font-weight: 800;
+  padding: 0.58rem 0.75rem;
+}
+
+.pilot-identity-tabs button.is-active {
+  background: var(--pilot-paper);
+  box-shadow: 0 1px 5px rgba(32, 51, 45, 0.08);
+  color: var(--pilot-green-dark);
+}
+
+.pilot-identity-guided {
+  display: grid;
+  gap: 1rem;
+}
+
+.pilot-identity-guided label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.pilot-identity-guided label > span {
+  color: var(--pilot-ink);
+  font-size: 0.7rem;
+  font-weight: 850;
+}
+
+.pilot-identity-guided label > small {
+  color: var(--pilot-muted);
+  font-size: 0.58rem;
+  line-height: 1.45;
+}
+
+.pilot-identity-guided input {
+  background: #fbfaf6;
+  border: 1px solid var(--pilot-line);
+  border-radius: 10px;
+  color: var(--pilot-ink);
+  font: inherit;
+  font-size: 0.8rem;
+  outline: none;
+  padding: 0.75rem 0.85rem;
+}
+
+.pilot-identity-guided input:focus {
+  border-color: rgba(27, 116, 90, 0.5);
+  box-shadow: 0 0 0 3px rgba(27, 116, 90, 0.07);
+}
+
+.pilot-identity-modal .pilot-identity-soul {
+  min-height: 190px;
+}
+
+.pilot-identity-modal .pilot-identity-soul.is-markdown {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.68rem;
+  min-height: 260px;
+}
+
+.pilot-identity-boundary {
+  align-items: flex-start;
+  background: #edf5f0;
+  border: 1px solid #d9e9df;
+  border-radius: 11px;
+  color: var(--pilot-green);
+  display: flex;
+  gap: 0.55rem;
+  padding: 0.75rem;
+}
+
+.pilot-identity-boundary svg {
+  flex: 0 0 auto;
+  margin-top: 0.08rem;
+}
+
+.pilot-identity-boundary p {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.pilot-identity-boundary span {
+  color: var(--pilot-muted);
+}
+
+.pilot-identity-markdown {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.pilot-identity-file {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.pilot-identity-file > span {
+  color: var(--pilot-green);
+  font-size: 0.55rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pilot-identity-file code {
+  background: #eeeee8;
+  border-radius: 7px;
+  color: var(--pilot-muted);
+  font-size: 0.56rem;
+  padding: 0.3rem 0.45rem;
+}
+
+.pilot-identity-markdown details {
+  border: 1px solid var(--pilot-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pilot-identity-markdown summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  font-size: 0.64rem;
+  font-weight: 800;
+  justify-content: space-between;
+  list-style: none;
+  padding: 0.7rem 0.8rem;
+}
+
+.pilot-identity-markdown summary::-webkit-details-marker { display: none; }
+
+.pilot-identity-markdown summary span {
+  color: var(--pilot-muted);
+  font-size: 0.5rem;
+  font-weight: 700;
+}
+
+.pilot-identity-markdown pre {
+  background: #f4f3ee;
+  border-top: 1px solid var(--pilot-line);
+  color: #44534d;
+  font-size: 0.58rem;
+  line-height: 1.6;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 0.8rem;
+  white-space: pre-wrap;
+}
+
+.pilot-modal > .pilot-identity-feedback {
+  border-radius: 9px;
+  font-size: 0.61rem;
+  margin: 0.8rem 0 0;
+  padding: 0.65rem 0.75rem;
+}
+
+.pilot-identity-feedback.is-error {
+  background: #fff0ec;
+  color: #9f4936;
+}
+
+.pilot-identity-feedback.is-success {
+  background: #edf5f0;
+  color: var(--pilot-green);
+}
+
+.pilot-identity-footer > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @keyframes pilot-message-in {
   from { opacity: 0; transform: translateY(7px); }
   to { opacity: 1; transform: translateY(0); }
@@ -1765,11 +1996,24 @@
   .pilot-shell { display: block; height: 100dvh; min-height: 0; }
   .pilot-left-rail { display: none; }
   .pilot-conversation { height: 100%; }
-  .pilot-conversation-header { min-height: 72px; padding: 0.8rem 1rem; }
+  .pilot-conversation-header {
+    display: grid;
+    gap: 0.6rem 0.75rem;
+    grid-template-areas: "title actions" "sessions sessions";
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 72px;
+    padding: 0.8rem 1rem;
+  }
+  .pilot-conversation-header > div:first-child { grid-area: title; }
   .pilot-conversation-header h1 { font-size: 1.15rem; }
+  .pilot-compact-sessions { grid-area: sessions; margin-left: 0; width: 100%; }
+  .pilot-compact-sessions select { flex: 1; max-width: none; min-width: 0; }
+  .pilot-header-actions { grid-area: actions; }
   .pilot-header-actions button { display: none; }
+  .pilot-header-actions .pilot-identity-shortcut { display: inline-flex; padding: 0.55rem; }
+  .pilot-identity-shortcut span { display: none; }
+  .pilot-header-actions a:first-of-type { display: none; }
   .pilot-header-actions a span { display: none; }
-  .pilot-compact-sessions select { max-width: 105px; }
   .pilot-thread { padding: 1.1rem 0.85rem 2rem; }
   .pilot-message { gap: 0.55rem; }
   .pilot-message-stack { max-width: calc(100% - 40px); }
@@ -1795,6 +2039,12 @@
   .pilot-modal textarea { min-height: 190px; }
   .pilot-modal-footer { align-items: flex-end; gap: 0.75rem; }
   .pilot-modal-footer > small { max-width: 120px; }
+  .pilot-identity-modal { max-height: calc(100dvh - 1.5rem); }
+  .pilot-identity-modal .pilot-modal-heading h2 { font-size: 1.3rem; }
+  .pilot-identity-file { align-items: flex-start; flex-direction: column; }
+  .pilot-identity-footer { align-items: stretch; flex-direction: column; }
+  .pilot-identity-footer > small { max-width: 100%; }
+  .pilot-identity-footer > div { justify-content: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

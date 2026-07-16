@@ -126,6 +126,10 @@ def test_agent_name_and_soul_are_saved_to_database_and_local_profile(
 
     assert saved.status_code == 200
     assert saved.json()["name"] == "Zey"
+    assert saved.json()["identity_path"] == "workspace/agent/IDENTITY.md"
+    assert saved.json()["soul_path"] == "workspace/agent/SOUL.md"
+    assert "# Core policy" in saved.json()["core_soul"]
+    assert "User-owned soul notes" in saved.json()["effective_soul"]
     assert client.get("/settings/agent-identity").json()["soul"].startswith("Be calm")
     assert "Name: Zey" in (paths.workspace / "agent" / "IDENTITY.md").read_text()
     assert "gently humorous" in (paths.workspace / "agent" / "SOUL.md").read_text()

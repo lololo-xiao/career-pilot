@@ -30,6 +30,7 @@ const SAMPLE_PROFILE = `AI engineer with 4 years of Python experience. Built ret
 const SAMPLE_JOB = `We are hiring a Senior AI Engineer to build production generative AI products. Required: strong Python, hands-on RAG architecture, vector database experience, API development, and systematic LLM evaluation. You should be comfortable owning services in production and communicating technical decisions. Preferred: Kubernetes, Azure, LangGraph, and experience mentoring engineers.`;
 
 type EditorKind = "profile" | "role";
+type IdentityEditorView = "guided" | "markdown";
 
 interface ChatMessage {
   id: string;
@@ -250,10 +251,24 @@ export default function Home() {
   const [isParsingCV, setIsParsingCV] = useState(false);
   const [editor, setEditor] = useState<EditorKind | null>(null);
   const [editorDraft, setEditorDraft] = useState("");
+  const [identityEditorOpen, setIdentityEditorOpen] = useState(false);
+  const [identityEditorView, setIdentityEditorView] = useState<IdentityEditorView>("guided");
+  const [identityNameDraft, setIdentityNameDraft] = useState("");
+  const [identitySoulDraft, setIdentitySoulDraft] = useState("");
+  const [identityEditorError, setIdentityEditorError] = useState<string | null>(null);
+  const [identityEditorStatus, setIdentityEditorStatus] = useState<string | null>(null);
+  const [isSavingIdentity, setIsSavingIdentity] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageIdRef = useRef(1);
   const conversationEndRef = useRef<HTMLDivElement>(null);
   const agentName = agentIdentity?.name ?? "Pilot";
+  const identityDirty = Boolean(
+    agentIdentity
+    && (
+      agentIdentity.name !== identityNameDraft.trim()
+      || agentIdentity.soul !== identitySoulDraft.trim()
+    ),
+  );
 
   function nextMessage(
     role: ChatMessage["role"],
@@ -293,6 +308,60 @@ export default function Home() {
     setSessions(payload.sessions);
     return payload;
   }, []);
+
+  const refreshIdentity = useCallback(async (): Promise<AgentIdentity> => {
+    const response = await fetch(`${API_BASE_URL}/settings/agent-identity`, {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Your agent identity could not load."));
+    }
+    const identity = (await response.json()) as AgentIdentity;
+    setAgentIdentity(identity);
+    return identity;
+  }, []);
+
+  function openIdentityEditor(view: IdentityEditorView = "guided") {
+    if (!agentIdentity) return;
+    setIdentityNameDraft(agentIdentity.name);
+    setIdentitySoulDraft(agentIdentity.soul);
+    setIdentityEditorView(view);
+    setIdentityEditorError(null);
+    setIdentityEditorStatus(null);
+    setIdentityEditorOpen(true);
+  }
+
+  async function saveAgentIdentity() {
+    const name = identityNameDraft.trim();
+    if (!name || !identityDirty || isSavingIdentity) return;
+    setIsSavingIdentity(true);
+    setIdentityEditorError(null);
+    setIdentityEditorStatus(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/settings/agent-identity`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, soul: identitySoulDraft }),
+      });
+      if (!response.ok) {
+        if (response.status === 401) setAuthUser(null);
+        throw new Error(await readApiError(response, "Your agent identity could not be saved."));
+      }
+      const identity = (await response.json()) as AgentIdentity;
+      setAgentIdentity(identity);
+      setIdentityNameDraft(identity.name);
+      setIdentitySoulDraft(identity.soul);
+      setIdentityEditorStatus(`${identity.name} will use this identity in every session.`);
+    } catch (caughtError) {
+      setIdentityEditorError(
+        caughtError instanceof Error ? caughtError.message : "Your agent identity could not be saved.",
+      );
+    } finally {
+      setIsSavingIdentity(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -800,7 +869,7 @@ export default function Home() {
           ? ["What should we do next?", "Help me prepare for this role"]
           : ["Help me choose a target role", "What should we do next?"],
       );
-      void refreshSessionList().catch(() => undefined);
+      await Promise.allSettled([refreshSessionList(), refreshIdentity()]);
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : "Pilot couldn’t answer just now.";
       setError(message === "Failed to fetch" ? "Pilot couldn’t reach the API. Check that the backend is running." : message);
@@ -949,7 +1018,16 @@ export default function Home() {
 
       <aside className="pilot-left-rail">
         <a className="pilot-brand" href="#conversation" aria-label="CareerPilot home"><span>CP</span><strong>CareerPilot</strong></a>
-        <div className="pilot-agent-card"><AgentAvatar name={agentName} /><div><strong>{agentName}</strong><span><i /> Your career companion</span></div></div>
+        <button
+          className="pilot-agent-card"
+          type="button"
+          onClick={() => openIdentityEditor()}
+          aria-haspopup="dialog"
+          title={`Edit ${agentName}’s identity and SOUL.md`}
+        >
+          <AgentAvatar name={agentName} />
+          <div><strong>{agentName}</strong><span><i /> Your career companion</span><small>Identity &amp; SOUL.md</small></div>
+        </button>
         <nav className="pilot-nav" aria-label="CareerPilot sections">
           <button className="is-active" type="button"><Icon name="home" /><span>Today</span></button>
           <Link href="/workspace"><Icon name="briefcase" /><span>Workspace</span></Link>
@@ -993,6 +1071,7 @@ export default function Home() {
             {activeSession ? <button onClick={() => void removeSession(activeSession)} title="Delete session" type="button">×</button> : null}
           </div>
           <div className="pilot-header-actions">
+            <button className="pilot-identity-shortcut" type="button" onClick={() => openIdentityEditor()} title={`Open ${agentName}’s identity`}><Icon name="spark" size={17} /><span>SOUL</span></button>
             <button type="button" onClick={() => void loadDemo()}>Load demo</button>
             <Link href="/workspace"><Icon name="briefcase" size={17} /><span>Workspace</span></Link>
             <Link href="/settings"><Icon name="settings" size={17} /><span>Settings</span></Link>
@@ -1159,6 +1238,60 @@ export default function Home() {
         <div className="pilot-privacy-note"><span>Persistent session memory</span><p>Messages, CV text, role context, and fit checks are saved in your device-local CareerPilot database until you delete the session.</p></div>
         <div className="pilot-privacy-note"><span>Local-only access</span><p>No CareerPilot account or sign-in is required on this device.</p></div>
       </aside>
+
+      {identityEditorOpen && agentIdentity ? (
+        <div className="pilot-modal-backdrop" role="presentation" onMouseDown={() => setIdentityEditorOpen(false)}>
+          <section className="pilot-modal pilot-identity-modal" role="dialog" aria-modal="true" aria-labelledby="pilot-identity-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="pilot-modal-heading">
+              <AgentAvatar name={identityNameDraft || agentName} />
+              <div><small>Persistent agent identity</small><h2 id="pilot-identity-title">Make {identityNameDraft || agentName} feel like yours</h2></div>
+              <button type="button" onClick={() => setIdentityEditorOpen(false)} aria-label="Close identity editor">×</button>
+            </div>
+            <p>Your agent’s name and personality are saved on this device and used across every conversation. You can also ask the agent to change them; CareerPilot will pause for your approval first.</p>
+
+            <div className="pilot-identity-tabs" role="tablist" aria-label="Identity editor view">
+              <button className={identityEditorView === "guided" ? "is-active" : ""} type="button" role="tab" aria-selected={identityEditorView === "guided"} onClick={() => setIdentityEditorView("guided")}>Personality</button>
+              <button className={identityEditorView === "markdown" ? "is-active" : ""} type="button" role="tab" aria-selected={identityEditorView === "markdown"} onClick={() => setIdentityEditorView("markdown")}>SOUL.md</button>
+            </div>
+
+            {identityEditorView === "guided" ? (
+              <div className="pilot-identity-guided">
+                <label>
+                  <span>Agent name</span>
+                  <small>This appears in the sidebar, messages, and introductions.</small>
+                  <input value={identityNameDraft} onChange={(event) => { setIdentityNameDraft(event.target.value); setIdentityEditorStatus(null); }} maxLength={80} placeholder="Pilot" autoFocus />
+                </label>
+                <label>
+                  <span>Personality and way of working</span>
+                  <small>Write naturally or use Markdown. Describe tone, preferences, habits, and how you want the agent to collaborate.</small>
+                  <textarea className="pilot-identity-soul" value={identitySoulDraft} onChange={(event) => { setIdentitySoulDraft(event.target.value); setIdentityEditorStatus(null); }} rows={8} maxLength={32768} placeholder={`For example:\n\nBe direct, warm, and a little playful. Call yourself ${identityNameDraft || "Pilot"}. Challenge my assumptions, keep plans practical, and remember that I prefer concise answers.`} />
+                </label>
+                <div className="pilot-identity-boundary"><Icon name="check" size={16} /><p><strong>Your personality can evolve.</strong><span>Safety, truthfulness, approval, and evidence rules stay protected.</span></p></div>
+              </div>
+            ) : (
+              <div className="pilot-identity-markdown">
+                <div className="pilot-identity-file"><span>Editable file</span><code>{agentIdentity.soul_path}</code></div>
+                <textarea className="pilot-identity-soul is-markdown" value={identitySoulDraft} onChange={(event) => { setIdentitySoulDraft(event.target.value); setIdentityEditorStatus(null); }} rows={13} maxLength={32768} aria-label="Editable SOUL.md content" spellCheck />
+                <details>
+                  <summary>Protected core behavior <span>Read only</span></summary>
+                  <pre>{agentIdentity.core_soul}</pre>
+                </details>
+                <details>
+                  <summary>Current effective runtime SOUL <span>Read only</span></summary>
+                  <pre>{agentIdentity.effective_soul}</pre>
+                </details>
+              </div>
+            )}
+
+            {identityEditorError ? <p className="pilot-identity-feedback is-error" role="alert">{identityEditorError}</p> : null}
+            {identityEditorStatus ? <p className="pilot-identity-feedback is-success" role="status">{identityEditorStatus}</p> : null}
+            <div className="pilot-modal-footer pilot-identity-footer">
+              <small>{identitySoulDraft.length.toLocaleString()} / 32,768 · {identityEditorView === "markdown" ? agentIdentity.soul_path : agentIdentity.identity_path}</small>
+              <div><button type="button" onClick={() => setIdentityEditorOpen(false)}>Close</button><button className="pilot-modal-save" type="button" onClick={() => void saveAgentIdentity()} disabled={!identityNameDraft.trim() || !identityDirty || isSavingIdentity}>{isSavingIdentity ? "Saving…" : "Save identity"} <span>→</span></button></div>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {editor ? (
         <div className="pilot-modal-backdrop" role="presentation" onMouseDown={() => setEditor(null)}>

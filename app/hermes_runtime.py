@@ -27,7 +27,11 @@ from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.services.audit import record_audit
 from career_companion.services.agent_assets import synchronize_managed_profile_assets
-from career_companion.services.conversation_sessions import synchronize_agent_identity
+from career_companion.services.conversation_sessions import (
+    agent_profile_digest,
+    ensure_agent_profile,
+    synchronize_agent_identity,
+)
 from career_companion.services.mcp_servers import synchronize_mcp_profile_config
 from career_companion.services.model_routes import ensure_default_routes
 
@@ -53,6 +57,7 @@ class PreparedHermesRuntime:
     reasoning_effort: str
     token_limit: int
     credential_digest: str
+    identity_digest: str
     paths: CompanionPaths
     supervisor: HermesSupervisor
 
@@ -452,6 +457,10 @@ class HermesRuntimeManager:
             connection = account.provider_connection
             _align_missing_route_connection(paths, connection)
         digest = _credential_digest(connection.credential)
+        with account_session(paths) as session:
+            identity_digest = agent_profile_digest(
+                ensure_agent_profile(session, paths)
+            )
 
         async with self._lock:
             active = self._active
@@ -463,6 +472,7 @@ class HermesRuntimeManager:
                 and active.reasoning_effort == reasoning_effort
                 and active.token_limit == token_limit
                 and active.credential_digest == digest
+                and active.identity_digest == identity_digest
                 and active.supervisor.is_running
             ):
                 return active
@@ -559,6 +569,7 @@ class HermesRuntimeManager:
                 reasoning_effort=reasoning_effort,
                 token_limit=token_limit,
                 credential_digest=digest,
+                identity_digest=identity_digest,
                 paths=paths,
                 supervisor=supervisor,
             )

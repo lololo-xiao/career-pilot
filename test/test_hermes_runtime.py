@@ -38,6 +38,7 @@ from career_companion.database import ModelRouteRecord
 from career_companion.hermes import HermesSupervisor
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
+from career_companion.services.conversation_sessions import ensure_agent_profile
 
 
 def _account(
@@ -220,6 +221,12 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         assert len(supervisors) == 1
         with account_session(scoped) as session:
             assert session.get(ModelRouteRecord, "interactive").provider == "openai-api"
+            ensure_agent_profile(session, scoped).name = "Zey"
+
+        identity_changed = await manager.prepare(_account(), store)  # type: ignore[arg-type]
+        assert identity_changed is not first
+        assert first.supervisor.stop_count == 1
+        assert len(supervisors) == 2
 
         initial_codex = json.dumps(
             {
@@ -238,9 +245,9 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
             codex_account,
             store,  # type: ignore[arg-type]
         )
-        assert first.supervisor.stop_count == 1
+        assert identity_changed.supervisor.stop_count == 1
         assert second.provider == "codex"
-        assert supervisors[1].started_with == {
+        assert supervisors[2].started_with == {
             "BRAVE_SEARCH_API_KEY": "brave-test-search-key"
         }
 
@@ -268,7 +275,7 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         }
         assert await manager.capture_refreshed_codex_credentials("account-a") is None
         await manager.close()
-        assert supervisors[1].stop_count == 1
+        assert supervisors[2].stop_count == 1
 
     asyncio.run(scenario())
 

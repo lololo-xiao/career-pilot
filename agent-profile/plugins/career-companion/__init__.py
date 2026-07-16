@@ -44,6 +44,23 @@ def _profile(_: dict[str, Any]) -> Any:
     return _client().request("GET", "/profile")
 
 
+def _identity(_: dict[str, Any]) -> Any:
+    return _client().request("GET", "/identity")
+
+
+def _update_identity(args: dict[str, Any]) -> Any:
+    return _client().request(
+        "POST",
+        "/identity",
+        json_body={
+            "name": args["name"],
+            "soul": args["soul"],
+            "source_session": args["source_session"],
+            "user_request": args["user_request"],
+        },
+    )
+
+
 def _add_job(args: dict[str, Any]) -> Any:
     source_url = str(args.get("source_url") or "")
     return _client().request(
@@ -125,6 +142,34 @@ _STATUS_ENUM = [
 ]
 
 TOOLS = (
+    ToolDefinition(
+        "career_identity_get",
+        (
+            "Read your persistent local name and user-owned personality notes, plus "
+            "the protected core and effective SOUL. Use this before proposing a change."
+        ),
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        _identity,
+    ),
+    ToolDefinition(
+        "career_identity_update",
+        (
+            "Permanently update your local name and user-owned personality notes after "
+            "a direct request from the current user. This always pauses for human approval."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                "soul": {"type": "string", "maxLength": 32768},
+                "source_session": {"type": "string"},
+                "user_request": {"type": "string"},
+            },
+            "required": ["name", "soul", "source_session", "user_request"],
+            "additionalProperties": False,
+        },
+        _update_identity,
+    ),
     ToolDefinition(
         "career_profile_get",
         (
@@ -271,6 +316,15 @@ def _guard_tool_call(tool_name: str, args: dict[str, Any], **kwargs: Any) -> dic
         return {
             "action": "block",
             "message": "Only the user can confirm that an application was submitted",
+        }
+    if tool_name == "career_identity_update":
+        return {
+            "action": "approve",
+            "message": (
+                "Allow Pilot to permanently update its local name or SOUL.md? "
+                "The protected safety policy will not change."
+            ),
+            "rule_key": "career_identity_update",
         }
     return None
 

@@ -19,10 +19,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hermes_runtime import profile_distribution_directory
 from career_companion.config import load_config
 from career_companion.database import (
     ApplicationRecord,
     CandidateProfileRecord,
+    ConversationSessionRecord,
     JobRecord,
     MCPServerRecord,
     ModelRouteRecord,
@@ -34,6 +36,11 @@ from career_companion.router import RevisionRequest, _application_json, _job_jso
 from career_companion.schemas import ApplicationStatus, Job
 from career_companion.services.applications import transition_application
 from career_companion.services.browser import BrowserAssistant
+from career_companion.services.conversation_sessions import (
+    agent_profile_json,
+    ensure_agent_profile,
+    update_agent_profile,
+)
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.revisions import create_revision
 
@@ -57,6 +64,13 @@ class FormFillPayload(BaseModel):
     fields: dict[str, str] = Field(default_factory=dict)
     files: dict[str, str] = Field(default_factory=dict)
     headless: bool = False
+
+
+class IdentityUpdatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    soul: str = Field(default="", max_length=32_768)
+    source_session: str = Field(min_length=36, max_length=36)
+    user_request: str = Field(min_length=1, max_length=50_000)
 
 
 def _unauthorized() -> HTTPException:
@@ -120,6 +134,60 @@ def read_profile(session: SessionDep) -> dict[str, Any] | None:
     if row is None:
         return None
     return {"id": row.id, **row.payload, "updated_at": row.updated_at}
+
+
+@router.get("/identity")
+def read_identity(session: SessionDep, paths: PathsDep) -> dict[str, Any]:
+    profile = ensure_agent_profile(session, paths)
+    return agent_profile_json(
+        profile,
+        paths,
+        profile_distribution_directory(),
+    )
+
+
+@router.post("/identity")
+def update_identity(
+    payload: IdentityUpdatePayload,
+    session: SessionDep,
+    paths: PathsDep,
+) -> dict[str, Any]:
+    conversation = session.get(ConversationSessionRecord, payload.source_session)
+    if conversation is None:
+        raise HTTPException(404, "Conversation session not found")
+    latest_user_message = next(
+        (
+            message
+            for message in reversed(conversation.messages)
+            if message.role == "user"
+        ),
+        None,
+    )
+    if (
+        latest_user_message is None
+        or latest_user_message.content != payload.user_request.strip()
+    ):
+        raise HTTPException(
+            409,
+            "Identity changes must match the latest direct user request in this session",
+        )
+    try:
+        profile = update_agent_profile(
+            session,
+            paths,
+            profile_distribution_directory(),
+            name=payload.name,
+            soul=payload.soul,
+            actor="career-agent",
+            source_session=conversation.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return agent_profile_json(
+        profile,
+        paths,
+        profile_distribution_directory(),
+    )
 
 
 @router.post("/jobs")

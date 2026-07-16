@@ -58,8 +58,12 @@ def test_companion_endpoint_maps_provider_errors() -> None:
 
 
 def test_companion_prompt_keeps_context_in_named_json_fields() -> None:
-    prompt = build_companion_prompt(CompanionChatRequest.model_validate(CHAT_REQUEST))
+    request = CompanionChatRequest.model_validate(CHAT_REQUEST).model_copy(
+        update={"session_id": "00000000-0000-0000-0000-000000000001"}
+    )
+    prompt = build_companion_prompt(request)
 
+    assert '"source_session": "00000000-0000-0000-0000-000000000001"' in prompt
     assert '"candidate_profile"' in prompt
     assert '"latest_user_message": "What should I focus on first?"' in prompt
 

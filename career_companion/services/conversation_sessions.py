@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -16,6 +18,7 @@ from career_companion.database import (
     utcnow,
 )
 from career_companion.paths import CompanionPaths
+from career_companion.services.audit import record_audit
 
 
 DEFAULT_AGENT_NAME = "Pilot"
@@ -168,6 +171,8 @@ def update_agent_profile(
     *,
     name: str,
     soul: str,
+    actor: str = "local-user",
+    source_session: str | None = None,
 ) -> AgentProfileRecord:
     normalized_name = name.strip()
     normalized_soul = soul.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -179,6 +184,7 @@ def update_agent_profile(
         raise ValueError("Soul notes cannot exceed 32 KB")
     profile = ensure_agent_profile(session, paths)
     previous_name = profile.name
+    previous_soul = profile.soul
     profile.name = normalized_name
     profile.soul = normalized_soul
     profile.updated_at = utcnow()
@@ -192,15 +198,50 @@ def update_agent_profile(
             ):
                 conversation.messages[0].content = _welcome_message(normalized_name)
                 conversation.updated_at = utcnow()
+    record_audit(
+        session,
+        "agent_identity.updated",
+        actor=actor,
+        subject_type="agent_profile",
+        subject_id=profile.id,
+        payload={
+            "previous_name": previous_name,
+            "name": normalized_name,
+            "soul_changed": previous_soul != normalized_soul,
+            "source_session": source_session,
+        },
+    )
     session.flush()
     synchronize_agent_identity(session, paths, distribution)
     return profile
 
 
-def agent_profile_json(profile: AgentProfileRecord) -> dict[str, Any]:
+def agent_profile_digest(profile: AgentProfileRecord) -> str:
+    encoded = json.dumps(
+        {"name": profile.name, "soul": profile.soul},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def agent_profile_json(
+    profile: AgentProfileRecord,
+    paths: CompanionPaths,
+    distribution: Path,
+) -> dict[str, Any]:
+    core_soul_path = distribution / "SOUL.md"
+    if core_soul_path.is_symlink() or not core_soul_path.is_file():
+        raise ValueError("The built-in agent soul is unavailable")
+    identity_path, soul_path = _identity_files(paths)
     return {
         "name": profile.name,
         "soul": profile.soul,
+        "core_soul": core_soul_path.read_text(encoding="utf-8").strip(),
+        "effective_soul": _render_runtime_soul(distribution, profile).strip(),
+        "identity_path": identity_path.relative_to(paths.root).as_posix(),
+        "soul_path": soul_path.relative_to(paths.root).as_posix(),
         "updated_at": profile.updated_at,
     }
 

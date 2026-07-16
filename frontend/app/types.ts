@@ -56,6 +56,10 @@ export interface CompanionTurn {
 export interface AgentIdentity {
   name: string;
   soul: string;
+  core_soul: string;
+  effective_soul: string;
+  identity_path: string;
+  soul_path: string;
   updated_at: string;
 }
 
