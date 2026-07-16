@@ -1757,6 +1757,42 @@ footer p {
   overflow: hidden;
 }
 
+.agent-identity-form {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1.15rem;
+}
+
+.agent-identity-form label {
+  color: var(--ink-soft);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.62rem;
+  font-weight: 800;
+  gap: 0.4rem;
+}
+
+.agent-identity-form input,
+.agent-identity-form textarea {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  outline: none;
+  padding: 0.7rem 0.75rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.agent-identity-form input:focus,
+.agent-identity-form textarea:focus {
+  border-color: rgba(23, 107, 85, 0.55);
+  box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.07);
+}
+
 .agent-resource-tabs {
   border-bottom: 1px solid var(--line);
   display: flex;

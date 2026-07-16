@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -122,6 +123,7 @@ class CompanionTurn(StrictModel):
 
 
 class CompanionChatRequest(StrictModel):
+    session_id: str | None = Field(default=None, min_length=36, max_length=36)
     message: str = Field(min_length=1, max_length=4_000)
     conversation: list[CompanionTurn] = Field(default_factory=list, max_length=12)
     candidate_profile: str | None = Field(default=None, min_length=10, max_length=50_000)
@@ -138,6 +140,64 @@ class CompanionChatResponse(StrictModel):
 
 class CompanionApprovalRequest(StrictModel):
     choice: Literal["once", "deny"]
+    session_id: str | None = Field(default=None, min_length=36, max_length=36)
+
+
+class AgentIdentityRequest(StrictModel):
+    name: str = Field(min_length=1, max_length=80)
+    soul: str = Field(default="", max_length=32_768)
+
+
+class AgentIdentityResponse(AgentIdentityRequest):
+    updated_at: datetime
+
+
+class ConversationMessageRequest(StrictModel):
+    role: CompanionRole
+    content: str = Field(min_length=1, max_length=50_000)
+    report: MatchResponse | None = None
+
+
+class ConversationMessageResponse(ConversationMessageRequest):
+    id: str
+    created_at: datetime
+
+
+class ConversationSessionCreateRequest(StrictModel):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class ConversationSessionRenameRequest(StrictModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+class ConversationSessionContextRequest(StrictModel):
+    candidate_profile: str | None = Field(default=None, min_length=10, max_length=50_000)
+    job_description: str | None = Field(default=None, min_length=10, max_length=50_000)
+    uploaded_filename: str | None = Field(default=None, min_length=1, max_length=255)
+    match_report: MatchResponse | None = None
+
+
+class ConversationSessionSummaryResponse(StrictModel):
+    id: str
+    title: str
+    message_count: int = Field(ge=0)
+    preview: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationSessionResponse(ConversationSessionSummaryResponse):
+    messages: list[ConversationMessageResponse]
+    candidate_profile: str | None = None
+    job_description: str | None = None
+    uploaded_filename: str | None = None
+    match_report: MatchResponse | None = None
+
+
+class ConversationSessionListResponse(StrictModel):
+    active_session_id: str
+    sessions: list[ConversationSessionSummaryResponse]
 
 
 IdentityMethod = Literal["local"]

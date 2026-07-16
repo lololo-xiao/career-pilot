@@ -53,6 +53,42 @@ export interface CompanionTurn {
   content: string;
 }
 
+export interface AgentIdentity {
+  name: string;
+  soul: string;
+  updated_at: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  report: MatchResponse | null;
+  created_at: string;
+}
+
+export interface ConversationSessionSummary {
+  id: string;
+  title: string;
+  message_count: number;
+  preview: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationSession extends ConversationSessionSummary {
+  messages: ConversationMessage[];
+  candidate_profile: string | null;
+  job_description: string | null;
+  uploaded_filename: string | null;
+  match_report: MatchResponse | null;
+}
+
+export interface ConversationSessionList {
+  active_session_id: string;
+  sessions: ConversationSessionSummary[];
+}
+
 export interface CompanionChatResponse {
   message: string;
   suggested_prompts: string[];

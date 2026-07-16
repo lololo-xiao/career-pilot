@@ -184,8 +184,122 @@
   text-transform: uppercase;
 }
 
+.pilot-sessions {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin-top: 1rem;
+  min-height: 120px;
+  overflow: hidden;
+  padding-top: 0.85rem;
+}
+
+.pilot-sessions-heading {
+  align-items: center;
+  color: rgba(255, 255, 255, 0.48);
+  display: flex;
+  font-size: 0.55rem;
+  font-weight: 800;
+  justify-content: space-between;
+  letter-spacing: 0.08em;
+  padding: 0 0.55rem 0.55rem;
+  text-transform: uppercase;
+}
+
+.pilot-sessions-heading button {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.1);
+  border: 0;
+  border-radius: 7px;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  font-size: 1rem;
+  height: 1.45rem;
+  justify-content: center;
+  width: 1.45rem;
+}
+
+.pilot-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow-y: auto;
+  padding-right: 0.15rem;
+}
+
+.pilot-session-row {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.pilot-session-row:hover,
+.pilot-session-row.is-active {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.pilot-session-open,
+.pilot-session-actions button {
+  background: transparent;
+  border: 0;
+  color: white;
+  cursor: pointer;
+}
+
+.pilot-session-open {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.58rem 0.3rem 0.58rem 0.62rem;
+  text-align: left;
+}
+
+.pilot-session-open strong,
+.pilot-session-open small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pilot-session-open strong {
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.pilot-session-open small {
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 0.49rem;
+  margin-top: 0.16rem;
+}
+
+.pilot-session-actions {
+  display: none;
+  padding-right: 0.3rem;
+}
+
+.pilot-session-row:hover .pilot-session-actions,
+.pilot-session-row:focus-within .pilot-session-actions {
+  display: flex;
+}
+
+.pilot-session-actions button {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.7rem;
+  padding: 0.22rem;
+}
+
+.pilot-session-actions button:hover {
+  color: white;
+}
+
 .pilot-left-bottom {
-  margin-top: auto;
+  flex: 0 0 auto;
+  margin-top: 0.7rem;
 }
 
 .pilot-left-bottom > p {
@@ -297,6 +411,10 @@
   align-items: center;
   display: flex;
   gap: 0.55rem;
+}
+
+.pilot-compact-sessions {
+  display: none;
 }
 
 .pilot-header-actions button,
@@ -1619,11 +1737,21 @@
   .pilot-nav a span,
   .pilot-nav small,
   .pilot-left-bottom > p,
+  .pilot-sessions,
   .pilot-account > div { display: none; }
   .pilot-agent-card { justify-content: center; padding: 0.7rem 0.25rem; }
   .pilot-nav button,
   .pilot-nav a { display: flex; justify-content: center; padding: 0.75rem; }
   .pilot-account { display: flex; justify-content: center; }
+  .pilot-conversation-header { gap: 0.75rem; }
+  .pilot-conversation-header > div:first-child { min-width: 0; }
+  .pilot-conversation-header > div:first-child > span,
+  .pilot-conversation-header h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pilot-compact-sessions { align-items: center; display: flex; gap: 0.25rem; margin-left: auto; min-width: 0; }
+  .pilot-compact-sessions select,
+  .pilot-compact-sessions button { background: var(--pilot-paper); border: 1px solid var(--pilot-line); color: var(--pilot-muted); }
+  .pilot-compact-sessions select { border-radius: 8px; font-size: 0.62rem; max-width: 160px; min-width: 80px; padding: 0.45rem 0.5rem; }
+  .pilot-compact-sessions button { border-radius: 8px; cursor: pointer; height: 1.85rem; padding: 0; width: 1.85rem; }
 }
 
 @media (max-width: 900px) {
@@ -1641,6 +1769,7 @@
   .pilot-conversation-header h1 { font-size: 1.15rem; }
   .pilot-header-actions button { display: none; }
   .pilot-header-actions a span { display: none; }
+  .pilot-compact-sessions select { max-width: 105px; }
   .pilot-thread { padding: 1.1rem 0.85rem 2rem; }
   .pilot-message { gap: 0.55rem; }
   .pilot-message-stack { max-width: calc(100% - 40px); }

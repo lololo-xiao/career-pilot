@@ -279,6 +279,7 @@ def test_runtime_installs_sanitized_profile_once_per_account(tmp_path) -> None:
     distribution = tmp_path / "distribution"
     distribution.mkdir()
     (distribution / "distribution.yaml").write_text("name: career-companion\n")
+    (distribution / "SOUL.md").write_text("Built-in policy\n")
     installations = []
 
     def install_profile(paths, selected_distribution, executable):
@@ -498,7 +499,9 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     assert "tool.started" in response.text
     assert "message.delta" in response.text
     assert captured["path"] == "/v1/runs"
-    assert captured["session_key"] == f"career-companion:web:{'a' * 64}"
+    assert captured["session_key"].startswith(
+        f"career-companion:web:{'a' * 64}:"
+    )
     assert "latest_user_message" in captured["payload"]["input"]
     assert "untrusted reference data" in captured["payload"]["instructions"]
     assert "use the enabled career, web, file, terminal, or code tools" in captured[
@@ -547,11 +550,11 @@ def test_companion_run_approval_is_proxied_to_the_active_account(tmp_path) -> No
 
     assert response.status_code == 200
     assert response.json()["resolved"] == 1
-    assert captured == {
-        "run_id": "run_abc-123",
-        "choice": "once",
-        "session_key": f"career-companion:web:{'b' * 64}",
-    }
+    assert captured["run_id"] == "run_abc-123"
+    assert captured["choice"] == "once"
+    assert captured["session_key"].startswith(
+        f"career-companion:web:{'b' * 64}:"
+    )
     assert invalid.status_code == 422
 
 

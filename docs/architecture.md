@@ -59,6 +59,7 @@ sequenceDiagram
     User->>UI: Add job description
     User->>UI: Talk with Pilot using current session context
     UI->>API: POST /companion/chat/stream
+    API->>CareerDB: Load session history and persist the user turn
     API->>CareerDB: Resolve interactive model route
     alt OpenAI API route
         API->>Hermes: Start profile with API key in child environment
@@ -68,6 +69,7 @@ sequenceDiagram
         Hermes->>OpenAI: Codex subscription agent run
     end
     Hermes-->>API: Message and tool-progress SSE
+    API->>CareerDB: Persist the completed assistant turn
     API-->>UI: Proxied SSE without credentials
     API->>DB: Re-encrypt refreshed Codex credentials when changed
     opt User asks for a grounded fit check
@@ -129,6 +131,13 @@ password, Google login, logout, or session-cookie endpoints. AI-provider authori
 remains separate and is mandatory before model-backed features can run. A prior installation
 with exactly one account is adopted as the local identity so its workspace and encrypted
 provider connections are preserved.
+
+Each local identity owns database-backed conversation sessions. The selected session ID,
+ordered messages, CV/role working context, and latest fit report survive browser refreshes
+and process restarts. Hermes receives a distinct opaque session key for each conversation,
+so creating a new session does not merge runtime memory with an older one. The user-chosen
+agent name and supplemental soul notes are stored in the database and mirrored to local
+agent files; the runtime composes them beneath the immutable product safety policy.
 
 Provider credentials never enter JavaScript storage. API keys and Codex `auth.json` blobs
 are encrypted with a key derived from `CAREERPILOT_AUTH_SECRET`. Changing the application

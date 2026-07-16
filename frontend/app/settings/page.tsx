@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import { CapabilitySettings } from "../capability-settings";
 import { AgentResourceSettings } from "../agent-resource-settings";
+import { AgentIdentitySettings } from "../agent-identity-settings";
 import { MCPSettings } from "../mcp-settings";
 import { ProviderSettings } from "../provider-settings";
 import type { AuthSessionResponse, AuthUser } from "../types";
@@ -88,6 +89,7 @@ export default function SettingsPage() {
             user={user}
             onUpdated={setUser}
           />
+          <AgentIdentitySettings apiBaseUrl={API_BASE_URL} />
           <AgentResourceSettings apiBaseUrl={API_BASE_URL} />
           <MCPSettings
             apiBaseUrl={API_BASE_URL}

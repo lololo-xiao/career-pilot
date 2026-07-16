@@ -59,6 +59,11 @@ The scripts stop on a failed version, checksum, browser launch, build, or diagno
    confirms them.
 4. Add a job, review deterministic fit evidence, and generate artifacts.
 
+Conversation sessions are stored in the device-local operational database. Refreshing or
+restarting the app restores the last selected session, including its messages, CV/role
+context, and latest fit report. Use the session list to create, rename, switch, or delete
+conversations. The companion name and supplemental soul notes are editable in Settings.
+
 The device-local Hermes profile is installed on the first Pilot chat. General shell,
 arbitrary file writes, application submission, LinkedIn automation, messaging, and
 unapproved MCP tools are unavailable to the profile.
@@ -78,8 +83,8 @@ career-companion uninstall --yes
 
 `doctor` checks pinned versions, browser launch and integrity, the local web build,
 loopback configuration, private secret permissions, profile installation, and SQLite
-integrity. Backups contain the local operational database, workspace, configuration,
-and user-owned Hermes skills. They exclude provider credentials, sessions, browser data,
+integrity. Backups contain the local operational database (including conversation
+sessions), workspace, configuration, and user-owned Hermes skills. They exclude provider credentials, browser data,
 runtime logs, and distribution-owned profile files. A restored workspace must reconnect its
 provider.
 

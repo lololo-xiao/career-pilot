@@ -27,6 +27,7 @@ from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.services.audit import record_audit
 from career_companion.services.agent_assets import synchronize_managed_profile_assets
+from career_companion.services.conversation_sessions import synchronize_agent_identity
 from career_companion.services.mcp_servers import synchronize_mcp_profile_config
 from career_companion.services.model_routes import ensure_default_routes
 
@@ -478,6 +479,13 @@ class HermesRuntimeManager:
                     paths,
                     self._distribution_path,
                 )
+                with account_session(paths) as session:
+                    await asyncio.to_thread(
+                        synchronize_agent_identity,
+                        session,
+                        paths,
+                        self._distribution_path,
+                    )
                 forwarded_mcp_environment = await asyncio.to_thread(
                     synchronize_mcp_profile_config,
                     paths,
