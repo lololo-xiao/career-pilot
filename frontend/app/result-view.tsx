@@ -86,7 +86,7 @@ export function ResultView({
     <section className="results" aria-labelledby={titleId}>
       <div className="results-heading">
         <div>
-          <span className="eyebrow">Grounded match report</span>
+          <span className="eyebrow">Evidence-grounded fit · 0–10</span>
           <h2 id={titleId}>Your evidence, mapped to the role</h2>
         </div>
         <span className="verified-pill">
@@ -98,7 +98,7 @@ export function ResultView({
         <div
           className="score-dial"
           style={{ "--score": scorePercent } as React.CSSProperties}
-          aria-label={`Match score ${report.score} out of 10`}
+          aria-label={`Evidence-grounded fit score ${report.score} out of 10`}
         >
           <div className="score-dial-inner">
             <strong>{report.score}</strong>

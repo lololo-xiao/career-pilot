@@ -84,7 +84,7 @@ export interface Job {
     deadline?: string;
     source_url?: string;
   };
-  score?: number;
+  score?: number | null;
   tier?: string;
   score_explanation: string[];
   created_at?: string;

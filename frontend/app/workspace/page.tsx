@@ -11,7 +11,14 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import type { AuthSessionResponse, AuthUser } from "../types";
+import { getGuidedProgress, type GuidedStepId } from "../guided-progress";
+import type {
+  AuthSessionResponse,
+  AuthUser,
+  ConversationSession,
+  ConversationSessionList,
+  MatchResponse,
+} from "../types";
 import { ApplicationSummary } from "./application-summary";
 import { API_BASE_URL, apiRequest, openArtifact } from "./api";
 import type {
@@ -263,11 +270,17 @@ export default function WorkspacePage() {
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [settings, setSettings] = useState<CompanionSettings | null>(null);
+  const [activeGroundedFit, setActiveGroundedFit] = useState<MatchResponse | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setRefreshing(true);
     try {
-      const [jobRows, applicationRows, profileRow, routeRows, revisionRows, approvalRows, settingsRow] =
+      const activeConversationRequest = apiRequest<ConversationSessionList>(
+        "/companion/sessions",
+      ).then((sessionList) => apiRequest<ConversationSession>(
+        `/companion/sessions/${encodeURIComponent(sessionList.active_session_id)}`,
+      ));
+      const [jobRows, applicationRows, profileRow, routeRows, revisionRows, approvalRows, settingsRow, activeConversation] =
         await Promise.all([
           apiRequest<Job[]>("/api/v1/jobs"),
           apiRequest<Application[]>("/api/v1/applications"),
@@ -276,6 +289,7 @@ export default function WorkspacePage() {
           apiRequest<Revision[]>("/api/v1/revisions"),
           apiRequest<Approval[]>("/api/v1/approvals"),
           apiRequest<CompanionSettings>("/api/v1/settings"),
+          activeConversationRequest,
         ]);
       setJobs(jobRows);
       setApplications(applicationRows);
@@ -284,6 +298,7 @@ export default function WorkspacePage() {
       setRevisions(revisionRows);
       setApprovals(approvalRows);
       setSettings(settingsRow);
+      setActiveGroundedFit(activeConversation.match_report);
       setError(null);
     } catch (cause) {
       setError(
@@ -398,12 +413,14 @@ export default function WorkspacePage() {
         <div className="workspace-content">
           {activeTab === "overview" ? (
             <Overview
+              activeGroundedFit={activeGroundedFit}
               applications={applications}
               approvals={approvals}
               jobs={jobs}
               profile={profile}
               settings={settings}
               setTab={setActiveTab}
+              user={user}
             />
           ) : null}
           {activeTab === "profile" ? (
@@ -448,19 +465,23 @@ export default function WorkspacePage() {
 }
 
 function Overview({
+  activeGroundedFit,
   applications,
   approvals,
   jobs,
   profile,
   settings,
   setTab,
+  user,
 }: {
+  activeGroundedFit: MatchResponse | null;
   applications: Application[];
   approvals: Approval[];
   jobs: Job[];
   profile: CandidateProfile;
   settings: CompanionSettings | null;
   setTab: (tab: WorkspaceTab) => void;
+  user: AuthUser;
 }) {
   const activeApplications = applications.filter(
     (item) => !["offer", "rejected", "withdrawn"].includes(item.status),
@@ -471,6 +492,66 @@ function Overview({
   ).length;
   const ranked = jobs.filter((job) => typeof job.score === "number");
   const bestJob = [...ranked].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+  const progress = getGuidedProgress({
+    aiConnected: Boolean(user.active_provider),
+    verifiedProfileFacts: verifiedClaims,
+    targetOpportunities: jobs.length,
+    hasGroundedFit: Boolean(activeGroundedFit),
+  });
+
+  const stepDetail: Record<GuidedStepId, string> = {
+    "ai-connection": user.provider_label
+      ? `${user.provider_label} is active.`
+      : "Choose an OpenAI connection for Pilot.",
+    "reviewed-profile": verifiedClaims
+      ? `${verifiedClaims} confirmed ${verifiedClaims === 1 ? "fact is" : "facts are"} ready to ground your work.`
+      : "Import your CV, check the extracted details, and confirm at least one fact.",
+    "target-opportunity": jobs.length
+      ? `${jobs.length} ${jobs.length === 1 ? "opportunity is" : "opportunities are"} saved in your queue.`
+      : "Save one real role so your next decision has a concrete target.",
+    "grounded-fit": activeGroundedFit
+      ? `${activeGroundedFit.score}/10 evidence-grounded fit is saved in your active Pilot session.`
+      : "Compare a role with your confirmed evidence in Pilot for a separate 0–10 fit score.",
+  };
+
+  const nextAction = progress.nextStep ?? "grounded-fit";
+  const nextCopy: Record<GuidedStepId, { title: string; body: string; label: string }> = {
+    "ai-connection": {
+      title: "Connect Pilot to an AI provider",
+      body: "Choose the connection Pilot should use before adding career data.",
+      label: "Open AI connection",
+    },
+    "reviewed-profile": {
+      title: "Review the facts Pilot can use",
+      body: "Import your CV, correct the extraction, and explicitly confirm only supported facts.",
+      label: "Review my profile",
+    },
+    "target-opportunity": {
+      title: "Add your first real opportunity",
+      body: "Save a job description to create a deterministic queue priority and a target for deeper review.",
+      label: "Add an opportunity",
+    },
+    "grounded-fit": progress.nextStep
+      ? {
+          title: bestJob
+            ? `Ground the fit for ${bestJob.title}`
+            : "Run your first grounded fit",
+          body: typeof bestJob?.score === "number"
+            ? `Its ${bestJob.score}/100 queue priority only orders opportunities. Open Pilot to compare the role with your evidence.`
+            : "Open Pilot to compare a target role with your evidence and surface supported matches and gaps.",
+          label: "Open grounded fit",
+        }
+      : {
+          title: "Turn the evidence into a next move",
+          body: `${activeGroundedFit?.score ?? "Your"}/10 grounded fit is ready. Continue with Pilot to work through the first supported gap or strength.`,
+          label: "Continue with Pilot",
+        },
+  };
+
+  function performNextAction() {
+    if (nextAction === "reviewed-profile") setTab("profile");
+    if (nextAction === "target-opportunity") setTab("jobs");
+  }
 
   return (
     <section>
@@ -488,28 +569,53 @@ function Overview({
         <Metric label="Applications moving" value={activeApplications.length} />
         <Metric label="AI cost today" value={`$${Number(settings?.daily_cost_usd ?? 0).toFixed(2)}`} />
       </div>
-      <div className="workspace-grid-two">
-        <article className="workspace-card workspace-card-accent">
-          <span className="workspace-kicker">NEXT BEST STEP</span>
-          <h2>{bestJob ? `Review ${bestJob.title} at ${bestJob.company}` : "Add your first opportunity"}</h2>
-          <p>
-            {bestJob
-              ? `It currently leads your queue with a score of ${bestJob.score}. Open the evidence before deciding.`
-              : "Paste a job description. Pilot will deduplicate it and apply deterministic scoring."}
-          </p>
-          <button onClick={() => setTab("jobs")} type="button">
-            {bestJob ? "Open ranked jobs" : "Add a job"}
-          </button>
+      <div className="workspace-guided-grid">
+        <article className="workspace-card workspace-guided-card" aria-labelledby="guided-start-title">
+          <div className="workspace-guided-heading">
+            <div>
+              <span className="workspace-kicker">GUIDED START</span>
+              <h2 id="guided-start-title">Build one grounded decision.</h2>
+            </div>
+            <strong aria-label={`${progress.completedCount} of 4 steps complete`}>
+              {progress.completedCount}<small>/4</small>
+            </strong>
+          </div>
+          <ol className="workspace-checklist">
+            {progress.steps.map((step, index) => (
+              <li
+                aria-current={step.current ? "step" : undefined}
+                className={`${step.complete ? "is-complete" : ""}${step.current ? " is-current" : ""}`}
+                key={step.id}
+              >
+                <span aria-hidden="true">{step.complete ? "✓" : index + 1}</span>
+                <div><strong>{step.label}</strong><p>{stepDetail[step.id]}</p></div>
+                <small>{step.complete ? "Done" : step.current ? "Next" : "Waiting"}</small>
+              </li>
+            ))}
+          </ol>
         </article>
-        <article className="workspace-card">
-          <span className="workspace-kicker">PROFILE FACTS</span>
-          <h2>{profile.claims.length ? `${verifiedClaims} ${verifiedClaims === 1 ? "fact is" : "facts are"} ready to use.` : "Import your career facts."}</h2>
-          <p>
-            Correct the imported details, compare them with the source, and confirm
-            only the facts you want Pilot to use.
-          </p>
-          <button onClick={() => setTab("profile")} type="button">Review career facts</button>
-        </article>
+        <div className="workspace-guided-side">
+          <article className="workspace-card workspace-card-accent workspace-next-action">
+            <span className="workspace-kicker">NEXT BEST STEP</span>
+            <h2>{nextCopy[nextAction].title}</h2>
+            <p>{nextCopy[nextAction].body}</p>
+            {nextAction === "ai-connection" ? (
+              <Link href="/settings">{nextCopy[nextAction].label}</Link>
+            ) : nextAction === "grounded-fit" ? (
+              <Link href="/">{nextCopy[nextAction].label}</Link>
+            ) : (
+              <button onClick={performNextAction} type="button">{nextCopy[nextAction].label}</button>
+            )}
+          </article>
+          <article className="workspace-card workspace-score-guide" aria-labelledby="score-guide-title">
+            <span className="workspace-kicker">TWO DIFFERENT SIGNALS</span>
+            <h2 id="score-guide-title">Priority is not fit.</h2>
+            <dl>
+              <div><dt><strong>0–100</strong> Queue priority</dt><dd>Fixed, deterministic rules order jobs in your queue. This does not measure your personal fit.</dd></div>
+              <div><dt><strong>0–10</strong> Grounded fit</dt><dd>Pilot compares a role with your evidence, then shows supported matches, gaps, and cautions.</dd></div>
+            </dl>
+          </article>
+        </div>
       </div>
       {pendingApprovals.length ? (
         <div className="workspace-notice">
@@ -1176,7 +1282,7 @@ function JobsPanel({
 
   return (
     <section>
-      <div className="workspace-section-heading"><div><span className="workspace-eyebrow">FOCUSED SEARCH</span><h1>Your job queue.</h1><p>Deterministic scoring first, with a visible reason for every recommendation.</p></div><button onClick={() => setShowForm((value) => !value)} type="button">{showForm ? "Close form" : "Add a job"}</button></div>
+      <div className="workspace-section-heading"><div><span className="workspace-eyebrow">FOCUSED SEARCH</span><h1>Your job queue.</h1><p>The 0–100 queue priority uses deterministic rules to order opportunities. It is not your evidence-grounded fit.</p></div><button onClick={() => setShowForm((value) => !value)} type="button">{showForm ? "Close form" : "Add a job"}</button></div>
       <CsvImportPanel endpoint="/api/v1/jobs/import" kind="jobs" refresh={refresh} setError={setError} />
       {showForm ? (
         <form className="workspace-card workspace-job-form" onSubmit={addJob}>
@@ -1201,7 +1307,14 @@ function JobsPanel({
       <div className="workspace-stack">
         {filteredJobs.map((job) => (
           <article className="workspace-card workspace-job-card" key={job.id}>
-            <div className={`workspace-score workspace-tier-${job.tier ?? "none"}`}><strong>{job.score ?? "—"}</strong><span>{job.tier ? `Tier ${job.tier}` : "Not scored"}</span></div>
+            <div
+              aria-label={typeof job.score !== "number" ? "Queue priority not calculated" : `Queue priority ${job.score} out of 100`}
+              className={`workspace-score workspace-tier-${job.tier ?? "none"}`}
+            >
+              <small>Priority</small>
+              <strong>{job.score ?? "—"}{typeof job.score === "number" ? <small>/100</small> : null}</strong>
+              <span>{job.tier ? `Tier ${job.tier}` : "Not calculated"}</span>
+            </div>
             <div className="workspace-job-copy">
               <span>{job.company}</span>
               <h2>{job.title}</h2>
@@ -1212,12 +1325,12 @@ function JobsPanel({
                 <span>{companySizeLabel(job.spec.company_size)}</span>
                 {job.canonical_url ? <a href={job.canonical_url} rel="noreferrer" target="_blank">View job ↗</a> : <span>No URL</span>}
               </div>
-              {job.score_explanation.length ? <details><summary>Why this score?</summary><ul>{job.score_explanation.map((reason) => <li key={reason}>{reason}</li>)}</ul></details> : null}
+              {job.score_explanation.length ? <details><summary>Why this queue priority?</summary><ul>{job.score_explanation.map((reason) => <li key={reason}>{reason}</li>)}</ul></details> : null}
             </div>
-            <div className="workspace-actions"><button disabled={busyId === job.id} onClick={() => void act(`/api/v1/jobs/${job.id}/score`, job.id)} type="button">Score</button><button disabled={busyId === job.id || trackedJobs.has(job.id)} onClick={() => void act(`/api/v1/applications?job_id=${job.id}`, job.id)} type="button">{trackedJobs.has(job.id) ? "Tracked" : "Track application"}</button></div>
+            <div className="workspace-actions"><button disabled={busyId === job.id} onClick={() => void act(`/api/v1/jobs/${job.id}/score`, job.id)} type="button">{typeof job.score !== "number" ? "Calculate priority" : "Recalculate priority"}</button><button disabled={busyId === job.id || trackedJobs.has(job.id)} onClick={() => void act(`/api/v1/applications?job_id=${job.id}`, job.id)} type="button">{trackedJobs.has(job.id) ? "Tracked" : "Track application"}</button></div>
           </article>
         ))}
-        {!jobs.length ? <div className="workspace-empty workspace-card"><strong>Your queue is empty.</strong><span>Add a job description to start ranking opportunities.</span></div> : null}
+        {!jobs.length ? <div className="workspace-empty workspace-card"><strong>Your queue is empty.</strong><span>Add a job description to start prioritizing opportunities.</span></div> : null}
         {jobs.length && !filteredJobs.length ? <div className="workspace-empty workspace-card"><strong>No jobs match these filters.</strong><span>Clear one or more filters to see the rest of your queue.</span></div> : null}
       </div>
     </section>

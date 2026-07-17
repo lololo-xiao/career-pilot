@@ -151,7 +151,7 @@ function MatchBrief({ report, reportId }: { report: MatchResponse; reportId: str
           <span><strong>{report.score}</strong>/10</span>
         </div>
         <div>
-          <span className="pilot-kicker">Grounded fit check</span>
+          <span className="pilot-kicker">Evidence-grounded fit · 0–10</span>
           <h3>{report.score >= 7 ? "This role is worth pursuing." : report.score >= 5 ? "There is a credible path here." : "This one may be a stretch—for now."}</h3>
           <p>{report.summary}</p>
         </div>
@@ -956,6 +956,16 @@ export default function Home() {
     }
   }
 
+  function handleNextBestAction() {
+    if (!candidateProfile) return openEditor("profile");
+    if (!jobDescription) return openEditor("role");
+    if (!report) return void runAnalysis();
+    const prompt = report.missing_skills.length
+      ? "Help me act on the first gap"
+      : "How should I position my strengths?";
+    void sendChat(prompt);
+  }
+
   function handleSuggestion(prompt: string) {
     const normalized = prompt.toLowerCase();
     if (normalized.includes("demo workspace")) return loadDemo();
@@ -994,6 +1004,35 @@ export default function Home() {
   const activeSession = sessions.find((session) => session.id === activeSessionId) ?? null;
   const profileSummary = uploadedFilename ?? (candidateProfile ? `${candidateProfile.length.toLocaleString()} characters of evidence` : "Add a CV or tell Pilot about your work");
   const roleSummary = jobDescription ? jobDescription.split(/[.!?]/)[0].slice(0, 92) : "Paste a role you are considering";
+  const nextBestAction = !candidateProfile
+    ? {
+        label: "Add career evidence",
+        description: "Pilot needs real experience, skills, and outcomes before it can ground a recommendation.",
+        icon: "file" as const,
+      }
+    : !jobDescription
+      ? {
+          label: "Add a target opportunity",
+          description: "Choose one concrete role so Pilot can compare its requirements with your evidence.",
+          icon: "target" as const,
+        }
+      : !report
+        ? {
+            label: "Run the grounded fit",
+            description: "Get a 0–10 evidence-grounded fit with supported matches, gaps, and cautions.",
+            icon: "spark" as const,
+          }
+        : report.missing_skills.length
+          ? {
+              label: "Work on the first evidence gap",
+              description: "Turn the grounded report into one concrete preparation move with Pilot.",
+              icon: "check" as const,
+            }
+          : {
+              label: "Position your strongest evidence",
+              description: "Use the grounded report to make the strongest supported case for this role.",
+              icon: "check" as const,
+            };
   const selectedModel = agentSettings?.models.find((item) => item.model === agentSettings.model) ?? null;
   const effortOptions = selectedModel?.supported_reasoning_efforts ?? [];
   const contextWindow = selectedModel?.context_window ?? null;
@@ -1228,12 +1267,17 @@ export default function Home() {
         </section>
 
         {report ? (
-          <section className="pilot-latest-check"><span>Latest fit check</span><div><strong>{report.score}<small>/10</small></strong><p>{report.matched_skills.length} direct matches · {report.missing_skills.length} gaps</p></div></section>
+          <section className="pilot-latest-check"><span>Evidence-grounded fit</span><div><strong>{report.score}<small>/10</small></strong><p>Separate from queue priority · {report.matched_skills.length} direct matches · {report.missing_skills.length} gaps</p></div></section>
         ) : null}
 
-        <button className="pilot-run-check" type="button" onClick={() => void runAnalysis()} disabled={isAnalyzing || isChatting}>
-          <Icon name="spark" />{isAnalyzing ? "Running the evidence check…" : "Run a grounded fit check"}<span>→</span>
-        </button>
+        <section className="pilot-next-step" aria-labelledby="pilot-next-step-title">
+          <span>Next best step</span>
+          <strong id="pilot-next-step-title">{nextBestAction.label}</strong>
+          <p>{nextBestAction.description}</p>
+          <button className="pilot-run-check" type="button" onClick={handleNextBestAction} disabled={isAnalyzing || isChatting}>
+            <Icon name={nextBestAction.icon} />{isAnalyzing ? "Running the evidence check…" : nextBestAction.label}<span>→</span>
+          </button>
+        </section>
 
         <div className="pilot-privacy-note"><span>Persistent session memory</span><p>Messages, CV text, role context, and fit checks are saved in your device-local CareerPilot database until you delete the session.</p></div>
         <div className="pilot-privacy-note"><span>Local-only access</span><p>No CareerPilot account or sign-in is required on this device.</p></div>
