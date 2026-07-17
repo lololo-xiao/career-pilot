@@ -8,8 +8,10 @@ from app.companion import (
     build_companion_prompt,
     chat_with_companion,
 )
+from app.dependencies import get_companion_paths
 from app.main import app, get_companion
 from app.schemas import CompanionChatRequest, CompanionChatResponse
+from career_companion.paths import CompanionPaths
 
 
 client = TestClient(app)
@@ -32,8 +34,11 @@ def fake_companion(_: CompanionChatRequest) -> CompanionChatResponse:
 
 
 @pytest.fixture(autouse=True)
-def replace_companion():
+def replace_companion(tmp_path):
+    paths = CompanionPaths.at_root(tmp_path / "companion")
+    paths.create()
     app.dependency_overrides[get_companion] = lambda: fake_companion
+    app.dependency_overrides[get_companion_paths] = lambda: paths
     yield
     app.dependency_overrides.clear()
 
