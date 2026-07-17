@@ -1440,7 +1440,10 @@ async def stream_companion_reply(
         ) from exc
 
     with account_session(paths) as session:
-        active_memory_context = build_active_memory_context(session)
+        active_memory_context = build_active_memory_context(
+            session,
+            query=effective_request.message,
+        )
         audit_memory_context_resolution(
             session,
             active_memory_context,

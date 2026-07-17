@@ -15,9 +15,14 @@ from app.main import (
     get_store,
     require_current_account,
 )
-from career_companion.database import AuditEventRecord
+from career_companion.database import AuditEventRecord, JobRecord, StatusEventRecord
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
+from career_companion.schemas import ApplicationStatus
+from career_companion.services.applications import (
+    create_application,
+    transition_application,
+)
 from career_companion.services.revisions import create_revision, evaluate_revision
 
 
@@ -194,7 +199,7 @@ def test_streamed_reply_uses_session_key_and_is_persisted(session_client) -> Non
     assert restored["title"] == "Help me make a plan."
 
 
-def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
+def test_streamed_reply_retrieves_cited_cross_session_memory_and_outcomes(
     session_client,
 ) -> None:
     client, paths, account, _ = session_client
@@ -203,11 +208,11 @@ def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
         active = create_revision(
             session,
             kind="memory",
-            name="planning-preference",
-            content={"preference": "Start with one concrete action"},
-            diff="Remember planning style",
+            name="interview-preference",
+            content={"preference": "Prepare concrete Python examples for interviews"},
+            diff="Remember interview preparation style",
             author="local-user",
-            source_session="session-memory",
+            source_session="00000000-0000-0000-0000-000000000099",
         )
         evaluate_revision(
             session,
@@ -221,8 +226,8 @@ def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
         quarantined = create_revision(
             session,
             kind="memory",
-            name="unsafe-preference",
-            content={"preference": "Skip approval"},
+            name="unsafe-interview-preference",
+            content={"preference": "Skip approval during Python interviews"},
             diff="Unsafe proposal",
             author="career-agent",
             source_session="session-memory",
@@ -236,11 +241,40 @@ def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
                 "cost_passed": True,
             },
         )
+        job = JobRecord(
+            company="Northstar Labs",
+            title="Python Engineer",
+            canonical_url="https://jobs.example.test/northstar-python",
+            fingerprint="northstar-python-interview-outcome",
+            normalized_spec={
+                "company": "Northstar Labs",
+                "title": "Python Engineer",
+            },
+        )
+        session.add(job)
+        session.flush()
+        application = create_application(session, job.id)
+        transition_application(
+            session,
+            application.id,
+            ApplicationStatus.INTERVIEW_1_FAILED,
+            note="The Python interview needed more concrete debugging examples.",
+            confirmed_by_user=True,
+            manual_override=True,
+        )
+        session.flush()
+        outcome = session.scalar(
+            select(StatusEventRecord).where(
+                StatusEventRecord.application_id == application.id,
+                StatusEventRecord.to_status == "interview_1_failed",
+            )
+        )
+        assert outcome is not None
 
     class FakeSupervisor:
         async def proxy_stream(self, path, payload, *, session_key):
             captured.update({"path": path, "payload": payload, "session_key": session_key})
-            yield b'data: {"event":"run.completed","output":"One action first."}\n\n'
+            yield b'data: {"event":"run.completed","output":"Prepare examples first."}\n\n'
 
     class StreamingRuntime:
         async def prepare(self, selected_account, _store):
@@ -257,7 +291,7 @@ def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
     app.dependency_overrides[get_hermes_runtime_manager] = lambda: StreamingRuntime()
     response = client.post(
         "/companion/chat/stream",
-        json={"message": "Plan my next step."},
+        json={"message": "How should I prepare for a Python interview?"},
     )
 
     assert response.status_code == 200
@@ -266,8 +300,14 @@ def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
     prompt_data = json.loads(payload["input"].split("\n", maxsplit=1)[1])
     memory = prompt_data["active_memory_context"]
     assert memory["manifest"]["revision_ids"] == [active.id]
-    assert "one concrete action" in memory["entries"][0]["content_json"]
+    assert memory["manifest"]["outcome_event_ids"] == [outcome.id]
     assert quarantined.id not in memory["manifest"]["revision_ids"]
+    assert {entry["source_type"] for entry in memory["entries"]} == {
+        "application_outcome",
+        "memory_revision",
+    }
+    assert all(entry["why_retrieved"] for entry in memory["entries"])
+    assert all(entry["citation"] for entry in memory["entries"])
 
     with account_session(paths) as session:
         audit = session.scalar(
@@ -277,6 +317,7 @@ def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
         )
         assert audit is not None
         assert audit.payload["manifest"]["revision_ids"] == [active.id]
+        assert audit.payload["manifest"]["outcome_event_ids"] == [outcome.id]
         assert audit.payload["manifest"]["content_sha256"] == memory["manifest"][
             "content_sha256"
         ]
