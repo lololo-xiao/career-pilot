@@ -18,6 +18,7 @@ from career_companion.config import ProductConfig
 from career_companion.hermes import HermesSupervisor
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
+from career_companion.services.discovery import DiscoveryError, parse_greenhouse_jobs
 from career_companion.services.conversation_sessions import (
     append_message,
     create_conversation_session,
@@ -118,6 +119,7 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
         "career_identity_get",
         "career_identity_update",
         "career_profile_get",
+        "career_public_job_discover",
         "career_job_add",
         "career_job_score",
         "career_job_queue",
@@ -136,9 +138,61 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     assert guard("memory", {})["action"] == "block"
     assert guard("send_message", {})["action"] == "block"
     assert guard("career_job_queue", {}) is None
+    assert guard("career_public_job_discover", {}) is None
     identity_guard = guard("career_identity_update", {"name": "Zey"})
     assert identity_guard["action"] == "approve"
     assert identity_guard["rule_key"] == "career_identity_update"
+
+    discovery_tool = context.tools["career_public_job_discover"]
+    parameters = discovery_tool["schema"]["parameters"]
+    assert parameters["properties"]["provider"]["enum"] == [
+        "greenhouse",
+        "lever",
+    ]
+    assert parameters["required"] == ["provider", "company_identifier"]
+    assert parameters["additionalProperties"] is False
+    assert "public network read" in discovery_tool["description"]
+
+
+def test_profile_plugin_dispatches_explicit_public_discovery(monkeypatch) -> None:
+    plugin = _load_profile_plugin()
+    context = FakePluginContext()
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"method": method, "path": path, **kwargs})
+            return {
+                "activity": {"type": "public_network_read"},
+                "jobs": [],
+                "stored": 0,
+            }
+
+    monkeypatch.setattr(plugin, "HermesBridgeClient", FakeClient)
+    plugin.register(context)
+    result = json.loads(
+        context.tools["career_public_job_discover"]["handler"](
+            {
+                "provider": "greenhouse",
+                "company_identifier": "example-labs",
+                "limit": 12,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["activity"]["type"] == "public_network_read"
+    assert calls == [
+        {
+            "method": "POST",
+            "path": "/jobs/discover-public",
+            "json_body": {
+                "provider": "greenhouse",
+                "company_identifier": "example-labs",
+                "limit": 12,
+            },
+        }
+    ]
 
 
 def test_profile_plugin_translates_job_input_without_database_access(monkeypatch) -> None:
@@ -328,6 +382,100 @@ def test_internal_bridge_requires_account_secret_and_shares_account_state(
     assert client.get("/openapi.json").json()["paths"].get(
         "/api/internal/hermes/v1/jobs"
     ) is None
+
+
+def test_internal_bridge_discovers_without_storing_then_deduplicates_selection(
+    bridge_client,
+    monkeypatch,
+) -> None:
+    client, headers = bridge_client
+
+    async def fake_discovery(provider, company_identifier):
+        assert provider == "greenhouse"
+        assert company_identifier == "example-labs"
+        return parse_greenhouse_jobs(
+            company_identifier,
+            {
+                "jobs": [
+                    {
+                        "title": "ML Engineer",
+                        "location": {"name": "Berlin, Germany"},
+                        "content": "Python, retrieval, and evaluation.",
+                        "updated_at": "2026-07-17T08:00:00Z",
+                        "absolute_url": (
+                            "https://boards.greenhouse.io/example-labs/jobs/123"
+                            "?utm_source=public-feed"
+                        ),
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "career_companion.hermes_bridge.discover_public_jobs",
+        fake_discovery,
+    )
+    discovered = client.post(
+        "/api/internal/hermes/v1/jobs/discover-public",
+        headers=headers,
+        json={
+            "provider": "greenhouse",
+            "company_identifier": "example-labs",
+            "limit": 10,
+        },
+    )
+
+    assert discovered.status_code == 200
+    assert discovered.json()["activity"] == {
+        "type": "public_network_read",
+        "provider": "greenhouse",
+        "company_identifier": "example-labs",
+    }
+    assert discovered.json()["stored"] == 0
+    assert client.get("/api/internal/hermes/v1/jobs", headers=headers).json() == []
+
+    selected = discovered.json()["jobs"][0]
+    payload = {"spec": selected, "canonical_url": selected["source_url"]}
+    first = client.post(
+        "/api/internal/hermes/v1/jobs",
+        headers=headers,
+        json=payload,
+    )
+    duplicate = client.post(
+        "/api/internal/hermes/v1/jobs",
+        headers=headers,
+        json=payload,
+    )
+
+    assert first.json()["created"] is True
+    assert duplicate.json()["created"] is False
+    assert duplicate.json()["id"] == first.json()["id"]
+    assert len(client.get("/api/internal/hermes/v1/jobs", headers=headers).json()) == 1
+
+
+def test_internal_bridge_returns_safe_public_discovery_failure(
+    bridge_client,
+    monkeypatch,
+) -> None:
+    client, headers = bridge_client
+
+    async def fail_discovery(_provider, _company_identifier):
+        raise DiscoveryError("The public Lever job feed is temporarily unavailable")
+
+    monkeypatch.setattr(
+        "career_companion.hermes_bridge.discover_public_jobs",
+        fail_discovery,
+    )
+    response = client.post(
+        "/api/internal/hermes/v1/jobs/discover-public",
+        headers=headers,
+        json={"provider": "lever", "company_identifier": "example"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "The public Lever job feed is temporarily unavailable"
+    }
 
 
 def test_internal_bridge_cannot_confirm_submission(bridge_client) -> None:

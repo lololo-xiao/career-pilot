@@ -7,6 +7,7 @@ provides_tools:
   - career_identity_get
   - career_identity_update
   - career_profile_get
+  - career_public_job_discover
   - career_job_add
   - career_job_score
   - career_job_queue

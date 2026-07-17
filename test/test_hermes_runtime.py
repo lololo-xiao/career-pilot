@@ -464,7 +464,10 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
             captured.update(
                 {"path": path, "payload": payload, "session_key": session_key}
             )
-            yield b'data: {"event":"tool.started","tool":"career_profile_get"}\n\n'
+            yield (
+                b'data: {"event":"tool.started","tool":'
+                b'"career_public_job_discover","preview":"example-labs"}\n\n'
+            )
             yield b'data: {"event":"message.delta","delta":"We can start here."}\n\n'
             yield b'data: {"event":"run.completed","output":"We can start here."}\n\n'
 
@@ -504,6 +507,7 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "tool.started" in response.text
+    assert "career_public_job_discover" in response.text
     assert "message.delta" in response.text
     assert captured["path"] == "/v1/runs"
     assert captured["session_key"].startswith(
@@ -514,6 +518,7 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     assert "use the enabled career, web, file, terminal, or code tools" in captured[
         "payload"
     ]["instructions"]
+    assert "public network" in captured["payload"]["instructions"]
 
 
 def test_companion_run_approval_is_proxied_to_the_active_account(tmp_path) -> None:

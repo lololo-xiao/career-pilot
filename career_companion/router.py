@@ -42,7 +42,11 @@ from career_companion.services.approvals import decide_approval, request_approva
 from career_companion.services.audit import record_audit
 from career_companion.services.browser import BrowserAssistant
 from career_companion.services.csv_imports import import_applications_csv, import_jobs_csv
-from career_companion.services.discovery import discover_greenhouse, discover_lever
+from career_companion.services.discovery import (
+    DiscoveryError,
+    discover_greenhouse,
+    discover_lever,
+)
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.model_routes import daily_cost, upsert_route
 from career_companion.services.profile import import_profile_document, save_profile
@@ -221,14 +225,24 @@ def run_score(job_id: str, session: SessionDep) -> dict[str, Any]:
 
 @router.post("/discovery/greenhouse")
 async def run_greenhouse(board_token: str, session: SessionDep) -> dict[str, int]:
-    discovered = await discover_greenhouse(board_token)
+    try:
+        discovered = await discover_greenhouse(board_token)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except DiscoveryError as exc:
+        raise HTTPException(502, str(exc)) from exc
     created = sum(add_job(session, job)[1] for job in discovered)
     return {"discovered": len(discovered), "created": created}
 
 
 @router.post("/discovery/lever")
 async def run_lever(company_slug: str, session: SessionDep) -> dict[str, int]:
-    discovered = await discover_lever(company_slug)
+    try:
+        discovered = await discover_lever(company_slug)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except DiscoveryError as exc:
+        raise HTTPException(502, str(exc)) from exc
     created = sum(add_job(session, job)[1] for job in discovered)
     return {"discovered": len(discovered), "created": created}
 

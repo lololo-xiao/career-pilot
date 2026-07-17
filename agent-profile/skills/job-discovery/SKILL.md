@@ -7,6 +7,8 @@ description: Discover and normalize public jobs through approved sources without
 
 - Accept pasted job descriptions and URLs.
 - Use public Greenhouse and Lever job feeds where available.
+- Make each public feed read visible as a public network tool action. Discovery
+  returns candidates without storing them; add only the roles the user selects.
 - Use only explicitly configured company career pages.
 - Use the LinkedIn MCP only after the user explicitly enables it. Allow only
   `search_jobs` and `get_job_details`; never use its people, messaging,

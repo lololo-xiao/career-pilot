@@ -4,7 +4,7 @@ import ipaddress
 import re
 import secrets
 from collections.abc import Generator
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -41,6 +41,7 @@ from career_companion.services.conversation_sessions import (
     ensure_agent_profile,
     update_agent_profile,
 )
+from career_companion.services.discovery import DiscoveryError, discover_public_jobs
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.revisions import create_revision
 
@@ -71,6 +72,12 @@ class IdentityUpdatePayload(BaseModel):
     soul: str = Field(default="", max_length=32_768)
     source_session: str = Field(min_length=36, max_length=36)
     user_request: str = Field(min_length=1, max_length=50_000)
+
+
+class PublicJobDiscoveryPayload(BaseModel):
+    provider: Literal["greenhouse", "lever"]
+    company_identifier: str = Field(min_length=1, max_length=100)
+    limit: int = Field(default=25, ge=1, le=50)
 
 
 def _unauthorized() -> HTTPException:
@@ -194,6 +201,37 @@ def update_identity(
 def create_job(job: Job, session: SessionDep) -> dict[str, Any]:
     row, created = add_job(session, job)
     return _job_json(row) | {"created": created}
+
+
+@router.post("/jobs/discover-public")
+async def discover_public_job_feed(
+    payload: PublicJobDiscoveryPayload,
+    paths: PathsDep,
+) -> dict[str, Any]:
+    """Perform an explicit public network read without storing its results."""
+
+    del paths
+    try:
+        discovered = await discover_public_jobs(
+            payload.provider,
+            payload.company_identifier,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except DiscoveryError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    returned = discovered[: payload.limit]
+    return {
+        "activity": {
+            "type": "public_network_read",
+            "provider": payload.provider,
+            "company_identifier": payload.company_identifier.strip(),
+        },
+        "discovered": len(discovered),
+        "returned": len(returned),
+        "jobs": [job.spec.model_dump(mode="json") for job in returned],
+        "stored": 0,
+    }
 
 
 @router.get("/jobs")
