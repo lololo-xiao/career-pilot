@@ -53,6 +53,46 @@ export interface CompanionTurn {
   content: string;
 }
 
+export interface AgentIdentity {
+  name: string;
+  soul: string;
+  core_soul: string;
+  effective_soul: string;
+  identity_path: string;
+  soul_path: string;
+  updated_at: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  report: MatchResponse | null;
+  created_at: string;
+}
+
+export interface ConversationSessionSummary {
+  id: string;
+  title: string;
+  message_count: number;
+  preview: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationSession extends ConversationSessionSummary {
+  messages: ConversationMessage[];
+  candidate_profile: string | null;
+  job_description: string | null;
+  uploaded_filename: string | null;
+  match_report: MatchResponse | null;
+}
+
+export interface ConversationSessionList {
+  active_session_id: string;
+  sessions: ConversationSessionSummary[];
+}
+
 export interface CompanionChatResponse {
   message: string;
   suggested_prompts: string[];
@@ -118,6 +158,46 @@ export interface MCPServerCapability {
   enabled: boolean;
   transport: "http" | "stdio";
   tools: string[];
+}
+
+export type AgentAssetKind = "memory" | "skill";
+
+export interface AgentAsset {
+  kind: AgentAssetKind;
+  name: string;
+  title: string;
+  description: string | null;
+  content: string;
+  path: string;
+  built_in: boolean;
+  editable: boolean;
+}
+
+export interface AgentAssetSettingsResponse {
+  memories: AgentAsset[];
+  skills: AgentAsset[];
+}
+
+export interface MCPServerSettings {
+  name: string;
+  display_name: string;
+  description: string;
+  transport: "http" | "stdio";
+  command: string | null;
+  args: string[];
+  url: string | null;
+  tool_allowlist: string[];
+  forwarded_environment: string[];
+  environment: Record<string, string>;
+  source_url: string | null;
+  warning: string | null;
+  enabled: boolean;
+  preset: boolean;
+  command_available: boolean | null;
+}
+
+export interface MCPSettingsResponse {
+  servers: MCPServerSettings[];
 }
 
 export interface CapabilitySettingsResponse {

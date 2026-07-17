@@ -4,6 +4,8 @@ kind: standalone
 description: "Restricted, evidence-aware career workflow tools for Career Companion."
 author: "Career Companion contributors"
 provides_tools:
+  - career_identity_get
+  - career_identity_update
   - career_profile_get
   - career_job_add
   - career_job_score

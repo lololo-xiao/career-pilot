@@ -188,6 +188,54 @@ class MCPServerRecord(Base, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class AgentProfileRecord(Base, TimestampMixin):
+    """Device-local identity and the last conversation selected by the user."""
+
+    __tablename__ = "agent_profiles"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default="primary")
+    name: Mapped[str] = mapped_column(String(80), default="Pilot")
+    soul: Mapped[str] = mapped_column(Text, default="")
+    active_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class ConversationSessionRecord(Base, TimestampMixin):
+    __tablename__ = "conversation_sessions"
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    title: Mapped[str] = mapped_column(String(120), default="New conversation")
+    title_is_custom: Mapped[bool] = mapped_column(Boolean, default=False)
+    candidate_profile: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    uploaded_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    match_report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    messages: Mapped[list[ConversationMessageRecord]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="ConversationMessageRecord.position",
+    )
+
+
+class ConversationMessageRecord(Base):
+    __tablename__ = "conversation_messages"
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text)
+    report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    conversation: Mapped[ConversationSessionRecord] = relationship(
+        back_populates="messages"
+    )
+
+
 class AuditEventRecord(Base):
     __tablename__ = "audit_events"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

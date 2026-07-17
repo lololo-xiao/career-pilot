@@ -60,3 +60,16 @@ test("uses a cautious fallback when behavior is unclear", () => {
   assert.equal(explanation.tool, "Local tool");
   assert.match(explanation.reason, /could not classify every effect confidently/);
 });
+
+test("explains persistent identity changes in user-facing language", () => {
+  const explanation = explainApproval({
+    tool: "career_identity_update",
+    description: "Allow Pilot to update its identity?",
+    command: '{"name":"Zey","soul":"Warm and direct."}',
+  });
+
+  assert.equal(explanation.summary, "Permanently update your agent’s identity.");
+  assert.equal(explanation.tool, "Identity & SOUL");
+  assert.match(explanation.behavior, /across every session/);
+  assert.match(explanation.reason, /always asks/);
+});

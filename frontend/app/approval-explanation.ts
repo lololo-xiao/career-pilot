@@ -25,6 +25,16 @@ export function explainApproval(approval: ApprovalRequest): ApprovalExplanation 
   const changesFiles = /write_(?:text|bytes)\s*\(|\.unlink\s*\(|\b(?:remove|rename|mkdir|makedirs)\s*\(|shutil\.(?:copy|move|rmtree)\s*\(|open\s*\([^\n,]+,\s*["'][wax+]/i.test(command);
   const sendsData = /requests\.(?:post|put|patch|delete)\s*\(|method\s*=\s*["'](?:post|put|patch|delete)/i.test(command);
 
+  if (declaredTool === "identity update") {
+    return {
+      summary: "Permanently update your agent’s identity.",
+      tool: "Identity & SOUL",
+      behavior: "Changes the local agent name or user-owned personality notes across every session.",
+      scope: "This identity change only",
+      reason: "CareerPilot always asks before an agent changes its own persistent identity. Protected safety and evidence rules remain read-only.",
+    };
+  }
+
   const tool = usesPython
     ? "Python code runner"
     : isCodeRunner

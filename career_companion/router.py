@@ -31,6 +31,7 @@ from career_companion.schemas import (
     Job,
     MCPServerConfig,
     ModelRoute,
+    ProfileProject,
     Schedule,
 )
 from career_companion.services.applications import (
@@ -38,11 +39,14 @@ from career_companion.services.applications import (
     transition_application,
 )
 from career_companion.services.approvals import decide_approval, request_approval
+from career_companion.services.audit import record_audit
 from career_companion.services.browser import BrowserAssistant
+from career_companion.services.csv_imports import import_applications_csv, import_jobs_csv
 from career_companion.services.discovery import discover_greenhouse, discover_lever
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.model_routes import daily_cost, upsert_route
 from career_companion.services.profile import import_profile_document, save_profile
+from career_companion.services.projects import analyze_project
 from career_companion.services.revisions import (
     create_revision,
     evaluate_revision,
@@ -70,6 +74,7 @@ class ApplicationTransitionRequest(BaseModel):
     status: ApplicationStatus
     note: str = ""
     confirmed_by_user: bool = False
+    manual_override: bool = False
 
 
 class RevisionRequest(BaseModel):
@@ -111,7 +116,8 @@ async def import_profile(
     paths: PathsDep,
     file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
-    suffix = Path(file.filename or "").suffix.lower()
+    original_filename = file.filename or "profile"
+    suffix = Path(original_filename).suffix.lower()
     if suffix not in {".pdf", ".docx"}:
         raise HTTPException(400, "Only PDF and DOCX files are accepted")
     paths.create()
@@ -124,11 +130,46 @@ async def import_profile(
                 if size > 20 * 1024 * 1024:
                     raise HTTPException(413, "Profile document exceeds 20 MB")
                 handle.write(chunk)
-        document, profile = import_profile_document(session, temporary, paths)
+        document, profile = import_profile_document(
+            session,
+            temporary,
+            paths,
+            original_filename=original_filename,
+        )
     finally:
         await file.close()
         temporary.unlink(missing_ok=True)
-    return {"source_document_id": document.id, "profile": profile.model_dump(mode="json")}
+    return {
+        "source_document_id": document.id,
+        "profile": profile.model_dump(mode="json"),
+    }
+
+
+@router.post("/onboarding/projects/analyze")
+async def analyze_profile_project(
+    project: ProfileProject, session: SessionDep
+) -> dict[str, Any]:
+    try:
+        analysis = await analyze_project(project)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    record_audit(
+        session,
+        "profile.project_analyzed",
+        subject_type="profile_project",
+        subject_id=project.id,
+        payload={
+            "name": project.name,
+            "source": analysis.source,
+            "repository_name": analysis.repository_name,
+            "file_count": analysis.file_count,
+        },
+    )
+    return analysis.model_dump(mode="json")
 
 
 @router.get("/onboarding/profile")
@@ -154,6 +195,15 @@ def put_profile(profile: CandidateProfile, session: SessionDep) -> dict[str, Any
 def create_job(job: Job, session: SessionDep) -> dict[str, Any]:
     record, created = add_job(session, job)
     return _job_json(record) | {"created": created}
+
+
+@router.post("/jobs/import")
+async def import_jobs(file: Annotated[UploadFile, File()], session: SessionDep) -> dict[str, Any]:
+    csv_text = await _read_csv_upload(file)
+    try:
+        return import_jobs_csv(session, csv_text).as_dict()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/jobs")
@@ -190,6 +240,17 @@ def start_application(job_id: str, session: SessionDep) -> dict[str, Any]:
     return _application_json(create_application(session, job_id))
 
 
+@router.post("/applications/import")
+async def import_applications(
+    file: Annotated[UploadFile, File()], session: SessionDep
+) -> dict[str, Any]:
+    csv_text = await _read_csv_upload(file)
+    try:
+        return import_applications_csv(session, csv_text).as_dict()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.get("/applications")
 def list_applications(session: SessionDep) -> list[dict[str, Any]]:
     return [_application_json(row) for row in session.scalars(select(ApplicationRecord)).all()]
@@ -206,6 +267,7 @@ def set_application_status(
             payload.status,
             note=payload.note,
             confirmed_by_user=payload.confirmed_by_user,
+            manual_override=payload.manual_override,
         )
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -444,6 +506,21 @@ def _job_json(row: JobRecord) -> dict[str, Any]:
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
+
+
+async def _read_csv_upload(file: UploadFile) -> str:
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(400, "Only CSV files are accepted")
+    try:
+        payload = await file.read(2 * 1024 * 1024 + 1)
+    finally:
+        await file.close()
+    if len(payload) > 2 * 1024 * 1024:
+        raise HTTPException(413, "CSV file exceeds 2 MB")
+    try:
+        return payload.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(422, "CSV must use UTF-8 encoding") from exc
 
 
 def _artifact_json(row: ArtifactRecord) -> dict[str, Any]:

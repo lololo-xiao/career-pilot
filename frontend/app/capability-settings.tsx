@@ -10,6 +10,7 @@ import type {
 
 interface CapabilitySettingsProps {
   apiBaseUrl: string;
+  refreshKey?: number;
 }
 
 async function readError(response: Response, fallback: string): Promise<string> {
@@ -66,7 +67,7 @@ function CapabilityCard({ group }: { group: CapabilityGroup }) {
   );
 }
 
-export function CapabilitySettings({ apiBaseUrl }: CapabilitySettingsProps) {
+export function CapabilitySettings({ apiBaseUrl, refreshKey = 0 }: CapabilitySettingsProps) {
   const [settings, setSettings] = useState<CapabilitySettingsResponse | null>(null);
   const [searchKey, setSearchKey] = useState("");
   const [savingSearch, setSavingSearch] = useState(false);
@@ -99,7 +100,7 @@ export function CapabilitySettings({ apiBaseUrl }: CapabilitySettingsProps) {
     return () => {
       active = false;
     };
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, refreshKey]);
 
   const enabledGroups = useMemo(
     () => settings?.groups.filter((group) => group.state === "enabled").length ?? 0,
@@ -261,8 +262,8 @@ export function CapabilitySettings({ apiBaseUrl }: CapabilitySettingsProps) {
                   </div>
                 </form>
                 <p className="capability-fine-print">
-                  Search can find public job pages; LinkedIn browsing and application
-                  submission remain manual.
+                  Search can find public job pages. LinkedIn job search is a separate,
+                  explicit MCP opt-in; applications remain manual.
                 </p>
               </div>
             )}

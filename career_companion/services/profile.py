@@ -85,7 +85,11 @@ def extract_document(path: Path) -> tuple[str, list[tuple[int, str]]]:
 
 
 def import_profile_document(
-    session: Session, source: Path, paths: CompanionPaths | None = None
+    session: Session,
+    source: Path,
+    paths: CompanionPaths | None = None,
+    *,
+    original_filename: str | None = None,
 ) -> tuple[SourceDocumentRecord, CandidateProfile]:
     paths = paths or CompanionPaths.discover()
     suffix = source.suffix.lower()
@@ -98,7 +102,7 @@ def import_profile_document(
         shutil.copy2(source, destination)
     text, pages = extract_document(destination)
     document = SourceDocumentRecord(
-        filename=source.name,
+        filename=_source_filename(original_filename or source.name, suffix),
         stored_path=str(destination),
         sha256=digest,
         media_type=SUPPORTED_MEDIA[suffix],
@@ -112,7 +116,7 @@ def import_profile_document(
         "profile.document_imported",
         subject_type="source_document",
         subject_id=document.id,
-        payload={"filename": source.name, "sha256": digest},
+        payload={"filename": document.filename, "sha256": digest},
     )
     return document, profile
 
@@ -166,8 +170,9 @@ def _candidate_from_text(
                     confidence=0.82,
                 )
 
-            is_publication = current_section == "publications" or bool(
-                PUBLICATION_SIGNAL_PATTERN.search(line)
+            is_publication = current_section == "publications" or (
+                current_section != "projects"
+                and bool(PUBLICATION_SIGNAL_PATTERN.search(line))
             )
             if is_publication and not degree_match and len(line) >= 8:
                 _append_claim(
@@ -181,6 +186,18 @@ def _candidate_from_text(
                     confidence=0.86 if current_section == "publications" else 0.78,
                 )
 
+            if current_section == "projects" and not degree_match and len(line) >= 8:
+                _append_claim(
+                    claims,
+                    seen,
+                    document,
+                    page_number,
+                    key="project",
+                    value=line,
+                    excerpt=line,
+                    confidence=0.76,
+                )
+
     return CandidateProfile(
         email=email,
         phone=phone,
@@ -192,6 +209,14 @@ def _candidate_from_text(
 
 def _clean_line(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" \t-–—•·,;|")
+
+
+def _source_filename(value: str, suffix: str) -> str:
+    filename = value.replace("\\", "/").rsplit("/", 1)[-1]
+    filename = re.sub(r"[\x00-\x1f\x7f]", "", filename).strip()
+    if not filename:
+        return f"profile{suffix}"
+    return filename[:500]
 
 
 def _section_name(line: str) -> str | None:

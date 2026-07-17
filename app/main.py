@@ -1,5 +1,7 @@
 import asyncio
+import codecs
 import json
+import re
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -43,6 +45,7 @@ from app.config import get_frontend_origins
 from app.dependencies import (
     get_companion_paths,
     get_current_account,
+    get_local_companion_paths,
     get_store,
     require_current_account,
     require_provider_account,
@@ -57,6 +60,7 @@ from app.hermes_runtime import (
     HermesProviderConfigurationError,
     HermesRuntimeManager,
     HermesRuntimeUnavailable,
+    profile_distribution_directory,
 )
 from app.matching import (
     MatchConfigurationError,
@@ -66,6 +70,11 @@ from app.matching import (
 )
 from app.schemas import (
     AgentAccountUsage,
+    AgentAssetKind,
+    AgentAssetRequest,
+    AgentAssetSettingsResponse,
+    AgentIdentityRequest,
+    AgentIdentityResponse,
     AgentCredits,
     AgentIndividualLimit,
     AgentModelOption,
@@ -82,9 +91,20 @@ from app.schemas import (
     CompanionApprovalRequest,
     CompanionChatRequest,
     CompanionChatResponse,
+    CompanionTurn,
+    ConversationMessageRequest,
+    ConversationMessageResponse,
+    ConversationSessionContextRequest,
+    ConversationSessionCreateRequest,
+    ConversationSessionListResponse,
+    ConversationSessionRenameRequest,
+    ConversationSessionResponse,
+    ConversationSessionSummaryResponse,
     EvidenceSnippet,
     MatchRequest,
     MatchResponse,
+    MCPServerSettingsRequest,
+    MCPSettingsResponse,
     ParsedCVResponse,
     ProviderMethod,
     ProviderSelectionRequest,
@@ -94,12 +114,44 @@ from app.schemas import (
 from app.static_frontend import mount_static_frontend
 from app.workflow import match_candidate_v3
 from career_companion.hermes_bridge import router as hermes_bridge_router
-from career_companion.database import ModelRouteRecord
+from career_companion.database import MCPServerRecord, ModelRouteRecord
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.router import router as career_companion_router
 from career_companion.schemas import ModelRoute
 from career_companion.services.model_routes import ensure_default_routes, upsert_route
+from career_companion.services.agent_assets import (
+    delete_agent_asset,
+    list_agent_assets,
+    save_agent_asset,
+    synchronize_managed_profile_assets,
+)
+from career_companion.services.conversation_sessions import (
+    activate_conversation_session,
+    agent_profile_json,
+    append_message,
+    conversation_turns,
+    create_conversation_session,
+    delete_conversation_session,
+    ensure_active_session,
+    ensure_agent_profile,
+    get_conversation_session,
+    message_json,
+    rename_conversation_session,
+    session_json,
+    session_list_json,
+    session_summary_json,
+    synchronize_agent_identity,
+    update_agent_profile,
+    update_session_context,
+)
+from career_companion.services.mcp_servers import (
+    delete_mcp_server,
+    ensure_default_mcp_servers,
+    list_mcp_servers,
+    synchronize_mcp_profile_config,
+    upsert_mcp_server,
+)
 from career_companion.web import frontend_build_directory
 
 
@@ -490,6 +542,217 @@ def read_local_session(
     )
 
 
+@app.get("/settings/agent-identity", response_model=AgentIdentityResponse)
+def read_agent_identity(
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> AgentIdentityResponse:
+    with account_session(paths) as session:
+        profile = ensure_agent_profile(session, paths)
+        payload = agent_profile_json(
+            profile,
+            paths,
+            profile_distribution_directory(),
+        )
+    _prevent_auth_caching(response)
+    return AgentIdentityResponse.model_validate(payload)
+
+
+@app.put("/settings/agent-identity", response_model=AgentIdentityResponse)
+async def save_agent_identity(
+    request: AgentIdentityRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentIdentityResponse:
+    try:
+        with account_session(paths) as session:
+            profile = update_agent_profile(
+                session,
+                paths,
+                profile_distribution_directory(),
+                name=request.name,
+                soul=request.soul,
+            )
+            payload = agent_profile_json(
+                profile,
+                paths,
+                profile_distribution_directory(),
+            )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return AgentIdentityResponse.model_validate(payload)
+
+
+@app.get(
+    "/companion/sessions",
+    response_model=ConversationSessionListResponse,
+)
+def list_companion_sessions(
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationSessionListResponse:
+    with account_session(paths) as session:
+        payload = session_list_json(session, paths)
+    _prevent_auth_caching(response)
+    return ConversationSessionListResponse.model_validate(payload)
+
+
+@app.post(
+    "/companion/sessions",
+    response_model=ConversationSessionResponse,
+)
+def create_companion_session(
+    request: ConversationSessionCreateRequest,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationSessionResponse:
+    try:
+        with account_session(paths) as session:
+            conversation = create_conversation_session(
+                session,
+                paths,
+                title=request.title,
+            )
+            payload = session_json(conversation)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return ConversationSessionResponse.model_validate(payload)
+
+
+@app.get(
+    "/companion/sessions/{session_id}",
+    response_model=ConversationSessionResponse,
+)
+def read_companion_session(
+    session_id: str,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationSessionResponse:
+    try:
+        with account_session(paths) as session:
+            conversation = activate_conversation_session(
+                session,
+                paths,
+                session_id,
+            )
+            payload = session_json(conversation)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return ConversationSessionResponse.model_validate(payload)
+
+
+@app.put(
+    "/companion/sessions/{session_id}",
+    response_model=ConversationSessionSummaryResponse,
+)
+def rename_companion_session(
+    session_id: str,
+    request: ConversationSessionRenameRequest,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationSessionSummaryResponse:
+    try:
+        with account_session(paths) as session:
+            conversation = rename_conversation_session(
+                session,
+                session_id,
+                request.title,
+            )
+            payload = session_summary_json(conversation)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return ConversationSessionSummaryResponse.model_validate(payload)
+
+
+@app.delete(
+    "/companion/sessions/{session_id}",
+    response_model=ConversationSessionListResponse,
+)
+def remove_companion_session(
+    session_id: str,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationSessionListResponse:
+    try:
+        with account_session(paths) as session:
+            delete_conversation_session(session, paths, session_id)
+            payload = session_list_json(session, paths)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return ConversationSessionListResponse.model_validate(payload)
+
+
+@app.post(
+    "/companion/sessions/{session_id}/messages",
+    response_model=ConversationMessageResponse,
+)
+def add_companion_session_message(
+    session_id: str,
+    request: ConversationMessageRequest,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationMessageResponse:
+    try:
+        with account_session(paths) as session:
+            conversation = get_conversation_session(session, session_id)
+            message = append_message(
+                session,
+                conversation,
+                role=request.role,
+                content=request.content,
+                report=(request.report.model_dump(mode="json") if request.report else None),
+            )
+            payload = message_json(message)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return ConversationMessageResponse.model_validate(payload)
+
+
+@app.put(
+    "/companion/sessions/{session_id}/context",
+    response_model=ConversationSessionResponse,
+)
+def save_companion_session_context(
+    session_id: str,
+    request: ConversationSessionContextRequest,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> ConversationSessionResponse:
+    try:
+        with account_session(paths) as session:
+            conversation = get_conversation_session(session, session_id)
+            update_session_context(
+                session,
+                conversation,
+                candidate_profile=request.candidate_profile,
+                job_description=request.job_description,
+                uploaded_filename=request.uploaded_filename,
+                match_report=(
+                    request.match_report.model_dump(mode="json")
+                    if request.match_report
+                    else None
+                ),
+            )
+            payload = session_json(conversation)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return ConversationSessionResponse.model_validate(payload)
+
+
 @app.get("/settings/providers", response_model=ProviderSettingsResponse)
 def read_provider_settings(
     response: Response,
@@ -505,9 +768,10 @@ def read_capability_settings(
     response: Response,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
 ) -> CapabilitySettingsResponse:
     _prevent_auth_caching(response)
-    return build_capability_settings(account, store)
+    return build_capability_settings(account, store, paths)
 
 
 @app.put("/settings/capabilities/web-search", response_model=CapabilitySettingsResponse)
@@ -516,6 +780,7 @@ async def connect_web_search(
     response: Response,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[
         HermesRuntimeManager,
         Depends(get_hermes_runtime_manager),
@@ -528,7 +793,7 @@ async def connect_web_search(
     )
     await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
-    return build_capability_settings(account, store)
+    return build_capability_settings(account, store, paths)
 
 
 @app.delete(
@@ -539,6 +804,7 @@ async def disconnect_web_search(
     response: Response,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[
         HermesRuntimeManager,
         Depends(get_hermes_runtime_manager),
@@ -547,7 +813,213 @@ async def disconnect_web_search(
     store.delete_service_credential(account.user_id, WEB_SEARCH_SERVICE)
     await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
-    return build_capability_settings(account, store)
+    return build_capability_settings(account, store, paths)
+
+
+def _agent_asset_settings(paths: CompanionPaths) -> AgentAssetSettingsResponse:
+    payload = list_agent_assets(paths, profile_distribution_directory())
+    return AgentAssetSettingsResponse.model_validate(payload)
+
+
+def _mcp_settings(paths: CompanionPaths) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    with account_session(paths) as session:
+        servers = list_mcp_servers(session, distribution)
+    return MCPSettingsResponse.model_validate({"servers": servers})
+
+
+@app.get(
+    "/settings/agent-resources",
+    response_model=AgentAssetSettingsResponse,
+)
+def read_agent_resources(
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> AgentAssetSettingsResponse:
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.post(
+    "/settings/agent-resources/{kind}",
+    response_model=AgentAssetSettingsResponse,
+)
+async def create_agent_resource(
+    kind: AgentAssetKind,
+    request: AgentAssetRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentAssetSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        save_agent_asset(
+            paths,
+            distribution,
+            kind=kind,
+            name=request.name,
+            content=request.content,
+        )
+        synchronize_managed_profile_assets(paths, distribution)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.put(
+    "/settings/agent-resources/{kind}/{name}",
+    response_model=AgentAssetSettingsResponse,
+)
+async def update_agent_resource(
+    kind: AgentAssetKind,
+    name: str,
+    request: AgentAssetRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentAssetSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        save_agent_asset(
+            paths,
+            distribution,
+            kind=kind,
+            name=request.name,
+            content=request.content,
+            previous_name=name,
+        )
+        synchronize_managed_profile_assets(paths, distribution)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.delete(
+    "/settings/agent-resources/{kind}/{name}",
+    response_model=AgentAssetSettingsResponse,
+)
+async def remove_agent_resource(
+    kind: AgentAssetKind,
+    name: str,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> AgentAssetSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        delete_agent_asset(paths, distribution, kind=kind, name=name)
+        synchronize_managed_profile_assets(paths, distribution)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _agent_asset_settings(paths)
+
+
+@app.get("/settings/mcp", response_model=MCPSettingsResponse)
+def read_mcp_settings(
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> MCPSettingsResponse:
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
+
+
+@app.post("/settings/mcp", response_model=MCPSettingsResponse)
+async def create_mcp_setting(
+    request: MCPServerSettingsRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    with account_session(paths) as session:
+        ensure_default_mcp_servers(session, distribution)
+        if session.get(MCPServerRecord, request.name) is not None:
+            raise HTTPException(status_code=409, detail="An MCP server with that name already exists")
+        upsert_mcp_server(session, request.model_dump(mode="json"))
+    try:
+        synchronize_mcp_profile_config(paths, distribution)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
+
+
+@app.put("/settings/mcp/{name}", response_model=MCPSettingsResponse)
+async def update_mcp_setting(
+    name: str,
+    request: MCPServerSettingsRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    if name == "linkedin-search" and request.name != name:
+        raise HTTPException(status_code=400, detail="The LinkedIn preset cannot be renamed")
+    try:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, distribution)
+            upsert_mcp_server(
+                session,
+                request.model_dump(mode="json"),
+                previous_name=name,
+            )
+        synchronize_mcp_profile_config(paths, distribution)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
+
+
+@app.delete("/settings/mcp/{name}", response_model=MCPSettingsResponse)
+async def remove_mcp_setting(
+    name: str,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
+) -> MCPSettingsResponse:
+    distribution = profile_distribution_directory()
+    try:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, distribution)
+            delete_mcp_server(session, name)
+        synchronize_mcp_profile_config(paths, distribution)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await runtime.invalidate(account.user_id)
+    _prevent_auth_caching(response)
+    return _mcp_settings(paths)
 
 
 @app.get("/settings/agent", response_model=AgentSettingsResponse)
@@ -817,9 +1289,65 @@ def create_match(
 def create_companion_reply(
     request: CompanionChatRequest,
     companion: Annotated[CompanionFunction, Depends(get_companion)],
+    paths: Annotated[CompanionPaths, Depends(get_companion_paths)],
 ) -> CompanionChatResponse:
     try:
-        return companion(request)
+        with account_session(paths) as session:
+            conversation = (
+                get_conversation_session(session, request.session_id)
+                if request.session_id
+                else ensure_active_session(session, paths)
+            )
+            history = conversation_turns(conversation)
+            if (
+                request.candidate_profile is not None
+                or request.job_description is not None
+                or request.match_report is not None
+            ):
+                update_session_context(
+                    session,
+                    conversation,
+                    candidate_profile=request.candidate_profile or conversation.candidate_profile,
+                    job_description=request.job_description or conversation.job_description,
+                    uploaded_filename=conversation.uploaded_filename,
+                    match_report=(
+                        request.match_report.model_dump(mode="json")
+                        if request.match_report
+                        else conversation.match_report
+                    ),
+                )
+            append_message(
+                session,
+                conversation,
+                role="user",
+                content=request.message,
+            )
+            effective_request = request.model_copy(
+                update={
+                    "session_id": conversation.id,
+                    "conversation": [CompanionTurn.model_validate(turn) for turn in history],
+                    "candidate_profile": conversation.candidate_profile,
+                    "job_description": conversation.job_description,
+                    "match_report": (
+                        MatchResponse.model_validate(conversation.match_report)
+                        if conversation.match_report
+                        else None
+                    ),
+                }
+            )
+            session_id = conversation.id
+        reply = companion(effective_request)
+        with account_session(paths) as session:
+            conversation = get_conversation_session(session, session_id)
+            append_message(
+                session,
+                conversation,
+                role="assistant",
+                content=reply.message,
+            )
+        return reply
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CompanionError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -832,11 +1360,68 @@ async def stream_companion_reply(
     request: CompanionChatRequest,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_companion_paths)],
     runtime: Annotated[
         HermesRuntimeManager,
         Depends(get_hermes_runtime_manager),
     ],
 ) -> StreamingResponse:
+    try:
+        with account_session(paths) as session:
+            conversation = (
+                get_conversation_session(session, request.session_id)
+                if request.session_id
+                else ensure_active_session(session, paths)
+            )
+            history = conversation_turns(conversation)
+            if (
+                request.candidate_profile is not None
+                or request.job_description is not None
+                or request.match_report is not None
+            ):
+                update_session_context(
+                    session,
+                    conversation,
+                    candidate_profile=(
+                        request.candidate_profile
+                        if request.candidate_profile is not None
+                        else conversation.candidate_profile
+                    ),
+                    job_description=(
+                        request.job_description
+                        if request.job_description is not None
+                        else conversation.job_description
+                    ),
+                    uploaded_filename=conversation.uploaded_filename,
+                    match_report=(
+                        request.match_report.model_dump(mode="json")
+                        if request.match_report is not None
+                        else conversation.match_report
+                    ),
+                )
+            append_message(
+                session,
+                conversation,
+                role="user",
+                content=request.message,
+            )
+            session_id = conversation.id
+            effective_request = request.model_copy(
+                update={
+                    "session_id": session_id,
+                    "conversation": [CompanionTurn.model_validate(turn) for turn in history],
+                    "candidate_profile": conversation.candidate_profile,
+                    "job_description": conversation.job_description,
+                    "match_report": (
+                        MatchResponse.model_validate(conversation.match_report)
+                        if conversation.match_report
+                        else None
+                    ),
+                }
+            )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     try:
         prepared = await runtime.prepare(account, store)
     except HermesProviderConfigurationError as exc:
@@ -850,16 +1435,59 @@ async def stream_companion_reply(
             detail=str(exc),
         ) from exc
 
-    payload = build_hermes_run_payload(request, model=prepared.model)
-    session_key = f"career-companion:web:{prepared.account_key}"
+    payload = build_hermes_run_payload(effective_request, model=prepared.model)
+    session_key = f"career-companion:web:{prepared.account_key}:{session_id}"
 
     async def events() -> AsyncIterator[bytes]:
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        event_buffer = ""
+        assistant_text = ""
+        completed = False
+
+        def consume_event_block(block: str) -> None:
+            nonlocal assistant_text, completed
+            data = "\n".join(
+                line[5:].lstrip()
+                for line in block.splitlines()
+                if line.startswith("data:")
+            )
+            if not data:
+                return
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                return
+            if not isinstance(event, dict):
+                return
+            if event.get("event") == "message.delta" and isinstance(
+                event.get("delta"), str
+            ):
+                assistant_text += event["delta"]
+            elif event.get("event") == "run.completed":
+                completed = True
+                if isinstance(event.get("output"), str) and event["output"].strip():
+                    assistant_text = event["output"]
+
+        def consume_available_blocks(*, final: bool = False) -> None:
+            nonlocal event_buffer
+            while True:
+                separator = re.search(r"\r?\n\r?\n", event_buffer)
+                if separator is None:
+                    break
+                consume_event_block(event_buffer[: separator.start()])
+                event_buffer = event_buffer[separator.end() :]
+            if final and event_buffer.strip():
+                consume_event_block(event_buffer)
+                event_buffer = ""
+
         try:
             async for chunk in prepared.supervisor.proxy_stream(
                 "/v1/runs",
                 payload,
                 session_key=session_key,
             ):
+                event_buffer += decoder.decode(chunk)
+                consume_available_blocks()
                 yield chunk
         except httpx.HTTPError:
             failure = {
@@ -868,6 +1496,20 @@ async def stream_companion_reply(
             }
             yield f"data: {json.dumps(failure)}\n\n".encode("utf-8")
         finally:
+            event_buffer += decoder.decode(b"", final=True)
+            consume_available_blocks(final=True)
+            if completed and assistant_text.strip():
+                try:
+                    with account_session(paths) as session:
+                        conversation = get_conversation_session(session, session_id)
+                        append_message(
+                            session,
+                            conversation,
+                            role="assistant",
+                            content=assistant_text,
+                        )
+                except (LookupError, ValueError):
+                    pass
             try:
                 refreshed = await runtime.capture_refreshed_codex_credentials(
                     account.user_id
@@ -897,18 +1539,29 @@ async def resolve_companion_run_approval(
     request: CompanionApprovalRequest,
     account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
     store: Annotated[AuthStore, Depends(get_store)],
+    paths: Annotated[CompanionPaths, Depends(get_companion_paths)],
     runtime: Annotated[
         HermesRuntimeManager,
         Depends(get_hermes_runtime_manager),
     ],
 ) -> dict[str, object]:
     try:
+        with account_session(paths) as session:
+            conversation = (
+                get_conversation_session(session, request.session_id)
+                if request.session_id
+                else ensure_active_session(session, paths)
+            )
         prepared = await runtime.prepare(account, store)
         return await prepared.supervisor.resolve_run_approval(
             run_id,
             request.choice,
-            session_key=f"career-companion:web:{prepared.account_key}",
+            session_key=(
+                f"career-companion:web:{prepared.account_key}:{conversation.id}"
+            ),
         )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HermesProviderConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

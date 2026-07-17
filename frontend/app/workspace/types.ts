@@ -17,16 +17,41 @@ export interface ProfileClaim {
   user_verified_at?: string;
 }
 
+export interface ProjectAnalysis {
+  source: "local" | "github";
+  repository_name: string;
+  analyzed_at: string;
+  file_count: number;
+  primary_languages: string[];
+  technologies: string[];
+  notable_files: string[];
+  improvement_suggestions: string[];
+  interview_questions: string[];
+  summary: string;
+}
+
+export interface ProfileProject {
+  id: string;
+  name: string;
+  description: string;
+  repository_url?: string;
+  local_path: string;
+  technologies: string[];
+  highlights: string[];
+  analysis?: ProjectAnalysis;
+}
+
 export interface CandidateProfile {
   id?: string;
   display_name: string;
-  headline: string;
+  seniority: string;
   email: string;
   phone: string;
   claims: ProfileClaim[];
   target_roles: string[];
   preferred_locations: string[];
   languages: string[];
+  projects: ProfileProject[];
   work_authorization: ProfileClaim[];
   source_documents: string[];
   updated_at?: string;
@@ -43,6 +68,21 @@ export interface Job {
     company: string;
     locations: string[];
     description: string;
+    employment_type?: string;
+    workplace_type?: "onsite" | "hybrid" | "remote" | "unknown";
+    company_size?:
+      | "1-10"
+      | "11-50"
+      | "51-200"
+      | "201-500"
+      | "501-1000"
+      | "1001-5000"
+      | "5001-10000"
+      | "10001+"
+      | "unknown";
+    posted_date?: string;
+    deadline?: string;
+    source_url?: string;
   };
   score?: number;
   tier?: string;
@@ -72,6 +112,8 @@ export interface Application {
     note: string;
     created_at: string;
   }>;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface ModelRoute {

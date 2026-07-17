@@ -7,9 +7,14 @@ import { useRouter } from "next/navigation";
 import { explainApproval, type ApprovalRequest } from "./approval-explanation";
 import { ResultView } from "./result-view";
 import type {
+  AgentIdentity,
   AgentSettingsResponse,
   AuthSessionResponse,
   AuthUser,
+  ConversationMessage,
+  ConversationSession,
+  ConversationSessionList,
+  ConversationSessionSummary,
   MatchResponse,
   ParsedCVResponse,
   ReasoningEffort,
@@ -25,9 +30,10 @@ const SAMPLE_PROFILE = `AI engineer with 4 years of Python experience. Built ret
 const SAMPLE_JOB = `We are hiring a Senior AI Engineer to build production generative AI products. Required: strong Python, hands-on RAG architecture, vector database experience, API development, and systematic LLM evaluation. You should be comfortable owning services in production and communicating technical decisions. Preferred: Kubernetes, Azure, LangGraph, and experience mentoring engineers.`;
 
 type EditorKind = "profile" | "role";
+type IdentityEditorView = "guided" | "markdown";
 
 interface ChatMessage {
-  id: number;
+  id: string;
   role: "user" | "assistant";
   content: string;
   suggestions?: string[];
@@ -84,10 +90,10 @@ function Icon({ name, size = 18 }: IconProps) {
   );
 }
 
-function AgentAvatar({ small = false }: { small?: boolean }) {
+function AgentAvatar({ name, small = false }: { name: string; small?: boolean }) {
   return (
     <span className={`pilot-avatar${small ? " pilot-avatar-small" : ""}`} aria-hidden="true">
-      <span>P</span>
+      <span>{name.trim().charAt(0).toUpperCase() || "P"}</span>
       <i />
     </span>
   );
@@ -131,7 +137,7 @@ function ApprovalCard({
   );
 }
 
-function MatchBrief({ report, reportId }: { report: MatchResponse; reportId: number }) {
+function MatchBrief({ report, reportId }: { report: MatchResponse; reportId: string }) {
   const strongest = report.matched_skills.slice(0, 3);
   const gaps = report.missing_skills.slice(0, 3);
   const nextAction = [...report.preparation_actions].sort(
@@ -220,6 +226,9 @@ export default function Home() {
   const router = useRouter();
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [agentIdentity, setAgentIdentity] = useState<AgentIdentity | null>(null);
+  const [sessions, setSessions] = useState<ConversationSessionSummary[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [candidateProfile, setCandidateProfile] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [uploadedFilename, setUploadedFilename] = useState<string | null>(null);
@@ -242,39 +251,145 @@ export default function Home() {
   const [isParsingCV, setIsParsingCV] = useState(false);
   const [editor, setEditor] = useState<EditorKind | null>(null);
   const [editorDraft, setEditorDraft] = useState("");
+  const [identityEditorOpen, setIdentityEditorOpen] = useState(false);
+  const [identityEditorView, setIdentityEditorView] = useState<IdentityEditorView>("guided");
+  const [identityNameDraft, setIdentityNameDraft] = useState("");
+  const [identitySoulDraft, setIdentitySoulDraft] = useState("");
+  const [identityEditorError, setIdentityEditorError] = useState<string | null>(null);
+  const [identityEditorStatus, setIdentityEditorStatus] = useState<string | null>(null);
+  const [isSavingIdentity, setIsSavingIdentity] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageIdRef = useRef(1);
   const conversationEndRef = useRef<HTMLDivElement>(null);
+  const agentName = agentIdentity?.name ?? "Pilot";
+  const identityDirty = Boolean(
+    agentIdentity
+    && (
+      agentIdentity.name !== identityNameDraft.trim()
+      || agentIdentity.soul !== identitySoulDraft.trim()
+    ),
+  );
 
   function nextMessage(
     role: ChatMessage["role"],
     content: string,
     extra: Partial<Pick<ChatMessage, "suggestions" | "report">> = {},
   ): ChatMessage {
-    return { id: messageIdRef.current++, role, content, ...extra };
+    return { id: `local-${messageIdRef.current++}`, role, content, ...extra };
   }
 
-  const openWorkspace = useCallback((user: AuthUser) => {
-    setAuthUser(user);
-    setMessages((current) => {
-      if (current.length) return current;
-      return [{
-        id: messageIdRef.current++,
-        role: "assistant",
-        content: "Hey—I’m Pilot. I’m here to make the job search feel less like something you have to carry alone.\n\nBring me a direction, a role, or just the part that feels stuck. We’ll take it one honest next step at a time.",
-      }];
-    });
-    setSuggestions(["Load the demo workspace", "Add my career profile", "Help me choose a target role"]);
+  const applyConversation = useCallback((conversation: ConversationSession) => {
+    setActiveSessionId(conversation.id);
+    setMessages(conversation.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      report: message.report ?? undefined,
+    })));
+    setCandidateProfile(conversation.candidate_profile ?? "");
+    setJobDescription(conversation.job_description ?? "");
+    setUploadedFilename(conversation.uploaded_filename);
+    setReport(conversation.match_report);
+    setSuggestions(conversation.messages.length <= 1
+      ? ["Load the demo workspace", "Add my career profile", "Help me choose a target role"]
+      : []);
+    setPendingApproval(null);
+    setContextUsage(null);
+    setError(null);
   }, []);
+
+  const refreshSessionList = useCallback(async (): Promise<ConversationSessionList> => {
+    const response = await fetch(`${API_BASE_URL}/companion/sessions`, {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(await readApiError(response, "Sessions could not load."));
+    const payload = (await response.json()) as ConversationSessionList;
+    setSessions(payload.sessions);
+    return payload;
+  }, []);
+
+  const refreshIdentity = useCallback(async (): Promise<AgentIdentity> => {
+    const response = await fetch(`${API_BASE_URL}/settings/agent-identity`, {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Your agent identity could not load."));
+    }
+    const identity = (await response.json()) as AgentIdentity;
+    setAgentIdentity(identity);
+    return identity;
+  }, []);
+
+  function openIdentityEditor(view: IdentityEditorView = "guided") {
+    if (!agentIdentity) return;
+    setIdentityNameDraft(agentIdentity.name);
+    setIdentitySoulDraft(agentIdentity.soul);
+    setIdentityEditorView(view);
+    setIdentityEditorError(null);
+    setIdentityEditorStatus(null);
+    setIdentityEditorOpen(true);
+  }
+
+  async function saveAgentIdentity() {
+    const name = identityNameDraft.trim();
+    if (!name || !identityDirty || isSavingIdentity) return;
+    setIsSavingIdentity(true);
+    setIdentityEditorError(null);
+    setIdentityEditorStatus(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/settings/agent-identity`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, soul: identitySoulDraft }),
+      });
+      if (!response.ok) {
+        if (response.status === 401) setAuthUser(null);
+        throw new Error(await readApiError(response, "Your agent identity could not be saved."));
+      }
+      const identity = (await response.json()) as AgentIdentity;
+      setAgentIdentity(identity);
+      setIdentityNameDraft(identity.name);
+      setIdentitySoulDraft(identity.soul);
+      setIdentityEditorStatus(`${identity.name} will use this identity in every session.`);
+    } catch (caughtError) {
+      setIdentityEditorError(
+        caughtError instanceof Error ? caughtError.message : "Your agent identity could not be saved.",
+      );
+    } finally {
+      setIsSavingIdentity(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
     async function restoreSession() {
       try {
-        const response = await fetch(`${API_BASE_URL}/local/session`);
+        const response = await fetch(`${API_BASE_URL}/local/session`, { cache: "no-store" });
         if (!response.ok) return;
         const payload = (await response.json()) as AuthSessionResponse;
-        if (active && payload.authenticated && payload.user) openWorkspace(payload.user);
+        if (!active || !payload.authenticated || !payload.user) return;
+        setAuthUser(payload.user);
+        const [sessionListResponse, identityResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/companion/sessions`, { credentials: "include", cache: "no-store" }),
+          fetch(`${API_BASE_URL}/settings/agent-identity`, { credentials: "include", cache: "no-store" }),
+        ]);
+        if (!sessionListResponse.ok || !identityResponse.ok) {
+          throw new Error("Your local companion state could not be restored.");
+        }
+        const sessionList = (await sessionListResponse.json()) as ConversationSessionList;
+        const identity = (await identityResponse.json()) as AgentIdentity;
+        const conversationResponse = await fetch(
+          `${API_BASE_URL}/companion/sessions/${encodeURIComponent(sessionList.active_session_id)}`,
+          { credentials: "include", cache: "no-store" },
+        );
+        if (!conversationResponse.ok) throw new Error("The active session could not be restored.");
+        if (!active) return;
+        setSessions(sessionList.sessions);
+        setAgentIdentity(identity);
+        applyConversation((await conversationResponse.json()) as ConversationSession);
       } catch {
         if (active) setAuthUser(null);
       } finally {
@@ -283,7 +398,7 @@ export default function Home() {
     }
     void restoreSession();
     return () => { active = false; };
-  }, [openWorkspace]);
+  }, [applyConversation]);
 
   useEffect(() => {
     if (!isCheckingSession && authUser && !authUser.active_provider) router.replace("/settings");
@@ -322,41 +437,187 @@ export default function Home() {
     conversationEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isChatting, isAnalyzing, chatActivity, pendingApproval]);
 
+  async function appendStoredMessage(
+    role: ChatMessage["role"],
+    content: string,
+    messageReport?: MatchResponse,
+  ): Promise<ChatMessage> {
+    if (!activeSessionId) throw new Error("No active session is available.");
+    const response = await fetch(
+      `${API_BASE_URL}/companion/sessions/${encodeURIComponent(activeSessionId)}/messages`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role, content, report: messageReport ?? null }),
+      },
+    );
+    if (!response.ok) throw new Error(await readApiError(response, "The session message could not be saved."));
+    const message = (await response.json()) as ConversationMessage;
+    void refreshSessionList().catch(() => undefined);
+    return {
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      report: message.report ?? undefined,
+    };
+  }
+
+  async function persistContext(next: {
+    candidateProfile: string;
+    jobDescription: string;
+    uploadedFilename: string | null;
+    report: MatchResponse | null;
+  }): Promise<void> {
+    if (!activeSessionId) throw new Error("No active session is available.");
+    const response = await fetch(
+      `${API_BASE_URL}/companion/sessions/${encodeURIComponent(activeSessionId)}/context`,
+      {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidate_profile: next.candidateProfile || null,
+          job_description: next.jobDescription || null,
+          uploaded_filename: next.uploadedFilename,
+          match_report: next.report,
+        }),
+      },
+    );
+    if (!response.ok) throw new Error(await readApiError(response, "Session context could not be saved."));
+    void refreshSessionList().catch(() => undefined);
+  }
+
+  async function createSession() {
+    if (isChatting || isAnalyzing) return;
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/companion/sessions`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "A new session could not be created."));
+      applyConversation((await response.json()) as ConversationSession);
+      await refreshSessionList();
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "A new session could not be created.");
+    }
+  }
+
+  async function selectSession(sessionId: string) {
+    if (sessionId === activeSessionId || isChatting || isAnalyzing) return;
+    setError(null);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/companion/sessions/${encodeURIComponent(sessionId)}`,
+        { credentials: "include", cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(await readApiError(response, "The session could not be opened."));
+      applyConversation((await response.json()) as ConversationSession);
+      await refreshSessionList();
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "The session could not be opened.");
+    }
+  }
+
+  async function renameSession(session: ConversationSessionSummary) {
+    const title = window.prompt("Rename this session", session.title)?.trim();
+    if (!title || title === session.title) return;
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/companion/sessions/${encodeURIComponent(session.id)}`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        },
+      );
+      if (!response.ok) throw new Error(await readApiError(response, "The session could not be renamed."));
+      await refreshSessionList();
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "The session could not be renamed.");
+    }
+  }
+
+  async function removeSession(session: ConversationSessionSummary) {
+    if (isChatting || isAnalyzing || !window.confirm(`Delete “${session.title}” and all of its messages?`)) return;
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/companion/sessions/${encodeURIComponent(session.id)}`,
+        { method: "DELETE", credentials: "include" },
+      );
+      if (!response.ok) throw new Error(await readApiError(response, "The session could not be deleted."));
+      const payload = (await response.json()) as ConversationSessionList;
+      setSessions(payload.sessions);
+      const activeResponse = await fetch(
+        `${API_BASE_URL}/companion/sessions/${encodeURIComponent(payload.active_session_id)}`,
+        { credentials: "include", cache: "no-store" },
+      );
+      if (!activeResponse.ok) throw new Error("The replacement session could not be opened.");
+      applyConversation((await activeResponse.json()) as ConversationSession);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "The session could not be deleted.");
+    }
+  }
+
   function openEditor(kind: EditorKind) {
     setEditor(kind);
     setEditorDraft(kind === "profile" ? candidateProfile : jobDescription);
     setError(null);
   }
 
-  function saveEditor() {
+  async function saveEditor() {
     if (editorDraft.trim().length < 10 || !editor) {
       setError("Add a little more detail before saving this to Pilot’s working memory.");
       return;
     }
-    if (editor === "profile") {
-      setCandidateProfile(editorDraft.trim());
-      setUploadedFilename(null);
-      setMessages((current) => [...current, nextMessage("assistant", "Got it—I’ve added your career evidence to our working memory. I’ll use it to keep our next steps specific and honest.")]);
-      setSuggestions(jobDescription ? ["Run the fit check", "What stands out in my profile?"] : ["Add a target role", "What stands out in my profile?"]);
-    } else {
-      setJobDescription(editorDraft.trim());
-      setMessages((current) => [...current, nextMessage("assistant", "I’ve got the role. We can unpack what it really asks for, or compare it with your evidence when you’re ready.")]);
-      setSuggestions(candidateProfile ? ["Run the fit check", "What does this role value most?"] : ["Add my career profile", "What does this role value most?"]);
+    const nextProfile = editor === "profile" ? editorDraft.trim() : candidateProfile;
+    const nextRole = editor === "role" ? editorDraft.trim() : jobDescription;
+    const confirmation = editor === "profile"
+      ? "Got it—I’ve added your career evidence to our working memory. I’ll use it to keep our next steps specific and honest."
+      : "I’ve got the role. We can unpack what it really asks for, or compare it with your evidence when you’re ready.";
+    try {
+      await persistContext({
+        candidateProfile: nextProfile,
+        jobDescription: nextRole,
+        uploadedFilename: editor === "profile" ? null : uploadedFilename,
+        report: null,
+      });
+      const storedMessage = await appendStoredMessage("assistant", confirmation);
+      setCandidateProfile(nextProfile);
+      setJobDescription(nextRole);
+      if (editor === "profile") setUploadedFilename(null);
+      setMessages((current) => [...current, storedMessage]);
+      setSuggestions(editor === "profile"
+        ? nextRole ? ["Run the fit check", "What stands out in my profile?"] : ["Add a target role", "What stands out in my profile?"]
+        : nextProfile ? ["Run the fit check", "What does this role value most?"] : ["Add my career profile", "What does this role value most?"]);
+      setEditor(null);
+      setEditorDraft("");
+      setReport(null);
+      setError(null);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Working memory could not be saved.");
     }
-    setEditor(null);
-    setEditorDraft("");
-    setReport(null);
-    setError(null);
   }
 
-  function loadDemo() {
-    setCandidateProfile(SAMPLE_PROFILE);
-    setJobDescription(SAMPLE_JOB);
-    setUploadedFilename("demo-profile.txt");
-    setReport(null);
-    setMessages((current) => [...current, nextMessage("assistant", "Demo workspace loaded. I now have a real candidate profile and a Senior AI Engineer role in working memory. This is where the experience starts to feel like a partnership: you bring the context, and I help us decide what matters next.")]);
-    setSuggestions(["Run the fit check", "What does this role value most?", "How should we position this profile?"]);
-    setError(null);
+  async function loadDemo() {
+    const confirmation = "Demo workspace loaded. I now have a real candidate profile and a Senior AI Engineer role in working memory. This is where the experience starts to feel like a partnership: you bring the context, and I help us decide what matters next.";
+    try {
+      await persistContext({ candidateProfile: SAMPLE_PROFILE, jobDescription: SAMPLE_JOB, uploadedFilename: "demo-profile.txt", report: null });
+      const storedMessage = await appendStoredMessage("assistant", confirmation);
+      setCandidateProfile(SAMPLE_PROFILE);
+      setJobDescription(SAMPLE_JOB);
+      setUploadedFilename("demo-profile.txt");
+      setReport(null);
+      setMessages((current) => [...current, storedMessage]);
+      setSuggestions(["Run the fit check", "What does this role value most?", "How should we position this profile?"]);
+      setError(null);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "The demo workspace could not be saved.");
+    }
   }
 
   function chooseAgentModel(model: string) {
@@ -435,12 +696,20 @@ export default function Home() {
         throw new Error(await readApiError(response, "I couldn’t read that CV."));
       }
       const parsed = (await response.json()) as ParsedCVResponse;
+      const confirmation = `I’ve read ${parsed.filename} and added its ${parsed.character_count.toLocaleString()} characters to our working memory. Give it a quick review whenever you like—then we can put it next to a role.`;
+      await persistContext({
+        candidateProfile: parsed.text,
+        jobDescription,
+        uploadedFilename: parsed.filename,
+        report: null,
+      });
+      const storedMessage = await appendStoredMessage("assistant", confirmation);
       setCandidateProfile(parsed.text);
       setEditorDraft(parsed.text);
       setUploadedFilename(parsed.filename);
       setEditor(null);
       setReport(null);
-      setMessages((current) => [...current, nextMessage("assistant", `I’ve read ${parsed.filename} and added its ${parsed.character_count.toLocaleString()} characters to our working memory. Give it a quick review whenever you like—then we can put it next to a role.`)]);
+      setMessages((current) => [...current, storedMessage]);
       setSuggestions(jobDescription ? ["Run the fit check", "Review my strongest evidence"] : ["Add a target role", "Review my strongest evidence"]);
     } catch (caughtError) {
       const message = caughtError instanceof DOMException && caughtError.name === "AbortError"
@@ -456,8 +725,7 @@ export default function Home() {
 
   async function sendChat(content: string) {
     const message = content.trim();
-    if (!message || isChatting || isAnalyzing) return;
-    const history = messages.slice(-10).map(({ role, content: turnContent }) => ({ role, content: turnContent }));
+    if (!message || !activeSessionId || isChatting || isAnalyzing) return;
     setMessages((current) => [...current, nextMessage("user", message)]);
     setDraft("");
     setSuggestions([]);
@@ -471,11 +739,8 @@ export default function Home() {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          session_id: activeSessionId,
           message,
-          conversation: history,
-          candidate_profile: candidateProfile || null,
-          job_description: jobDescription || null,
-          match_report: report,
         }),
       });
       if (!response.ok) {
@@ -487,7 +752,7 @@ export default function Home() {
         throw new Error("Pilot opened a session but could not stream its reply.");
       }
 
-      const assistantId = messageIdRef.current++;
+      const assistantId = `local-${messageIdRef.current++}`;
       let assistantStarted = false;
       let assistantText = "";
       let completed = false;
@@ -604,6 +869,7 @@ export default function Home() {
           ? ["What should we do next?", "Help me prepare for this role"]
           : ["Help me choose a target role", "What should we do next?"],
       );
+      await Promise.allSettled([refreshSessionList(), refreshIdentity()]);
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : "Pilot couldn’t answer just now.";
       setError(message === "Failed to fetch" ? "Pilot couldn’t reach the API. Check that the backend is running." : message);
@@ -626,7 +892,7 @@ export default function Home() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ choice }),
+          body: JSON.stringify({ choice, session_id: activeSessionId }),
         },
       );
       if (!response.ok) {
@@ -642,7 +908,7 @@ export default function Home() {
   }
 
   async function runAnalysis() {
-    if (isAnalyzing || isChatting) return;
+    if (!activeSessionId || isAnalyzing || isChatting) return;
     if (!candidateProfile) {
       openEditor("profile");
       setError("First, give Pilot a profile or CV to work from.");
@@ -653,13 +919,14 @@ export default function Home() {
       setError("Add a target role so Pilot has something concrete to compare.");
       return;
     }
-    setMessages((current) => [...current, nextMessage("user", "Run a grounded fit check for this role.")]);
     setSuggestions([]);
     setError(null);
     setIsAnalyzing(true);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 120_000);
     try {
+      const userMessage = await appendStoredMessage("user", "Run a grounded fit check for this role.");
+      setMessages((current) => [...current, userMessage]);
       const response = await fetch(`${API_BASE_URL}/match`, {
         method: "POST",
         credentials: "include",
@@ -672,12 +939,11 @@ export default function Home() {
         throw new Error(await readApiError(response, "The fit check couldn’t be completed."));
       }
       const match = (await response.json()) as MatchResponse;
+      const summary = "I’ve finished the evidence check. Here’s my honest read—not just where you match, but where we should be careful and what I’d do next.";
+      await persistContext({ candidateProfile, jobDescription, uploadedFilename, report: match });
+      const assistantMessage = await appendStoredMessage("assistant", summary, match);
       setReport(match);
-      setMessages((current) => [...current, nextMessage(
-        "assistant",
-        "I’ve finished the evidence check. Here’s my honest read—not just where you match, but where we should be careful and what I’d do next.",
-        { report: match },
-      )]);
+      setMessages((current) => [...current, assistantMessage]);
       setSuggestions(["Help me act on the first gap", "Prepare me for an interview", "How should I position my strengths?"]);
     } catch (caughtError) {
       const message = caughtError instanceof DOMException && caughtError.name === "AbortError"
@@ -725,6 +991,7 @@ export default function Home() {
   }
 
   const memoryCount = Number(Boolean(candidateProfile)) + Number(Boolean(jobDescription));
+  const activeSession = sessions.find((session) => session.id === activeSessionId) ?? null;
   const profileSummary = uploadedFilename ?? (candidateProfile ? `${candidateProfile.length.toLocaleString()} characters of evidence` : "Add a CV or tell Pilot about your work");
   const roleSummary = jobDescription ? jobDescription.split(/[.!?]/)[0].slice(0, 92) : "Paste a role you are considering";
   const selectedModel = agentSettings?.models.find((item) => item.model === agentSettings.model) ?? null;
@@ -751,12 +1018,37 @@ export default function Home() {
 
       <aside className="pilot-left-rail">
         <a className="pilot-brand" href="#conversation" aria-label="CareerPilot home"><span>CP</span><strong>CareerPilot</strong></a>
-        <div className="pilot-agent-card"><AgentAvatar /><div><strong>Pilot</strong><span><i /> Your career companion</span></div></div>
+        <button
+          className="pilot-agent-card"
+          type="button"
+          onClick={() => openIdentityEditor()}
+          aria-haspopup="dialog"
+          title={`Edit ${agentName}’s identity and SOUL.md`}
+        >
+          <AgentAvatar name={agentName} />
+          <div><strong>{agentName}</strong><span><i /> Your career companion</span><small>Identity &amp; SOUL.md</small></div>
+        </button>
         <nav className="pilot-nav" aria-label="CareerPilot sections">
           <button className="is-active" type="button"><Icon name="home" /><span>Today</span></button>
           <Link href="/workspace"><Icon name="briefcase" /><span>Workspace</span></Link>
           <button type="button" disabled><Icon name="spark" /><span>Interview practice</span><small>Soon</small></button>
         </nav>
+        <section className="pilot-sessions" aria-label="Conversation sessions">
+          <div className="pilot-sessions-heading"><span>Sessions</span><button onClick={() => void createSession()} type="button" title="New session">+</button></div>
+          <div className="pilot-session-list">
+            {sessions.map((session) => (
+              <div className={session.id === activeSessionId ? "pilot-session-row is-active" : "pilot-session-row"} key={session.id}>
+                <button className="pilot-session-open" disabled={isChatting || isAnalyzing} onClick={() => void selectSession(session.id)} type="button">
+                  <strong>{session.title}</strong><small>{session.message_count} messages</small>
+                </button>
+                <div className="pilot-session-actions">
+                  <button onClick={() => void renameSession(session)} title="Rename session" type="button">✎</button>
+                  <button onClick={() => void removeSession(session)} title="Delete session" type="button">×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
         <div className="pilot-left-bottom">
           <p><Icon name="spark" size={15} /> One thoughtful step is still progress.</p>
           <div className="pilot-account">
@@ -769,9 +1061,18 @@ export default function Home() {
 
       <section className="pilot-conversation" id="conversation">
         <header className="pilot-conversation-header">
-          <div><span>Today with Pilot</span><h1>Good to see you.</h1></div>
+          <div><span>{activeSession?.title ?? `Today with ${agentName}`}</span><h1>Good to see you.</h1></div>
+          <div className="pilot-compact-sessions">
+            <select aria-label="Active session" disabled={isChatting || isAnalyzing} onChange={(event) => void selectSession(event.target.value)} value={activeSessionId ?? ""}>
+              {sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
+            </select>
+            <button onClick={() => void createSession()} title="New session" type="button">+</button>
+            {activeSession ? <button onClick={() => void renameSession(activeSession)} title="Rename session" type="button">✎</button> : null}
+            {activeSession ? <button onClick={() => void removeSession(activeSession)} title="Delete session" type="button">×</button> : null}
+          </div>
           <div className="pilot-header-actions">
-            <button type="button" onClick={loadDemo}>Load demo</button>
+            <button className="pilot-identity-shortcut" type="button" onClick={() => openIdentityEditor()} title={`Open ${agentName}’s identity`}><Icon name="spark" size={17} /><span>SOUL</span></button>
+            <button type="button" onClick={() => void loadDemo()}>Load demo</button>
             <Link href="/workspace"><Icon name="briefcase" size={17} /><span>Workspace</span></Link>
             <Link href="/settings"><Icon name="settings" size={17} /><span>Settings</span></Link>
           </div>
@@ -781,9 +1082,9 @@ export default function Home() {
           <div className="pilot-day-divider"><span>Today</span></div>
           {messages.map((message, index) => (
             <article className={`pilot-message pilot-message-${message.role}`} key={message.id}>
-              {message.role === "assistant" ? <AgentAvatar small /> : null}
+              {message.role === "assistant" ? <AgentAvatar name={agentName} small /> : null}
               <div className="pilot-message-stack">
-                <span className="pilot-message-author">{message.role === "assistant" ? "Pilot" : "You"}</span>
+                <span className="pilot-message-author">{message.role === "assistant" ? agentName : "You"}</span>
                 <div className="pilot-message-bubble">{message.content}</div>
                 {message.report ? <MatchBrief report={message.report} reportId={message.id} /> : null}
                 {message.role === "assistant" && index === messages.length - 1 && suggestions.length ? (
@@ -797,16 +1098,16 @@ export default function Home() {
 
           {isAnalyzing || (isChatting && chatActivity) ? (
             <article className="pilot-message pilot-message-assistant pilot-thinking" aria-live="polite">
-              <AgentAvatar small />
-              <div className="pilot-message-stack"><span className="pilot-message-author">Pilot</span><div className="pilot-message-bubble"><span /><span /><span /> {isAnalyzing ? "Checking every claim against your evidence…" : chatActivity}</div></div>
+              <AgentAvatar name={agentName} small />
+              <div className="pilot-message-stack"><span className="pilot-message-author">{agentName}</span><div className="pilot-message-bubble"><span /><span /><span /> {isAnalyzing ? "Checking every claim against your evidence…" : chatActivity}</div></div>
             </article>
           ) : null}
 
           {pendingApproval ? (
             <article className="pilot-message pilot-message-assistant" aria-live="polite">
-              <AgentAvatar small />
+              <AgentAvatar name={agentName} small />
               <div className="pilot-message-stack">
-                <span className="pilot-message-author">Pilot needs your approval</span>
+                <span className="pilot-message-author">{agentName} needs your approval</span>
                 <ApprovalCard
                   approval={pendingApproval}
                   isResolving={isResolvingApproval}
@@ -822,7 +1123,7 @@ export default function Home() {
 
         <div className="pilot-composer-wrap">
           <form className="pilot-composer" onSubmit={handleSubmit}>
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder="Ask Pilot to research, create, analyze, or plan…" rows={2} maxLength={4000} disabled={isChatting || isAnalyzing} aria-label="Message Pilot" />
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={`Ask ${agentName} to research, create, analyze, or plan…`} rows={2} maxLength={4000} disabled={isChatting || isAnalyzing} aria-label={`Message ${agentName}`} />
             <div className="pilot-composer-actions">
               <div>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isParsingCV || isChatting || isAnalyzing} title="Attach your CV"><Icon name="paperclip" size={18} /><span>{isParsingCV ? "Reading CV…" : "Attach CV"}</span></button>
@@ -831,7 +1132,7 @@ export default function Home() {
               <button className="pilot-send" type="submit" disabled={!draft.trim() || isChatting || isAnalyzing} aria-label="Send message"><Icon name="send" size={18} /></button>
             </div>
           </form>
-          <p>Pilot can use local tools to complete tasks and asks before sensitive actions.</p>
+          <p>{agentName} can use local tools to complete tasks and asks before sensitive actions.</p>
         </div>
       </section>
 
@@ -910,7 +1211,7 @@ export default function Home() {
           {agentSettingsError ? <p className="pilot-runtime-warning">{agentSettingsError}</p> : null}
         </section>
 
-        <div className="pilot-context-heading"><div><span>Working memory</span><h2>What Pilot knows</h2></div><span>{memoryCount}/2 ready</span></div>
+        <div className="pilot-context-heading"><div><span>Working memory</span><h2>What {agentName} knows</h2></div><span>{memoryCount}/2 ready</span></div>
         <div className="pilot-memory-progress"><span style={{ width: `${memoryCount * 50}%` }} /></div>
         <p className="pilot-context-intro">This context stays with our conversation, so you don’t have to explain yourself from scratch each time.</p>
 
@@ -934,9 +1235,63 @@ export default function Home() {
           <Icon name="spark" />{isAnalyzing ? "Running the evidence check…" : "Run a grounded fit check"}<span>→</span>
         </button>
 
-        <div className="pilot-privacy-note"><span>Session memory</span><p>Your CV and role text are held for this browser session and are not saved as a CareerPilot profile.</p></div>
+        <div className="pilot-privacy-note"><span>Persistent session memory</span><p>Messages, CV text, role context, and fit checks are saved in your device-local CareerPilot database until you delete the session.</p></div>
         <div className="pilot-privacy-note"><span>Local-only access</span><p>No CareerPilot account or sign-in is required on this device.</p></div>
       </aside>
+
+      {identityEditorOpen && agentIdentity ? (
+        <div className="pilot-modal-backdrop" role="presentation" onMouseDown={() => setIdentityEditorOpen(false)}>
+          <section className="pilot-modal pilot-identity-modal" role="dialog" aria-modal="true" aria-labelledby="pilot-identity-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="pilot-modal-heading">
+              <AgentAvatar name={identityNameDraft || agentName} />
+              <div><small>Persistent agent identity</small><h2 id="pilot-identity-title">Make {identityNameDraft || agentName} feel like yours</h2></div>
+              <button type="button" onClick={() => setIdentityEditorOpen(false)} aria-label="Close identity editor">×</button>
+            </div>
+            <p>Your agent’s name and personality are saved on this device and used across every conversation. You can also ask the agent to change them; CareerPilot will pause for your approval first.</p>
+
+            <div className="pilot-identity-tabs" role="tablist" aria-label="Identity editor view">
+              <button className={identityEditorView === "guided" ? "is-active" : ""} type="button" role="tab" aria-selected={identityEditorView === "guided"} onClick={() => setIdentityEditorView("guided")}>Personality</button>
+              <button className={identityEditorView === "markdown" ? "is-active" : ""} type="button" role="tab" aria-selected={identityEditorView === "markdown"} onClick={() => setIdentityEditorView("markdown")}>SOUL.md</button>
+            </div>
+
+            {identityEditorView === "guided" ? (
+              <div className="pilot-identity-guided">
+                <label>
+                  <span>Agent name</span>
+                  <small>This appears in the sidebar, messages, and introductions.</small>
+                  <input value={identityNameDraft} onChange={(event) => { setIdentityNameDraft(event.target.value); setIdentityEditorStatus(null); }} maxLength={80} placeholder="Pilot" autoFocus />
+                </label>
+                <label>
+                  <span>Personality and way of working</span>
+                  <small>Write naturally or use Markdown. Describe tone, preferences, habits, and how you want the agent to collaborate.</small>
+                  <textarea className="pilot-identity-soul" value={identitySoulDraft} onChange={(event) => { setIdentitySoulDraft(event.target.value); setIdentityEditorStatus(null); }} rows={8} maxLength={32768} placeholder={`For example:\n\nBe direct, warm, and a little playful. Call yourself ${identityNameDraft || "Pilot"}. Challenge my assumptions, keep plans practical, and remember that I prefer concise answers.`} />
+                </label>
+                <div className="pilot-identity-boundary"><Icon name="check" size={16} /><p><strong>Your personality can evolve.</strong><span>Safety, truthfulness, approval, and evidence rules stay protected.</span></p></div>
+              </div>
+            ) : (
+              <div className="pilot-identity-markdown">
+                <div className="pilot-identity-file"><span>Editable file</span><code>{agentIdentity.soul_path}</code></div>
+                <textarea className="pilot-identity-soul is-markdown" value={identitySoulDraft} onChange={(event) => { setIdentitySoulDraft(event.target.value); setIdentityEditorStatus(null); }} rows={13} maxLength={32768} aria-label="Editable SOUL.md content" spellCheck />
+                <details>
+                  <summary>Protected core behavior <span>Read only</span></summary>
+                  <pre>{agentIdentity.core_soul}</pre>
+                </details>
+                <details>
+                  <summary>Current effective runtime SOUL <span>Read only</span></summary>
+                  <pre>{agentIdentity.effective_soul}</pre>
+                </details>
+              </div>
+            )}
+
+            {identityEditorError ? <p className="pilot-identity-feedback is-error" role="alert">{identityEditorError}</p> : null}
+            {identityEditorStatus ? <p className="pilot-identity-feedback is-success" role="status">{identityEditorStatus}</p> : null}
+            <div className="pilot-modal-footer pilot-identity-footer">
+              <small>{identitySoulDraft.length.toLocaleString()} / 32,768 · {identityEditorView === "markdown" ? agentIdentity.soul_path : agentIdentity.identity_path}</small>
+              <div><button type="button" onClick={() => setIdentityEditorOpen(false)}>Close</button><button className="pilot-modal-save" type="button" onClick={() => void saveAgentIdentity()} disabled={!identityNameDraft.trim() || !identityDirty || isSavingIdentity}>{isSavingIdentity ? "Saving…" : "Save identity"} <span>→</span></button></div>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {editor ? (
         <div className="pilot-modal-backdrop" role="presentation" onMouseDown={() => setEditor(null)}>
@@ -945,7 +1300,7 @@ export default function Home() {
             <p>{editor === "profile" ? "Paste the evidence you want Pilot to rely on—experience, projects, skills, and outcomes. You can also attach a PDF, DOCX, or TXT CV." : "Paste the full job description when possible. Pilot will separate required evidence from preferred extras."}</p>
             {editor === "profile" ? <button className="pilot-modal-upload" type="button" onClick={() => fileInputRef.current?.click()} disabled={isParsingCV}><Icon name="paperclip" />{isParsingCV ? "Reading your CV…" : "Attach a CV instead"}</button> : null}
             <textarea value={editorDraft} onChange={(event) => setEditorDraft(event.target.value)} rows={14} maxLength={50000} placeholder={editor === "profile" ? "Tell Pilot about your experience…" : "Paste the job description…"} autoFocus />
-            <div className="pilot-modal-footer"><small>{editorDraft.length.toLocaleString()} / 50,000 · Editable anytime</small><div><button type="button" onClick={() => setEditor(null)}>Cancel</button><button className="pilot-modal-save" type="button" onClick={saveEditor}>Save to memory <span>→</span></button></div></div>
+            <div className="pilot-modal-footer"><small>{editorDraft.length.toLocaleString()} / 50,000 · Editable anytime</small><div><button type="button" onClick={() => setEditor(null)}>Cancel</button><button className="pilot-modal-save" type="button" onClick={() => void saveEditor()}>Save to memory <span>→</span></button></div></div>
           </section>
         </div>
       ) : null}

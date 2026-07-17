@@ -38,6 +38,7 @@ from career_companion.database import ModelRouteRecord
 from career_companion.hermes import HermesSupervisor
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
+from career_companion.services.conversation_sessions import ensure_agent_profile
 
 
 def _account(
@@ -220,6 +221,12 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         assert len(supervisors) == 1
         with account_session(scoped) as session:
             assert session.get(ModelRouteRecord, "interactive").provider == "openai-api"
+            ensure_agent_profile(session, scoped).name = "Zey"
+
+        identity_changed = await manager.prepare(_account(), store)  # type: ignore[arg-type]
+        assert identity_changed is not first
+        assert first.supervisor.stop_count == 1
+        assert len(supervisors) == 2
 
         initial_codex = json.dumps(
             {
@@ -238,9 +245,9 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
             codex_account,
             store,  # type: ignore[arg-type]
         )
-        assert first.supervisor.stop_count == 1
+        assert identity_changed.supervisor.stop_count == 1
         assert second.provider == "codex"
-        assert supervisors[1].started_with == {
+        assert supervisors[2].started_with == {
             "BRAVE_SEARCH_API_KEY": "brave-test-search-key"
         }
 
@@ -268,7 +275,7 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         }
         assert await manager.capture_refreshed_codex_credentials("account-a") is None
         await manager.close()
-        assert supervisors[1].stop_count == 1
+        assert supervisors[2].stop_count == 1
 
     asyncio.run(scenario())
 
@@ -279,6 +286,7 @@ def test_runtime_installs_sanitized_profile_once_per_account(tmp_path) -> None:
     distribution = tmp_path / "distribution"
     distribution.mkdir()
     (distribution / "distribution.yaml").write_text("name: career-companion\n")
+    (distribution / "SOUL.md").write_text("Built-in policy\n")
     installations = []
 
     def install_profile(paths, selected_distribution, executable):
@@ -498,7 +506,9 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     assert "tool.started" in response.text
     assert "message.delta" in response.text
     assert captured["path"] == "/v1/runs"
-    assert captured["session_key"] == f"career-companion:web:{'a' * 64}"
+    assert captured["session_key"].startswith(
+        f"career-companion:web:{'a' * 64}:"
+    )
     assert "latest_user_message" in captured["payload"]["input"]
     assert "untrusted reference data" in captured["payload"]["instructions"]
     assert "use the enabled career, web, file, terminal, or code tools" in captured[
@@ -547,11 +557,11 @@ def test_companion_run_approval_is_proxied_to_the_active_account(tmp_path) -> No
 
     assert response.status_code == 200
     assert response.json()["resolved"] == 1
-    assert captured == {
-        "run_id": "run_abc-123",
-        "choice": "once",
-        "session_key": f"career-companion:web:{'b' * 64}",
-    }
+    assert captured["run_id"] == "run_abc-123"
+    assert captured["choice"] == "once"
+    assert captured["session_key"].startswith(
+        f"career-companion:web:{'b' * 64}:"
+    )
     assert invalid.status_code == 422
 
 

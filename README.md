@@ -10,8 +10,10 @@ discuss direction and next steps through `POST /companion/chat`; the existing re
 and grounding workflow appears inside that conversation as a fit-check capability rather
 than as the whole UI. The local `/workspace` stores reviewed career evidence,
 jobs, applications, artifacts, approvals, model routes, and reversible learned revisions
-in a device-local operational database. Temporary conversation context remains
-request-scoped until the user explicitly saves it to that workspace.
+in a device-local operational database. Conversation sessions, messages, CV/role context,
+and fit reports are stored in that same account-scoped database until the user deletes
+them. The chosen agent name and supplemental soul notes are also mirrored to readable
+local agent files.
 
 CareerPilot requires no product account or sign-in. It creates one stable local workspace,
 then requires either ChatGPT plan access through the official Codex app-server runtime or
@@ -24,8 +26,10 @@ Langfuse tracing. Automated tests never make provider or telemetry calls.
 ## Demo experience
 
 - **One companion:** Pilot has a stable identity and speaks as a collaborative partner.
-- **Working memory:** the current profile, role, and fit report stay available throughout
-  the browser session so follow-up questions have context.
+- **Persistent sessions:** conversations, the current profile, role, and fit report survive
+  refreshes and restarts; sessions can be created, selected, renamed, and deleted.
+- **Durable identity:** the companion name and user-owned soul notes persist locally while
+  built-in safety, approval, evidence, and truthfulness rules remain protected.
 - **Persistent workspace:** reviewed evidence, job ranking, application state, artifacts,
   approvals, model controls, and learned revisions survive browser sessions on this device.
 - **Capabilities, not agents:** uploading a CV and running a grounded fit check are tools
@@ -34,6 +38,12 @@ Langfuse tracing. Automated tests never make provider or telemetry calls.
   tool and behavior, and keep technical code collapsed unless the user opens it.
 - **Visible setup state:** Settings shows which tools and MCP connections are ready,
   limited, disabled, or require configuration, including live web search.
+- **Editable agent workspace:** Settings exposes local memory files, built-in and
+  user-owned skills, and MCP server configuration with guarded create, edit, and remove
+  flows.
+- **Opt-in LinkedIn search:** A disabled-by-default community MCP preset can search jobs
+  and read job details through `uvx`; messaging, connection, posting, and application
+  tools are not allowlisted.
 - **Human-controlled evidence:** extracted claims can be corrected, recategorized,
   verified, or removed before Pilot relies on them.
 - **Honesty by design:** candidate-specific advice is grounded in supplied evidence, and
@@ -62,10 +72,11 @@ flowchart LR
     LOCAL --> SETTINGS{Required AI connection}
     SETTINGS -->|API key| OA[OpenAI API]
     SETTINGS -->|ChatGPT device OAuth| CX[Codex app-server]
-    UI --> CHAT["Pilot conversation + session memory"]
+    UI --> CHAT["Pilot conversations + durable session memory"]
     UI --> WORK["Persistent career workspace"]
     WORK --> ODB
     CHAT --> API[FastAPI]
+    API --> ODB
     API --> OA
     API --> CX
     API --> IN["Bounded PDF / DOCX / TXT ingestion"]
@@ -158,6 +169,17 @@ Useful endpoints:
   Search key without changing the selected AI provider.
 - `DELETE /settings/capabilities/web-search` — remove the saved search key and disable
   live web search.
+- `GET /settings/agent-resources` — list editable memory files and visible skills.
+- `POST|PUT|DELETE /settings/agent-resources/{kind}/...` — create, edit, or remove
+  user-owned memory and skill files; built-in skills remain read-only.
+- `GET|PUT /settings/agent-identity` — read or update the locally persisted companion
+  name and supplemental soul notes.
+- `GET|POST /companion/sessions` — list persistent sessions or create a new one.
+- `GET|PUT|DELETE /companion/sessions/{id}` — restore, rename, or delete a session.
+- `PUT /companion/sessions/{id}/context` — persist that session's CV, role, and fit report.
+- `GET /settings/mcp` — list MCP presets and custom server settings.
+- `POST|PUT|DELETE /settings/mcp/...` — add, edit, enable, disable, or remove an MCP
+  server with an explicit tool allowlist.
 - `POST /settings/providers/api-key` — validate, encrypt, and activate an OpenAI key.
 - `POST /settings/providers/codex/start` — start local-workspace Codex authorization.
 - `POST /settings/providers/select` — switch between existing provider connections.

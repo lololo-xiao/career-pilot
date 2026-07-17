@@ -23,6 +23,7 @@ from career_companion.schemas import (
     ClaimStatus,
     JobSpec,
     ProfileClaim,
+    ProfileProject,
 )
 from career_companion.services.applications import transition_application
 from career_companion.services.audit import record_audit
@@ -68,7 +69,9 @@ def generate_application_pack(
     study_path = workspace / f"skills-to-learn-v{version}.md"
     study_path.write_text(_study_markdown(fit["adjacent"]), encoding="utf-8")
     interview_path = workspace / f"interview-plan-v{version}.md"
-    interview_path.write_text(_interview_markdown(spec, fit), encoding="utf-8")
+    interview_path.write_text(
+        _interview_markdown(spec, fit, profile.projects), encoding="utf-8"
+    )
 
     report = render_one_page(cv_path, engine_executable=config.tectonic_executable)
     if not report.valid:
@@ -289,17 +292,29 @@ def _study_markdown(adjacent: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _interview_markdown(spec: JobSpec, fit: dict[str, list[str]]) -> str:
-    return "\n".join(
+def _interview_markdown(
+    spec: JobSpec,
+    fit: dict[str, list[str]],
+    projects: list[ProfileProject] | None = None,
+) -> str:
+    lines = [
+        f"# Interview plan: {spec.company} {spec.title}",
+        "",
+        "## Evidence stories",
+        *[f"- Prepare a STAR story for: {item}" for item in fit["strong"][:5]],
+        "",
+        "## Gaps to prepare",
+        *[
+            f"- Study and practice: {item}"
+            for item in (fit["adjacent"] + fit["missing"])[:8]
+        ],
+        "",
+    ]
+    project_lines = _project_interview_lines(projects or [])
+    if project_lines:
+        lines.extend(["## Project deep dives", "", *project_lines, ""])
+    lines.extend(
         [
-            f"# Interview plan: {spec.company} {spec.title}",
-            "",
-            "## Evidence stories",
-            *[f"- Prepare a STAR story for: {item}" for item in fit["strong"][:5]],
-            "",
-            "## Gaps to prepare",
-            *[f"- Study and practice: {item}" for item in (fit["adjacent"] + fit["missing"])[:8]],
-            "",
             "## Practical questions",
             (
                 "- Confirm role scope, team expectations, interview stages, "
@@ -308,6 +323,27 @@ def _interview_markdown(spec: JobSpec, fit: dict[str, list[str]]) -> str:
             "",
         ]
     )
+    return "\n".join(lines)
+
+
+def _project_interview_lines(projects: list[ProfileProject]) -> list[str]:
+    lines: list[str] = []
+    for project in projects[:4]:
+        name = " ".join(project.name.split()) or "Linked project"
+        questions = (
+            project.analysis.interview_questions[:4]
+            if project.analysis
+            else [
+                f"Walk through the architecture of {name} and one difficult trade-off.",
+                f"How did you validate the outcome of {name}?",
+            ]
+        )
+        lines.append(f"### {name}")
+        lines.extend(
+            f"- {question.strip()}" for question in questions if question.strip()
+        )
+        lines.append("")
+    return lines
 
 
 def _cover_letter(profile: CandidateProfile, verified: list[ProfileClaim], spec: JobSpec) -> str:

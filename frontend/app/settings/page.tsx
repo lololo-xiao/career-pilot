@@ -5,6 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { CapabilitySettings } from "../capability-settings";
+import { AgentResourceSettings } from "../agent-resource-settings";
+import { AgentIdentitySettings } from "../agent-identity-settings";
+import { MCPSettings } from "../mcp-settings";
 import { ProviderSettings } from "../provider-settings";
 import type { AuthSessionResponse, AuthUser } from "../types";
 
@@ -17,6 +20,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [capabilityRefresh, setCapabilityRefresh] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -85,7 +89,13 @@ export default function SettingsPage() {
             user={user}
             onUpdated={setUser}
           />
-          <CapabilitySettings apiBaseUrl={API_BASE_URL} />
+          <AgentIdentitySettings apiBaseUrl={API_BASE_URL} />
+          <AgentResourceSettings apiBaseUrl={API_BASE_URL} />
+          <MCPSettings
+            apiBaseUrl={API_BASE_URL}
+            onUpdated={() => setCapabilityRefresh((current) => current + 1)}
+          />
+          <CapabilitySettings apiBaseUrl={API_BASE_URL} refreshKey={capabilityRefresh} />
         </div>
       </div>
     </main>

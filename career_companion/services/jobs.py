@@ -97,7 +97,7 @@ def score_job(session: Session, job_id: str) -> JobRecord:
         "job_url": record.canonical_url,
         "posted_date": spec.posted_date.isoformat() if spec.posted_date else "",
         "deadline": spec.deadline.isoformat() if spec.deadline else "",
-        "company_size": "",
+        "company_size": "" if spec.company_size == "unknown" else spec.company_size,
         "job_description": spec.description,
         "jd_text": spec.description,
         "cover_letter": "",

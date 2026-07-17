@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  KeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -11,6 +12,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import type { AuthSessionResponse, AuthUser } from "../types";
+import { ApplicationSummary } from "./application-summary";
 import { API_BASE_URL, apiRequest, openArtifact } from "./api";
 import type {
   Application,
@@ -20,6 +22,8 @@ import type {
   Job,
   ModelRoute,
   ProfileClaim,
+  ProfileProject,
+  ProjectAnalysis,
   Revision,
 } from "./types";
 
@@ -30,15 +34,157 @@ type WorkspaceTab =
   | "applications"
   | "controls";
 
+type DateFilter = "any" | "today" | "7d" | "30d";
+
+interface CsvImportResult {
+  created_jobs: number;
+  updated_jobs: number;
+  created_applications: number;
+  updated_applications: number;
+  skipped: number;
+  errors: string[];
+}
+
+const WORKPLACE_OPTIONS = [
+  ["any", "Any workplace"],
+  ["remote", "Remote"],
+  ["hybrid", "Hybrid"],
+  ["onsite", "On-site"],
+  ["unknown", "Not specified"],
+] as const;
+
+const COMPANY_SIZE_OPTIONS = [
+  ["any", "Any company size"],
+  ["1-10", "1–10 employees"],
+  ["11-50", "11–50 employees"],
+  ["51-200", "51–200 employees"],
+  ["201-500", "201–500 employees"],
+  ["501-1000", "501–1,000 employees"],
+  ["1001-5000", "1,001–5,000 employees"],
+  ["5001-10000", "5,001–10,000 employees"],
+  ["10001+", "10,001+ employees"],
+  ["unknown", "Not specified"],
+] as const;
+
+const SENIORITY_OPTIONS = [
+  ["", "Choose a level"],
+  ["intern", "Intern"],
+  ["entry", "Entry level"],
+  ["junior", "Junior"],
+  ["mid", "Mid-level"],
+  ["senior", "Senior"],
+  ["lead", "Lead"],
+  ["staff", "Staff"],
+  ["principal", "Principal"],
+  ["manager", "Engineering / people manager"],
+  ["director", "Director"],
+  ["executive", "Executive"],
+  ["flexible", "Flexible / depends on role"],
+] as const;
+
+const LANGUAGE_PROFICIENCY_GROUPS = [
+  {
+    label: "Native proficiency",
+    options: ["Native / bilingual"],
+  },
+  {
+    label: "CEFR standard",
+    options: ["CEFR A1", "CEFR A2", "CEFR B1", "CEFR B2", "CEFR C1", "CEFR C2"],
+  },
+  {
+    label: "Working proficiency",
+    options: [
+      "Elementary proficiency",
+      "Limited working proficiency",
+      "Professional working proficiency",
+      "Full professional proficiency",
+    ],
+  },
+] as const;
+
+const APPLICATION_STATUS_OPTIONS = [
+  ["discovered", "Tracked"],
+  ["scored", "Fit reviewed"],
+  ["approved", "Approved to tailor"],
+  ["tailoring", "Tailoring"],
+  ["ready", "Ready to apply"],
+  ["form_filled", "Form filled"],
+  ["submitted", "Applied"],
+  ["followed_up", "Followed up"],
+  ["oa", "Online assessment"],
+  ["oa_failed", "OA failed"],
+  ["interview", "Interview (legacy)"],
+  ["interview_1", "Interview 1"],
+  ["interview_1_failed", "Interview 1 failed"],
+  ["interview_2", "Interview 2"],
+  ["interview_2_failed", "Interview 2 failed"],
+  ["final_interview", "Final interview"],
+  ["final_interview_failed", "Final interview failed"],
+  ["offer", "Offer"],
+  ["accepted", "Accepted"],
+  ["rejected", "Rejected"],
+  ["no_response", "No response"],
+  ["withdrawn", "Withdrawn"],
+] as const;
+
+const APPLICATION_STARTED_STATUSES = new Set([
+  "submitted",
+  "followed_up",
+  "oa",
+  "oa_failed",
+  "interview",
+  "interview_1",
+  "interview_1_failed",
+  "interview_2",
+  "interview_2_failed",
+  "final_interview",
+  "final_interview_failed",
+  "offer",
+  "accepted",
+  "rejected",
+  "no_response",
+]);
+
+function formatDate(value?: string): string {
+  if (!value) return "Not specified";
+  const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
+  if (Number.isNaN(date.getTime())) return "Not specified";
+  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+function matchesDateFilter(value: string | undefined, filter: DateFilter): boolean {
+  if (filter === "any") return true;
+  if (!value) return false;
+  const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const threshold = new Date(start);
+  if (filter === "7d") threshold.setDate(threshold.getDate() - 6);
+  if (filter === "30d") threshold.setDate(threshold.getDate() - 29);
+  return date >= threshold;
+}
+
+function applicationStatusLabel(status: string): string {
+  return APPLICATION_STATUS_OPTIONS.find(([value]) => value === status)?.[1]
+    ?? status.replaceAll("_", " ");
+}
+
+function companySizeLabel(size?: string): string {
+  return COMPANY_SIZE_OPTIONS.find(([value]) => value === (size ?? "unknown"))?.[1]
+    ?? "Not specified";
+}
+
 const EMPTY_PROFILE: CandidateProfile = {
   display_name: "",
-  headline: "",
+  seniority: "",
   email: "",
   phone: "",
   claims: [],
   target_roles: [],
   preferred_locations: [],
   languages: [],
+  projects: [],
   work_authorization: [],
   source_documents: [],
 };
@@ -76,7 +222,17 @@ function normalizeProfile(profile: CandidateProfile): CandidateProfile {
     ...profile,
     email: profile.email || legacyEmail,
     phone: profile.phone || legacyPhone,
+    seniority: profile.seniority || "",
     languages: Array.from(new Set([...(profile.languages ?? []), ...importedLanguages])),
+    projects: (profile.projects ?? []).map((project, index) => ({
+      ...project,
+      id: project.id || `project-${index + 1}`,
+      name: project.name || "",
+      description: project.description || "",
+      local_path: project.local_path || "",
+      technologies: project.technologies ?? [],
+      highlights: project.highlights ?? [],
+    })),
     claims: profile.claims
       .filter((claim) => !["email", "phone"].includes(claim.key) && !languageClaims.includes(claim))
       .map((claim) => claim.key === "language" && PUBLICATION_HINT_PATTERN.test(claim.value)
@@ -370,6 +526,59 @@ function Metric({ label, value }: { label: string; value: number | string }) {
   return <div><strong>{value}</strong><span>{label}</span></div>;
 }
 
+function CsvImportPanel({
+  endpoint,
+  kind,
+  refresh,
+  setError,
+}: {
+  endpoint: string;
+  kind: "jobs" | "applications";
+  refresh: (quiet?: boolean) => Promise<void>;
+  setError: (message: string | null) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function importCsv(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await apiRequest<CsvImportResult>(endpoint, {
+        method: "POST",
+        body: new FormData(formElement),
+      });
+      const created = kind === "jobs" ? result.created_jobs : result.created_applications;
+      const updated = kind === "jobs" ? result.updated_jobs : result.updated_applications;
+      const errorSummary = result.errors.length
+        ? ` ${result.errors.length} row${result.errors.length === 1 ? "" : "s"} need attention: ${result.errors[0]}`
+        : "";
+      setMessage(`Imported ${created} and updated ${updated} ${kind}.${errorSummary}`);
+      formElement.reset();
+      await refresh(true);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `The ${kind} CSV could not be imported.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="workspace-csv-import" onSubmit={importCsv}>
+      <div>
+        <strong>Import {kind} from CSV</strong>
+        <span>UTF-8 CSV, up to 1,000 rows. Existing records are updated by job URL.</span>
+        {message ? <small role="status">{message}</small> : null}
+      </div>
+      <input accept=".csv,text/csv" aria-label={`Choose ${kind} CSV`} name="file" required type="file" />
+      <button disabled={busy} type="submit">{busy ? "Importing…" : "Import CSV"}</button>
+    </form>
+  );
+}
+
 function ProfilePanel({
   profile,
   refresh,
@@ -382,6 +591,7 @@ function ProfilePanel({
   setProfile: (profile: CandidateProfile) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [analyzingProjectId, setAnalyzingProjectId] = useState<string | null>(null);
 
   async function importCV(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -417,15 +627,33 @@ function ProfilePanel({
     }
   }
 
-  function updateList(field: "target_roles" | "preferred_locations" | "languages", value: string) {
-    const separator = field === "preferred_locations" ? ";" : ",";
-    setProfile({
-      ...profile,
-      [field]: value
-        .split(separator)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    });
+  async function analyzeProfileProject(project: ProfileProject, index: number) {
+    setAnalyzingProjectId(project.id);
+    try {
+      const analysis = await apiRequest<ProjectAnalysis>(
+        "/api/v1/onboarding/projects/analyze",
+        { method: "POST", body: JSON.stringify(project) },
+      );
+      const projects = [...profile.projects];
+      const previouslyDetected = new Set([
+        ...(project.analysis?.technologies ?? []),
+        ...(project.analysis?.primary_languages ?? []),
+      ]);
+      projects[index] = {
+        ...project,
+        analysis,
+        technologies: Array.from(new Set([
+          ...project.technologies.filter((technology) => !previouslyDetected.has(technology)),
+          ...analysis.technologies,
+        ])),
+      };
+      setProfile({ ...profile, projects });
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The repository could not be analyzed.");
+    } finally {
+      setAnalyzingProjectId(null);
+    }
   }
 
   return (
@@ -446,14 +674,33 @@ function ProfilePanel({
         </form>
         <div className="workspace-card workspace-form-grid">
           <label>Your name<input value={profile.display_name} onChange={(event) => setProfile({ ...profile, display_name: event.target.value })} /></label>
-          <label>Headline<input value={profile.headline} onChange={(event) => setProfile({ ...profile, headline: event.target.value })} /></label>
+          <label>Seniority<select value={profile.seniority} onChange={(event) => setProfile({ ...profile, seniority: event.target.value })}>{SENIORITY_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Email<input inputMode="email" value={profile.email} onChange={(event) => setProfile({ ...profile, email: event.target.value })} /></label>
           <label>Phone<input inputMode="tel" value={profile.phone} onChange={(event) => setProfile({ ...profile, phone: event.target.value })} /></label>
-          <label>Target roles<input value={profile.target_roles.join(", ")} onChange={(event) => updateList("target_roles", event.target.value)} /></label>
-          <label>Preferred locations<input placeholder="Berlin, Germany; Munich, Germany" value={profile.preferred_locations.join("; ")} onChange={(event) => updateList("preferred_locations", event.target.value)} /></label>
-          <label className="workspace-wide">Languages<input value={profile.languages.join(", ")} onChange={(event) => updateList("languages", event.target.value)} /></label>
+          <MultiValueEditor
+            items={profile.target_roles}
+            label="Target roles"
+            onChange={(target_roles) => setProfile({ ...profile, target_roles })}
+            placeholder="AI Engineer"
+          />
+          <MultiValueEditor
+            items={profile.preferred_locations}
+            label="Preferred locations"
+            onChange={(preferred_locations) => setProfile({ ...profile, preferred_locations })}
+            placeholder="Berlin, Germany"
+          />
+          <LanguageEditor
+            languages={profile.languages}
+            onChange={(languages) => setProfile({ ...profile, languages })}
+          />
         </div>
       </div>
+      <ProjectsEditor
+        analyzingProjectId={analyzingProjectId}
+        onAnalyze={(project, index) => void analyzeProfileProject(project, index)}
+        onChange={(projects) => setProfile({ ...profile, projects })}
+        projects={profile.projects}
+      />
       <div className="workspace-card workspace-claims-card">
         <div className="workspace-card-heading">
           <div>
@@ -485,6 +732,266 @@ function ProfilePanel({
         ) : <div className="workspace-empty"><strong>No career facts waiting for review.</strong><span>Import a PDF or DOCX CV above to get started.</span></div>}
       </div>
     </section>
+  );
+}
+
+function MultiValueEditor({
+  className = "",
+  items,
+  label,
+  onChange,
+  placeholder,
+}: {
+  className?: string;
+  items: string[];
+  label: string;
+  onChange: (items: string[]) => void;
+  placeholder: string;
+}) {
+  const [draft, setDraft] = useState("");
+
+  function addItem() {
+    const value = draft.trim();
+    if (!value) return;
+    if (!items.some((item) => item.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+      onChange([...items, value]);
+    }
+    setDraft("");
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addItem();
+  }
+
+  return (
+    <div className={`workspace-field ${className}`.trim()}>
+      <span>{label}</span>
+      {items.length ? (
+        <div className="workspace-chip-list">
+          {items.map((item) => (
+            <span key={item}>
+              {item}
+              <button
+                aria-label={`Remove ${item}`}
+                onClick={() => onChange(items.filter((value) => value !== item))}
+                type="button"
+              >×</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="workspace-inline-add">
+        <input
+          aria-label={label}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          value={draft}
+        />
+        <button disabled={!draft.trim()} onClick={addItem} type="button">Add</button>
+      </div>
+      <small>Type the full value, including spaces, then press Enter or Add.</small>
+    </div>
+  );
+}
+
+function LanguageEditor({
+  languages,
+  onChange,
+}: {
+  languages: string[];
+  onChange: (languages: string[]) => void;
+}) {
+  const [name, setName] = useState("");
+  const [proficiency, setProficiency] = useState("Professional working proficiency");
+
+  function addLanguage() {
+    const languageName = name.trim();
+    if (!languageName) return;
+    const value = `${languageName} (${proficiency})`;
+    const normalizedName = languageName.toLocaleLowerCase();
+    onChange([
+      ...languages.filter(
+        (language) => languageNameFromValue(language).toLocaleLowerCase() !== normalizedName,
+      ),
+      value,
+    ]);
+    setName("");
+  }
+
+  return (
+    <div className="workspace-field workspace-wide">
+      <span>Languages</span>
+      {languages.length ? (
+        <div className="workspace-chip-list">
+          {languages.map((language) => (
+            <span key={language}>
+              {language}
+              <button
+                aria-label={`Remove ${language}`}
+                onClick={() => onChange(languages.filter((value) => value !== language))}
+                type="button"
+              >×</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="workspace-language-add">
+        <input
+          aria-label="Language name"
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addLanguage();
+            }
+          }}
+          placeholder="Language, e.g. Chinese"
+          value={name}
+        />
+        <select
+          aria-label="Language proficiency"
+          onChange={(event) => setProficiency(event.target.value)}
+          value={proficiency}
+        >
+          {LANGUAGE_PROFICIENCY_GROUPS.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.options.map((option) => <option key={option}>{option}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        <button disabled={!name.trim()} onClick={addLanguage} type="button">Add</button>
+      </div>
+      <small>Choose a CEFR or working-proficiency standard so Pilot can compare role requirements consistently.</small>
+    </div>
+  );
+}
+
+function languageNameFromValue(value: string): string {
+  return value.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+function ProjectsEditor({
+  analyzingProjectId,
+  onAnalyze,
+  onChange,
+  projects,
+}: {
+  analyzingProjectId: string | null;
+  onAnalyze: (project: ProfileProject, index: number) => void;
+  onChange: (projects: ProfileProject[]) => void;
+  projects: ProfileProject[];
+}) {
+  function addProject() {
+    onChange([
+      ...projects,
+      {
+        id: globalThis.crypto?.randomUUID?.() ?? `project-${Date.now()}`,
+        name: "",
+        description: "",
+        local_path: "",
+        technologies: [],
+        highlights: [],
+      },
+    ]);
+  }
+
+  function updateProject(index: number, update: Partial<ProfileProject>) {
+    const updated = [...projects];
+    updated[index] = { ...updated[index], ...update };
+    onChange(updated);
+  }
+
+  return (
+    <div className="workspace-card workspace-projects-card">
+      <div className="workspace-card-heading">
+        <div>
+          <h2>Projects and codebases</h2>
+          <p>Link evidence to a public GitHub repository or a local checkout, then generate focused improvements and interview questions.</p>
+        </div>
+        <button onClick={addProject} type="button">Add project</button>
+      </div>
+      {projects.length ? (
+        <div className="workspace-project-list">
+          {projects.map((project, index) => {
+            const analyzing = analyzingProjectId === project.id;
+            return (
+              <article className="workspace-project" key={project.id}>
+                <div className="workspace-form-grid">
+                  <label>Project name<input placeholder="CareerPilot" value={project.name} onChange={(event) => updateProject(index, { name: event.target.value })} /></label>
+                  <label>Public GitHub repository<input inputMode="url" placeholder="https://github.com/owner/repository" value={project.repository_url ?? ""} onChange={(event) => updateProject(index, { repository_url: event.target.value || undefined, analysis: undefined })} /></label>
+                  <label className="workspace-wide">What it does<textarea rows={3} placeholder="The problem, your contribution, and the outcome." value={project.description} onChange={(event) => updateProject(index, { description: event.target.value })} /></label>
+                  <label className="workspace-wide">Local codebase path<input placeholder="/Users/you/code/project" value={project.local_path} onChange={(event) => updateProject(index, { local_path: event.target.value, analysis: undefined })} /></label>
+                  <MultiValueEditor
+                    className="workspace-wide"
+                    items={project.technologies}
+                    label="Technologies"
+                    onChange={(technologies) => updateProject(index, { technologies })}
+                    placeholder="FastAPI"
+                  />
+                  <MultiValueEditor
+                    className="workspace-wide"
+                    items={project.highlights}
+                    label="Evidence highlights"
+                    onChange={(highlights) => updateProject(index, { highlights })}
+                    placeholder="Reduced retrieval latency by 35%"
+                  />
+                </div>
+                <div className="workspace-project-actions">
+                  <button
+                    disabled={analyzing || (!project.local_path.trim() && !project.repository_url)}
+                    onClick={() => onAnalyze(project, index)}
+                    type="button"
+                  >{analyzing ? "Analyzing…" : project.analysis ? "Analyze again" : "Analyze codebase"}</button>
+                  <span>Read-only scan; repository code is never executed. Public GitHub repositories do not need a token.</span>
+                  <button className="workspace-button-danger" onClick={() => onChange(projects.filter((_, projectIndex) => projectIndex !== index))} type="button">Remove project</button>
+                </div>
+                {project.analysis ? <ProjectAnalysisView analysis={project.analysis} /> : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="workspace-empty workspace-project-empty">
+          <strong>No projects linked yet.</strong>
+          <span>Add one to turn code evidence into improvements and interview preparation.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectAnalysisView({ analysis }: { analysis: ProjectAnalysis }) {
+  return (
+    <div className="workspace-project-analysis">
+      <div>
+        <span className="workspace-kicker">LATEST REPOSITORY REVIEW</span>
+        <p>{analysis.summary}</p>
+        <div className="workspace-chip-list">
+          <span>{analysis.file_count} files</span>
+          {analysis.technologies.map((technology) => <span key={technology}>{technology}</span>)}
+          {analysis.primary_languages.filter((language) => !analysis.technologies.includes(language)).map((language) => <span key={language}>{language}</span>)}
+        </div>
+      </div>
+      <div className="workspace-project-analysis-grid">
+        <div>
+          <h3>Suggested improvements</h3>
+          <ul>{analysis.improvement_suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}</ul>
+        </div>
+        <div>
+          <h3>Interview questions</h3>
+          <ul>{analysis.interview_questions.map((question) => <li key={question}>{question}</li>)}</ul>
+        </div>
+      </div>
+      {analysis.notable_files.length ? (
+        <details>
+          <summary>Files used to understand the repository</summary>
+          <code>{analysis.notable_files.join("\n")}</code>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -594,6 +1101,10 @@ function JobsPanel({
 }) {
   const [showForm, setShowForm] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("any");
+  const [workplaceFilter, setWorkplaceFilter] = useState("any");
+  const [companySizeFilter, setCompanySizeFilter] = useState("any");
   const trackedJobs = new Set(applications.map((item) => item.job_id));
 
   async function addJob(event: FormEvent<HTMLFormElement>) {
@@ -606,6 +1117,9 @@ function JobsPanel({
       company: String(form.get("company") ?? "").trim(),
       locations: String(form.get("location") ?? "").split(";").map((item) => item.trim()).filter(Boolean),
       description: String(form.get("description") ?? "").trim(),
+      posted_date: String(form.get("posted_date") ?? "") || undefined,
+      workplace_type: String(form.get("workplace_type") ?? "unknown"),
+      company_size: String(form.get("company_size") ?? "unknown"),
       source_type: "manual",
     };
     if (sourceUrl) spec.source_url = sourceUrl;
@@ -638,29 +1152,73 @@ function JobsPanel({
     }
   }
 
-  const sortedJobs = [...jobs].sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  const filteredJobs = jobs
+    .filter((job) => {
+      const normalizedQuery = query.trim().toLocaleLowerCase();
+      const matchesQuery = !normalizedQuery || [
+        job.company,
+        job.title,
+        ...job.spec.locations,
+      ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+      return matchesQuery
+        && matchesDateFilter(job.spec.posted_date, dateFilter)
+        && (workplaceFilter === "any" || (job.spec.workplace_type ?? "unknown") === workplaceFilter)
+        && (companySizeFilter === "any" || (job.spec.company_size ?? "unknown") === companySizeFilter);
+    })
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+
+  function clearFilters() {
+    setQuery("");
+    setDateFilter("any");
+    setWorkplaceFilter("any");
+    setCompanySizeFilter("any");
+  }
+
   return (
     <section>
       <div className="workspace-section-heading"><div><span className="workspace-eyebrow">FOCUSED SEARCH</span><h1>Your job queue.</h1><p>Deterministic scoring first, with a visible reason for every recommendation.</p></div><button onClick={() => setShowForm((value) => !value)} type="button">{showForm ? "Close form" : "Add a job"}</button></div>
+      <CsvImportPanel endpoint="/api/v1/jobs/import" kind="jobs" refresh={refresh} setError={setError} />
       {showForm ? (
         <form className="workspace-card workspace-job-form" onSubmit={addJob}>
           <label>Company<input name="company" required /></label>
           <label>Role<input name="title" required /></label>
           <label>Locations<input name="location" placeholder="Berlin, Germany; Munich, Germany" /></label>
           <label>Job URL<input name="url" type="url" /></label>
+          <label>Posted date<input name="posted_date" type="date" /></label>
+          <label>Workplace<select defaultValue="unknown" name="workplace_type">{WORKPLACE_OPTIONS.filter(([value]) => value !== "any").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label>Company size<select defaultValue="unknown" name="company_size">{COMPANY_SIZE_OPTIONS.filter(([value]) => value !== "any").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="workspace-wide">Job description<textarea name="description" required rows={10} /></label>
           <button disabled={busyId === "new"} type="submit">{busyId === "new" ? "Saving…" : "Save opportunity"}</button>
         </form>
       ) : null}
+      <div className="workspace-filters" aria-label="Filter jobs">
+        <label className="workspace-filter-search"><span>Search</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Role, company, or location" type="search" value={query} /></label>
+        <label><span>Posted</span><select onChange={(event) => setDateFilter(event.target.value as DateFilter)} value={dateFilter}><option value="any">Any date</option><option value="today">Today</option><option value="7d">Past 7 days</option><option value="30d">Past 30 days</option></select></label>
+        <label><span>Workplace</span><select onChange={(event) => setWorkplaceFilter(event.target.value)} value={workplaceFilter}>{WORKPLACE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label><span>Company size</span><select onChange={(event) => setCompanySizeFilter(event.target.value)} value={companySizeFilter}>{COMPANY_SIZE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <div><strong>{filteredJobs.length}</strong><span>of {jobs.length} jobs</span><button onClick={clearFilters} type="button">Clear</button></div>
+      </div>
       <div className="workspace-stack">
-        {sortedJobs.map((job) => (
+        {filteredJobs.map((job) => (
           <article className="workspace-card workspace-job-card" key={job.id}>
             <div className={`workspace-score workspace-tier-${job.tier ?? "none"}`}><strong>{job.score ?? "—"}</strong><span>{job.tier ? `Tier ${job.tier}` : "Not scored"}</span></div>
-            <div className="workspace-job-copy"><span>{job.company}</span><h2>{job.title}</h2><p>{job.spec.locations.join(" · ") || "Location not listed"}</p>{job.score_explanation.length ? <details><summary>Why this score?</summary><ul>{job.score_explanation.map((reason) => <li key={reason}>{reason}</li>)}</ul></details> : null}</div>
+            <div className="workspace-job-copy">
+              <span>{job.company}</span>
+              <h2>{job.title}</h2>
+              <p>{job.spec.locations.join(" · ") || "Location not listed"}</p>
+              <div className="workspace-job-meta">
+                <span>Posted {formatDate(job.spec.posted_date)}</span>
+                <span>{WORKPLACE_OPTIONS.find(([value]) => value === (job.spec.workplace_type ?? "unknown"))?.[1]}</span>
+                <span>{companySizeLabel(job.spec.company_size)}</span>
+                {job.canonical_url ? <a href={job.canonical_url} rel="noreferrer" target="_blank">View job ↗</a> : <span>No URL</span>}
+              </div>
+              {job.score_explanation.length ? <details><summary>Why this score?</summary><ul>{job.score_explanation.map((reason) => <li key={reason}>{reason}</li>)}</ul></details> : null}
+            </div>
             <div className="workspace-actions"><button disabled={busyId === job.id} onClick={() => void act(`/api/v1/jobs/${job.id}/score`, job.id)} type="button">Score</button><button disabled={busyId === job.id || trackedJobs.has(job.id)} onClick={() => void act(`/api/v1/applications?job_id=${job.id}`, job.id)} type="button">{trackedJobs.has(job.id) ? "Tracked" : "Track application"}</button></div>
           </article>
         ))}
         {!jobs.length ? <div className="workspace-empty workspace-card"><strong>Your queue is empty.</strong><span>Add a job description to start ranking opportunities.</span></div> : null}
+        {jobs.length && !filteredJobs.length ? <div className="workspace-empty workspace-card"><strong>No jobs match these filters.</strong><span>Clear one or more filters to see the rest of your queue.</span></div> : null}
       </div>
     </section>
   );
@@ -684,6 +1242,12 @@ function ApplicationsPanel({
   setError: (message: string | null) => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [showSummary, setShowSummary] = useState(false);
+  const [query, setQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("any");
+  const [workplaceFilter, setWorkplaceFilter] = useState("any");
+  const [companySizeFilter, setCompanySizeFilter] = useState("any");
+  const [statusFilter, setStatusFilter] = useState("any");
 
   async function post(path: string, id: string, body?: unknown) {
     setBusyId(id);
@@ -701,18 +1265,75 @@ function ApplicationsPanel({
     }
   }
 
+  const filteredApplications = applications.filter((application) => {
+    const job = jobById.get(application.job_id);
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const matchesQuery = !normalizedQuery || [
+      job?.company ?? "",
+      job?.title ?? "",
+      ...(job?.spec.locations ?? []),
+    ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+    return matchesQuery
+      && matchesDateFilter(application.submitted_at ?? application.created_at, dateFilter)
+      && (statusFilter === "any" || application.status === statusFilter)
+      && (workplaceFilter === "any" || (job?.spec.workplace_type ?? "unknown") === workplaceFilter)
+      && (companySizeFilter === "any" || (job?.spec.company_size ?? "unknown") === companySizeFilter);
+  });
+
+  function clearFilters() {
+    setQuery("");
+    setDateFilter("any");
+    setWorkplaceFilter("any");
+    setCompanySizeFilter("any");
+    setStatusFilter("any");
+  }
+
+  function updateStatus(application: Application, status: string) {
+    if (status === application.status) return;
+    void post(`/api/v1/applications/${application.id}/status`, application.id, {
+      status,
+      note: "Status updated by the user in the local workspace",
+      manual_override: true,
+      confirmed_by_user: APPLICATION_STARTED_STATUSES.has(status),
+    });
+  }
+
   return (
     <section>
-      <div className="workspace-section-heading"><div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Pilot can prepare and fill. You review, approve, and submit.</p></div></div>
+      <div className="workspace-section-heading">
+        <div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Pilot can prepare and fill. You review, approve, submit, and record each outcome.</p></div>
+        <button aria-expanded={showSummary} onClick={() => setShowSummary((value) => !value)} type="button">{showSummary ? "Hide summary" : "View summary"}</button>
+      </div>
+      <CsvImportPanel endpoint="/api/v1/applications/import" kind="applications" refresh={refresh} setError={setError} />
+      {showSummary ? <ApplicationSummary applications={applications} /> : null}
+      <div className="workspace-filters workspace-application-filters" aria-label="Filter applications">
+        <label className="workspace-filter-search"><span>Search</span><input onChange={(event) => setQuery(event.target.value)} placeholder="Role, company, or location" type="search" value={query} /></label>
+        <label><span>Application date</span><select onChange={(event) => setDateFilter(event.target.value as DateFilter)} value={dateFilter}><option value="any">Any date</option><option value="today">Today</option><option value="7d">Past 7 days</option><option value="30d">Past 30 days</option></select></label>
+        <label><span>Status</span><select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}><option value="any">Any status</option>{APPLICATION_STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label><span>Workplace</span><select onChange={(event) => setWorkplaceFilter(event.target.value)} value={workplaceFilter}>{WORKPLACE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label><span>Company size</span><select onChange={(event) => setCompanySizeFilter(event.target.value)} value={companySizeFilter}>{COMPANY_SIZE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <div><strong>{filteredApplications.length}</strong><span>of {applications.length} applications</span><button onClick={clearFilters} type="button">Clear</button></div>
+      </div>
       <div className="workspace-stack">
-        {applications.map((application) => {
+        {filteredApplications.map((application) => {
           const job = jobById.get(application.job_id);
           const next = NEXT_STATUS[application.status];
           return (
             <article className="workspace-card workspace-application" key={application.id}>
               <div className="workspace-card-heading">
-                <div><span className="workspace-status">{application.status.replaceAll("_", " ")}</span><h2>{job?.title ?? "Application"}</h2><p>{job?.company ?? "Unknown company"} · {application.next_action}</p></div>
+                <div className="workspace-application-copy">
+                  <span className={`workspace-status workspace-status-${application.status}`}>{applicationStatusLabel(application.status)}</span>
+                  <h2>{job?.title ?? "Application"}</h2>
+                  <p>{job?.company ?? "Unknown company"} · {application.next_action}</p>
+                  <div className="workspace-job-meta">
+                    <span>{application.submitted_at ? `Applied ${formatDate(application.submitted_at)}` : `Tracked ${formatDate(application.created_at)}`}</span>
+                    <span>{WORKPLACE_OPTIONS.find(([value]) => value === (job?.spec.workplace_type ?? "unknown"))?.[1]}</span>
+                    <span>{companySizeLabel(job?.spec.company_size)}</span>
+                    {job?.canonical_url ? <a href={job.canonical_url} rel="noreferrer" target="_blank">View job ↗</a> : <span>No URL</span>}
+                  </div>
+                </div>
                 <div className="workspace-actions">
+                  <label className="workspace-status-editor">Status<select aria-label={`Status for ${job?.title ?? "application"}`} disabled={busyId === application.id} onChange={(event) => updateStatus(application, event.target.value)} value={application.status}>{APPLICATION_STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
                   {next ? <button disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: next.target, note: "Confirmed in local workspace" })} type="button">{next.label}</button> : null}
                   {application.status === "approved" ? <button disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/artifacts/generate`, application.id)} type="button">Generate application pack</button> : null}
                   {["ready", "form_filled"].includes(application.status) ? <button className="workspace-danger-safe" disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: "submitted", note: "User confirmed manual submission", confirmed_by_user: true })} type="button">I submitted it manually</button> : null}
@@ -733,6 +1354,7 @@ function ApplicationsPanel({
           );
         })}
         {!applications.length ? <div className="workspace-empty workspace-card"><strong>No applications tracked yet.</strong><span>Add a job, score it, then choose “Track application.”</span></div> : null}
+        {applications.length && !filteredApplications.length ? <div className="workspace-empty workspace-card"><strong>No applications match these filters.</strong><span>Clear one or more filters to see the rest of your pipeline.</span></div> : null}
       </div>
     </section>
   );
