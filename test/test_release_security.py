@@ -102,6 +102,32 @@ def test_rendering_rejects_unsafe_tex_assets_corrupt_pdfs_and_links(tmp_path) ->
     assert any("unsafe external link" in error for error in report.errors)
 
 
+def test_backup_closes_snapshot_connections_before_cleanup(tmp_path, monkeypatch) -> None:
+    source = CompanionPaths.at_root(tmp_path / "source")
+    source.create()
+    with sqlite3.connect(source.database) as database:
+        database.execute("CREATE TABLE proof (value TEXT)")
+
+    original_connect = sqlite3.connect
+    closed_connections: list[int] = []
+
+    class TrackingConnection(sqlite3.Connection):
+        def close(self) -> None:
+            closed_connections.append(id(self))
+            super().close()
+
+    def tracked_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr("career_companion.backup.sqlite3.connect", tracked_connect)
+
+    backup = create_backup(source, tmp_path / "safe.zip")
+
+    assert backup.is_file()
+    assert len(closed_connections) == 2
+
+
 def test_backup_round_trip_excludes_credentials_and_symlinks(tmp_path) -> None:
     source = CompanionPaths.at_root(tmp_path / "source")
     source.create()

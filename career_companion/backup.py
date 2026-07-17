@@ -8,6 +8,7 @@ import stat
 import tempfile
 import uuid
 import zipfile
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -88,7 +89,10 @@ def _add_tree(archive: zipfile.ZipFile, root: Path, prefix: str) -> None:
 def _add_database_snapshot(archive: zipfile.ZipFile, source: Path) -> None:
     with tempfile.TemporaryDirectory() as temporary:
         snapshot = Path(temporary) / "career.db"
-        with sqlite3.connect(source) as input_database, sqlite3.connect(snapshot) as output_database:
+        with (
+            closing(sqlite3.connect(source)) as input_database,
+            closing(sqlite3.connect(snapshot)) as output_database,
+        ):
             input_database.backup(output_database)
         archive.write(snapshot, "data/career.db")
 
