@@ -63,6 +63,11 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
     assert {group["id"]: group["state"] for group in payload["groups"]}[
         "web-search"
     ] == "setup_required"
+    career_tools = next(
+        group["tools"] for group in payload["groups"] if group["id"] == "career-workspace"
+    )
+    assert "career_public_job_discover" in career_tools
+    assert "career_job_track_selected" in career_tools
     assert {server["name"] for server in payload["mcp_servers"]} == {
         "gmail",
         "google-calendar",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from career_companion.database import ApplicationRecord, StatusEventRecord
@@ -103,6 +104,22 @@ def create_application(session: Session, job_id: str) -> ApplicationRecord:
         payload={"job_id": job_id},
     )
     return application
+
+
+def ensure_application(
+    session: Session,
+    job_id: str,
+) -> tuple[ApplicationRecord, bool]:
+    """Idempotently return one existing application for a job or create it."""
+
+    existing = session.scalar(
+        select(ApplicationRecord)
+        .where(ApplicationRecord.job_id == job_id)
+        .order_by(ApplicationRecord.created_at.asc(), ApplicationRecord.id.asc())
+    )
+    if existing is not None:
+        return existing, False
+    return create_application(session, job_id), True
 
 
 def transition_application(

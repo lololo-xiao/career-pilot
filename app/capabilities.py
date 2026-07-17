@@ -22,8 +22,10 @@ WEB_SEARCH_SETUP_URL = "https://brave.com/search/api/"
 
 _CAREER_TOOLS = [
     "career_profile_get",
+    "career_public_job_discover",
     "career_job_add",
     "career_job_score",
+    "career_job_track_selected",
     "career_job_queue",
     "career_application_queue",
     "career_application_status",

@@ -33,8 +33,11 @@ from career_companion.database import (
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.router import RevisionRequest, _application_json, _job_json, _revision_json
-from career_companion.schemas import ApplicationStatus, Job
-from career_companion.services.applications import transition_application
+from career_companion.schemas import ApplicationStatus, Job, JobSpec
+from career_companion.services.applications import (
+    ensure_application,
+    transition_application,
+)
 from career_companion.services.browser import BrowserAssistant
 from career_companion.services.conversation_sessions import (
     agent_profile_json,
@@ -78,6 +81,12 @@ class PublicJobDiscoveryPayload(BaseModel):
     provider: Literal["greenhouse", "lever"]
     company_identifier: str = Field(min_length=1, max_length=100)
     limit: int = Field(default=25, ge=1, le=50)
+
+
+class SelectedJobTrackingPayload(BaseModel):
+    source_session: str = Field(min_length=36, max_length=36)
+    user_request: str = Field(min_length=1, max_length=50_000)
+    selection_reference: str = Field(min_length=1, max_length=500)
 
 
 def _unauthorized() -> HTTPException:
@@ -253,6 +262,82 @@ def run_score(job_id: str, session: SessionDep) -> dict[str, Any]:
         raise HTTPException(404, str(exc)) from exc
 
 
+@router.post("/jobs/{job_id}/track-selected")
+def track_selected_job(
+    job_id: str,
+    payload: SelectedJobTrackingPayload,
+    session: SessionDep,
+) -> dict[str, Any]:
+    job = session.get(JobRecord, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    conversation = session.get(ConversationSessionRecord, payload.source_session)
+    if conversation is None:
+        raise HTTPException(404, "Conversation session not found")
+    latest_user_message = next(
+        (
+            message
+            for message in reversed(conversation.messages)
+            if message.role == "user"
+        ),
+        None,
+    )
+    current_request = payload.user_request.strip()
+    selection_reference = payload.selection_reference.strip()
+    if latest_user_message is None or latest_user_message.content != current_request:
+        raise HTTPException(
+            409,
+            "Tracking requires an explicit selection in the latest user message",
+        )
+    if not selection_reference or selection_reference not in current_request:
+        raise HTTPException(
+            409,
+            "Selection reference must be copied from the latest user message",
+        )
+
+    ranked_job = score_job(session, job.id)
+    application, application_created = ensure_application(session, ranked_job.id)
+    if application.status == ApplicationStatus.DISCOVERED.value:
+        application = transition_application(
+            session,
+            application.id,
+            ApplicationStatus.SCORED,
+            note="Deterministic priority recorded after explicit user selection",
+        )
+    spec = JobSpec.model_validate(ranked_job.normalized_spec)
+    return {
+        "activity": {
+            "type": "local_write",
+            "operations": ["deterministic_rank", "application_track"],
+            "public_network_read": False,
+        },
+        "selection": {
+            "source_session": conversation.id,
+            "reference": selection_reference,
+        },
+        "queued_job": {
+            "id": ranked_job.id,
+            "company": ranked_job.company,
+            "title": ranked_job.title,
+            "locations": spec.locations,
+            "canonical_url": ranked_job.canonical_url,
+            "source_type": ranked_job.source_type,
+        },
+        "deterministic_priority": {
+            "score": ranked_job.score,
+            "tier": ranked_job.tier,
+            "explanation": ranked_job.score_explanation,
+        },
+        "application": {
+            "id": application.id,
+            "job_id": application.job_id,
+            "status": application.status,
+            "created": application_created,
+        },
+        "next_safe_action": _tracking_next_safe_action(application.status),
+    }
+
+
 @router.get("/applications")
 def list_applications(
     session: SessionDep,
@@ -360,3 +445,12 @@ async def fill_form(
         raise HTTPException(409, str(exc)) from exc
     finally:
         await browser.close()
+
+
+def _tracking_next_safe_action(application_status: str) -> str:
+    if application_status == ApplicationStatus.SCORED.value:
+        return "Ask the user whether to approve or archive this opportunity"
+    return (
+        f"Review the existing {application_status} application without advancing it "
+        "or claiming any materials are complete"
+    )

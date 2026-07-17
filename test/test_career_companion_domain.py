@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from career_companion.database import (
+    ApplicationRecord,
     CandidateProfileRecord,
     JobRecord,
     RevisionRecord,
@@ -27,6 +28,7 @@ from career_companion.schemas import (
 )
 from career_companion.services.applications import (
     create_application,
+    ensure_application,
     transition_application,
 )
 from career_companion.services.approvals import (
@@ -143,6 +145,20 @@ def test_application_submission_requires_confirmation_and_valid_state(session) -
         "ready",
         "submitted",
     )
+
+
+def test_ensure_application_is_idempotent_for_one_saved_job(session) -> None:
+    job = _job(session)
+
+    first, first_created = ensure_application(session, job.id)
+    repeated, repeated_created = ensure_application(session, job.id)
+
+    assert first_created is True
+    assert repeated_created is False
+    assert repeated.id == first.id
+    assert session.scalars(
+        select(ApplicationRecord).where(ApplicationRecord.job_id == job.id)
+    ).all() == [first]
 
 
 def test_approval_is_bound_to_payload_and_can_only_be_consumed_once(session) -> None:

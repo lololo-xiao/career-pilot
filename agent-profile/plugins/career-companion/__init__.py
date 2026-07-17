@@ -109,6 +109,19 @@ def _score_job(args: dict[str, Any]) -> Any:
     return _client().request("POST", f"/jobs/{quote(str(args['job_id']), safe='')}/score")
 
 
+def _track_selected_job(args: dict[str, Any]) -> Any:
+    job_id = quote(str(args["job_id"]), safe="")
+    return _client().request(
+        "POST",
+        f"/jobs/{job_id}/track-selected",
+        json_body={
+            "source_session": args["source_session"],
+            "user_request": args["user_request"],
+            "selection_reference": args["selection_reference"],
+        },
+    )
+
+
 def _job_queue(args: dict[str, Any]) -> Any:
     return _client().request("GET", "/jobs", params={"limit": args.get("limit", 10)})
 
@@ -285,6 +298,38 @@ TOOLS = (
             "additionalProperties": False,
         },
         _score_job,
+    ),
+    ToolDefinition(
+        "career_job_track_selected",
+        (
+            "After the latest user message explicitly selects a saved job, run its "
+            "deterministic local priority score and idempotently track one application. "
+            "This performs local writes only: no network read, messaging, tailoring, "
+            "form filling, or submission. Copy the latest message and its selection "
+            "phrase exactly."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string"},
+                "source_session": {"type": "string"},
+                "user_request": {"type": "string"},
+                "selection_reference": {
+                    "type": "string",
+                    "description": (
+                        "Exact user-written phrase identifying the selected job."
+                    ),
+                },
+            },
+            "required": [
+                "job_id",
+                "source_session",
+                "user_request",
+                "selection_reference",
+            ],
+            "additionalProperties": False,
+        },
+        _track_selected_job,
     ),
     ToolDefinition(
         "career_job_queue",
