@@ -1119,6 +1119,16 @@ export default function Home() {
 
         <div className="pilot-thread">
           <div className="pilot-day-divider"><span>Today</span></div>
+          <section className="pilot-mobile-next-step" aria-labelledby="pilot-mobile-next-step-title">
+            <span>Next best step</span>
+            <div>
+              <strong id="pilot-mobile-next-step-title">{nextBestAction.label}</strong>
+              <p>{nextBestAction.description}</p>
+            </div>
+            <button type="button" onClick={handleNextBestAction} disabled={isAnalyzing || isChatting}>
+              {isAnalyzing ? "Running…" : nextBestAction.label}<span aria-hidden="true">→</span>
+            </button>
+          </section>
           {messages.map((message, index) => (
             <article className={`pilot-message pilot-message-${message.role}`} key={message.id}>
               {message.role === "assistant" ? <AgentAvatar name={agentName} small /> : null}
