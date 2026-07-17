@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -174,6 +175,26 @@ def test_demo_seed_reset_is_guarded_and_restores_canonical_data(tmp_path: Path) 
     assert reset.jobs == 4
     with account_session(reset.account_paths) as session:
         assert session.get(JobRecord, "user-added-demo-row") is None
+
+
+def test_demo_seed_refuses_nested_symlink_without_touching_outside_directory(
+    tmp_path: Path,
+) -> None:
+    production = _production_paths(tmp_path)
+    result = seed_demo_home(tmp_path / "demo", production_paths=production)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("must remain untouched", encoding="utf-8")
+
+    shutil.rmtree(result.account_paths.imports)
+    result.account_paths.imports.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(DemoWorkspaceError, match="symbolic links"):
+        seed_demo_home(result.home, production_paths=production)
+
+    assert sentinel.read_text(encoding="utf-8") == "must remain untouched"
+    assert not (outside / "fictional-demo-profile.txt").exists()
 
 
 def test_demo_seeder_refuses_stored_credentials_without_loading_them(

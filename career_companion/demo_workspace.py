@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import shutil
 import sqlite3
@@ -179,7 +180,7 @@ def seed_demo_home(
     _reject_overlapping_home(root, production_paths.config.parent.resolve())
     demo_paths = CompanionPaths.at_root(root, root / "config")
     _prepare_demo_home(demo_paths, reset=reset)
-    _reject_demo_path_symlinks(demo_paths)
+    _reject_demo_home_symlinks(demo_paths.root)
     _reject_stored_credentials(demo_paths.auth_database)
 
     if not demo_paths.config.exists():
@@ -248,16 +249,25 @@ def _prepare_demo_home(paths: CompanionPaths, *, reset: bool) -> None:
     marker.write_text(DEMO_MARKER_CONTENT, encoding="utf-8")
 
 
-def _reject_demo_path_symlinks(paths: CompanionPaths) -> None:
-    protected_paths = (
-        paths.root / "accounts",
-        paths.root / "config",
-        paths.auth_database,
-        paths.auth_secret,
-        paths.config,
-    )
-    if any(path.is_symlink() for path in protected_paths):
-        raise DemoWorkspaceError("Demo authentication and workspace paths cannot be symlinks.")
+def _reject_demo_home_symlinks(root: Path) -> None:
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            if directory.is_symlink():
+                raise DemoWorkspaceError("Demo homes cannot contain symbolic links.")
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        raise DemoWorkspaceError(
+                            "Demo homes cannot contain symbolic links."
+                        )
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+    except OSError as exc:
+        raise DemoWorkspaceError(
+            "The demo home could not be safely inspected for symbolic links."
+        ) from exc
 
 
 def _reject_stored_credentials(database: Path) -> None:
@@ -312,7 +322,6 @@ def _seed_records(paths: CompanionPaths, *, today: date) -> None:
         "Led a fictional migration that reduced demo incident recovery time by 35%.\n"
     )
     profile_path = paths.imports / "fictional-demo-profile.txt"
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(profile_text, encoding="utf-8")
     profile_digest = hashlib.sha256(profile_text.encode("utf-8")).hexdigest()
     anchored_at = datetime.combine(today, time(hour=10), tzinfo=UTC)
