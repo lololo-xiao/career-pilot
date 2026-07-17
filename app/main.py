@@ -152,6 +152,10 @@ from career_companion.services.mcp_servers import (
     synchronize_mcp_profile_config,
     upsert_mcp_server,
 )
+from career_companion.services.memory_context import (
+    audit_memory_context_resolution,
+    build_active_memory_context,
+)
 from career_companion.web import frontend_build_directory
 
 
@@ -1435,7 +1439,18 @@ async def stream_companion_reply(
             detail=str(exc),
         ) from exc
 
-    payload = build_hermes_run_payload(effective_request, model=prepared.model)
+    with account_session(paths) as session:
+        active_memory_context = build_active_memory_context(session)
+        audit_memory_context_resolution(
+            session,
+            active_memory_context,
+            conversation_id=session_id,
+        )
+    payload = build_hermes_run_payload(
+        effective_request,
+        model=prepared.model,
+        active_memory_context=active_memory_context,
+    )
     session_key = f"career-companion:web:{prepared.account_key}:{session_id}"
 
     async def events() -> AsyncIterator[bytes]:

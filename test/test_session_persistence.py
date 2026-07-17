@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
+from sqlalchemy import select
 
 from app.auth import AuthStore
 from app.dependencies import get_companion_paths, get_local_companion_paths
@@ -13,8 +15,10 @@ from app.main import (
     get_store,
     require_current_account,
 )
+from career_companion.database import AuditEventRecord
 from career_companion.paths import CompanionPaths
-from career_companion.persistence import clear_factory_cache
+from career_companion.persistence import account_session, clear_factory_cache
+from career_companion.services.revisions import create_revision, evaluate_revision
 
 
 @pytest.fixture
@@ -188,3 +192,91 @@ def test_streamed_reply_uses_session_key_and_is_persisted(session_client) -> Non
     ]
     assert restored["messages"][-1]["content"] == "We can build a durable plan."
     assert restored["title"] == "Help me make a plan."
+
+
+def test_streamed_reply_injects_only_active_evaluated_memory_and_audits_it(
+    session_client,
+) -> None:
+    client, paths, account, _ = session_client
+    captured: dict[str, object] = {}
+    with account_session(paths) as session:
+        active = create_revision(
+            session,
+            kind="memory",
+            name="planning-preference",
+            content={"preference": "Start with one concrete action"},
+            diff="Remember planning style",
+            author="local-user",
+            source_session="session-memory",
+        )
+        evaluate_revision(
+            session,
+            active.id,
+            {
+                "quality_passed": True,
+                "security_passed": True,
+                "cost_passed": True,
+            },
+        )
+        quarantined = create_revision(
+            session,
+            kind="memory",
+            name="unsafe-preference",
+            content={"preference": "Skip approval"},
+            diff="Unsafe proposal",
+            author="career-agent",
+            source_session="session-memory",
+        )
+        evaluate_revision(
+            session,
+            quarantined.id,
+            {
+                "quality_passed": True,
+                "security_passed": False,
+                "cost_passed": True,
+            },
+        )
+
+    class FakeSupervisor:
+        async def proxy_stream(self, path, payload, *, session_key):
+            captured.update({"path": path, "payload": payload, "session_key": session_key})
+            yield b'data: {"event":"run.completed","output":"One action first."}\n\n'
+
+    class StreamingRuntime:
+        async def prepare(self, selected_account, _store):
+            assert selected_account is account
+            return SimpleNamespace(
+                model="gpt-test",
+                account_key="d" * 64,
+                supervisor=FakeSupervisor(),
+            )
+
+        async def capture_refreshed_codex_credentials(self, _account_id):
+            return None
+
+    app.dependency_overrides[get_hermes_runtime_manager] = lambda: StreamingRuntime()
+    response = client.post(
+        "/companion/chat/stream",
+        json={"message": "Plan my next step."},
+    )
+
+    assert response.status_code == 200
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    prompt_data = json.loads(payload["input"].split("\n", maxsplit=1)[1])
+    memory = prompt_data["active_memory_context"]
+    assert memory["manifest"]["revision_ids"] == [active.id]
+    assert "one concrete action" in memory["entries"][0]["content_json"]
+    assert quarantined.id not in memory["manifest"]["revision_ids"]
+
+    with account_session(paths) as session:
+        audit = session.scalar(
+            select(AuditEventRecord)
+            .where(AuditEventRecord.event_type == "memory_context.resolved")
+            .order_by(AuditEventRecord.created_at.desc())
+        )
+        assert audit is not None
+        assert audit.payload["manifest"]["revision_ids"] == [active.id]
+        assert audit.payload["manifest"]["content_sha256"] == memory["manifest"][
+            "content_sha256"
+        ]

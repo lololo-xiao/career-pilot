@@ -8,6 +8,11 @@ from career_companion.services.audit import record_audit
 from career_companion.services.replay import evaluate_replay_metrics
 
 ALLOWED_REVISION_KINDS = {"memory", "skill", "rubric"}
+REVISION_EVALUATION_GATES = (
+    "quality_passed",
+    "security_passed",
+    "cost_passed",
+)
 IMMUTABLE_TARGETS = {
     "source-code",
     "core-policy",
@@ -17,6 +22,13 @@ IMMUTABLE_TARGETS = {
     "personality",
     "verified-fact",
 }
+
+
+def has_passed_evaluation(revision: RevisionRecord) -> bool:
+    """Return whether a revision has explicit passing results for every gate."""
+
+    evaluation = revision.evaluation if isinstance(revision.evaluation, dict) else {}
+    return all(evaluation.get(gate) is True for gate in REVISION_EVALUATION_GATES)
 
 
 def create_revision(
@@ -69,7 +81,7 @@ def evaluate_revision(session: Session, revision_id: str, metrics: dict) -> Revi
     revision = session.get(RevisionRecord, revision_id)
     if not revision:
         raise LookupError("Revision not found")
-    required = {"quality_passed", "security_passed", "cost_passed"}
+    required = set(REVISION_EVALUATION_GATES)
     if not required.issubset(metrics):
         raise ValueError("Evaluation must include quality, security, and cost results")
     if revision.kind in {"skill", "rubric"}:
@@ -80,7 +92,7 @@ def evaluate_revision(session: Session, revision_id: str, metrics: dict) -> Revi
         )
         metrics = metrics | replay_result
     revision.evaluation = metrics
-    if all(bool(metrics[key]) for key in required):
+    if all(metrics[key] is True for key in required):
         session.execute(
             update(RevisionRecord)
             .where(
