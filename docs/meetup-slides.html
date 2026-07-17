@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#173d32" />
+  <title>CareerPilot — Meetup deck</title>
+  <style>
+    :root {
+      --ink: #182923;
+      --forest: #173d32;
+      --green: #176b55;
+      --sage: #dce9df;
+      --cream: #f4f0e8;
+      --paper: #fffdf8;
+      --line: #d8ddd5;
+      --lime: #d8f65b;
+      --peach: #f1a36f;
+      --muted: #64706b;
+      --shadow: 0 24px 70px rgba(23, 61, 50, 0.16);
+      --serif: Georgia, "Times New Roman", serif;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #0e211b; color: var(--ink); }
+    body { font-family: var(--sans); overflow: hidden; }
+    button, a { font: inherit; }
+
+    .deck { position: relative; width: 100vw; height: 100vh; background: var(--cream); }
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+      overflow: hidden;
+      padding: clamp(32px, 4.7vw, 72px) clamp(38px, 6.2vw, 96px);
+      background:
+        radial-gradient(circle at 88% 12%, rgba(216, 246, 91, 0.18), transparent 25%),
+        linear-gradient(135deg, #fffdf8 0%, #f4f0e8 76%);
+    }
+    .slide.active { display: flex; flex-direction: column; animation: reveal 260ms ease both; }
+    @keyframes reveal { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    .slide.dark {
+      color: var(--paper);
+      background:
+        radial-gradient(circle at 80% 18%, rgba(216, 246, 91, 0.18), transparent 28%),
+        linear-gradient(145deg, #0f2a22 0%, #173d32 60%, #1d4a3c 100%);
+    }
+    .slide.peach {
+      background:
+        radial-gradient(circle at 85% 12%, rgba(255, 253, 248, 0.48), transparent 25%),
+        linear-gradient(140deg, #f3b58d 0%, #ef9f6b 100%);
+    }
+
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { display: inline-flex; align-items: center; gap: 11px; font-weight: 800; letter-spacing: -0.02em; }
+    .brand-mark {
+      display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px;
+      background: var(--peach); color: var(--forest); font: 700 16px var(--serif); transform: rotate(-2deg);
+      box-shadow: inset 0 0 0 1px rgba(24, 41, 35, 0.14);
+    }
+    .dark .brand-mark { background: var(--lime); }
+    .kicker { margin: 0 0 12px; color: var(--green); font-size: 13px; font-weight: 850; letter-spacing: 0.2em; text-transform: uppercase; }
+    .dark .kicker { color: var(--lime); }
+    h1, h2, h3, p { margin-top: 0; }
+    h1, h2 { font-family: var(--serif); font-weight: 500; letter-spacing: -0.055em; line-height: 0.98; }
+    h1 { font-size: clamp(56px, 7vw, 112px); margin-bottom: 24px; }
+    h2 { font-size: clamp(46px, 5.5vw, 82px); margin-bottom: 22px; }
+    h3 { margin-bottom: 8px; font-size: clamp(18px, 1.7vw, 26px); line-height: 1.12; letter-spacing: -0.025em; }
+    .lede { max-width: 880px; color: var(--muted); font-size: clamp(19px, 2vw, 30px); line-height: 1.42; }
+    .dark .lede { color: #d8e1dc; }
+    .tiny { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .dark .tiny { color: #b9c9c1; }
+    .push { margin-top: auto; }
+
+    .hero-grid, .two-col, .split-screen { display: grid; grid-template-columns: 0.92fr 1.3fr; gap: clamp(28px, 4vw, 72px); align-items: center; flex: 1; min-height: 0; }
+    .hero-copy { align-self: center; }
+    .hero-copy h1 span { display: block; color: var(--green); }
+    .dark .hero-copy h1 span { color: var(--lime); }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 9px 13px; background: rgba(255,255,255,.62); color: var(--forest); font-size: 13px; font-weight: 750; }
+    .dark .pill { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: var(--paper); }
+    .cta-row { display: flex; align-items: center; gap: 12px; margin-top: 28px; }
+    .cta { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 12px 18px; text-decoration: none; font-weight: 800; background: var(--lime); color: var(--forest); }
+    .key { display: inline-grid; place-items: center; min-width: 27px; height: 27px; border: 1px solid rgba(255,255,255,.3); border-radius: 7px; font-size: 12px; }
+
+    .frame {
+      position: relative; border: 1px solid rgba(24,41,35,.14); border-radius: 22px; overflow: hidden;
+      background: #fff; box-shadow: var(--shadow); min-height: 0;
+    }
+    .frame::before { content: ""; display: block; height: 20px; background: #f8f6f1; border-bottom: 1px solid #e5e2db; }
+    .frame::after { content: "•••"; position: absolute; top: 0; left: 12px; color: #9aa39e; letter-spacing: 2px; line-height: 17px; font-size: 11px; }
+    .frame img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center top; }
+    .hero-frame { height: min(66vh, 650px); transform: rotate(0.6deg); }
+    .hero-frame img { object-position: 50% 48%; }
+    .screenshot-frame { height: min(65vh, 620px); }
+    .screenshot-frame.report img { object-position: 50% 31%; }
+    .screenshot-frame.profile img { object-position: 50% 0; }
+
+    .big-claim { max-width: 1080px; font: 500 clamp(48px, 6.5vw, 98px)/1.02 var(--serif); letter-spacing: -0.055em; }
+    .big-claim em { color: var(--green); font-style: normal; }
+    .dark .big-claim em { color: var(--lime); }
+    .problem-grid, .principle-grid, .roadmap-grid, .ask-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: auto; }
+    .card { padding: 22px; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,253,248,.75); }
+    .card .number { display: block; margin-bottom: 38px; color: var(--green); font: 500 36px var(--serif); }
+    .card p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.42; }
+    .dark .card { border-color: rgba(255,255,255,.15); background: rgba(255,255,255,.06); }
+    .dark .card p { color: #c6d3cd; }
+    .dark .card .number { color: var(--lime); }
+
+    .loop { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; align-items: stretch; margin-top: clamp(30px, 6vh, 70px); }
+    .loop-step { position: relative; min-height: 180px; padding: 24px 18px; border-radius: 20px; background: var(--paper); border: 1px solid var(--line); }
+    .loop-step:not(:last-child)::after { content: "→"; position: absolute; z-index: 2; right: -21px; top: 72px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 999px; background: var(--lime); font-weight: 900; }
+    .loop-step strong { display: block; margin-bottom: 32px; color: var(--green); font: 500 34px var(--serif); }
+    .loop-step span { display: block; font-weight: 850; }
+    .loop-step small { display: block; margin-top: 8px; color: var(--muted); line-height: 1.35; }
+    .loop-caption { margin: 22px auto 0; color: var(--muted); font-size: 17px; text-align: center; }
+
+    .callout-list { display: grid; gap: 14px; }
+    .callout { display: grid; grid-template-columns: 40px 1fr; gap: 14px; padding: 18px; border-radius: 16px; background: rgba(255,255,255,.66); border: 1px solid var(--line); }
+    .callout > span { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--lime); color: var(--forest); font-weight: 900; }
+    .callout p { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 1.4; }
+
+    .evidence-grid { display: grid; grid-template-columns: 1.35fr .65fr; gap: 28px; flex: 1; min-height: 0; align-items: center; }
+    .lane-stack { display: grid; gap: 14px; }
+    .lane { padding: 20px; border-radius: 18px; color: var(--forest); }
+    .lane strong { display: block; font-size: 18px; }
+    .lane span { display: block; margin-top: 5px; color: #53635d; line-height: 1.35; }
+    .lane.good { background: #dfeee7; }
+    .lane.near { background: #f7e8d7; }
+    .lane.gap { background: #f5dad1; }
+    .truth-line { margin-top: 16px; padding: 18px; border-left: 4px solid var(--green); font: 500 21px/1.35 var(--serif); }
+
+    .side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; flex: 1; min-height: 0; }
+    .mini-shot { position: relative; min-height: 0; border-radius: 20px; overflow: hidden; border: 1px solid rgba(24,41,35,.16); box-shadow: 0 16px 46px rgba(23,61,50,.13); background: white; }
+    .mini-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+    .mini-shot.resources img { object-position: 50% 60%; }
+    .caption-tag { position: absolute; left: 16px; bottom: 16px; padding: 9px 12px; border-radius: 999px; background: rgba(23,61,50,.94); color: white; font-size: 12px; font-weight: 800; }
+
+    .architecture { display: grid; grid-template-columns: 1fr 80px 1fr 80px 1fr; align-items: center; margin: 30px 0 28px; }
+    .arch-box { min-height: 210px; padding: 24px; border-radius: 22px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.15); }
+    .arch-box span { color: var(--lime); font-size: 12px; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+    .arch-box h3 { margin-top: 35px; font: 500 30px/1.04 var(--serif); }
+    .arch-box p { color: #c5d3cd; font-size: 14px; line-height: 1.45; }
+    .arch-arrow { color: var(--lime); font-size: 30px; text-align: center; }
+    .guardrails { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .guardrail { padding: 16px 18px; border-radius: 15px; background: rgba(216,246,91,.1); border: 1px solid rgba(216,246,91,.24); }
+    .guardrail strong { display: block; margin-bottom: 4px; color: var(--lime); }
+    .guardrail span { color: #c8d4cf; font-size: 13px; line-height: 1.35; }
+
+    .roadmap-grid { grid-template-columns: repeat(3, 1fr); margin-top: 22px; }
+    .roadmap { padding: 25px; border-radius: 22px; background: rgba(255,255,255,.76); border: 1px solid var(--line); }
+    .roadmap.now { border-top: 6px solid var(--green); }
+    .roadmap.next { border-top: 6px solid var(--lime); }
+    .roadmap.later { border-top: 6px solid var(--peach); }
+    .roadmap small { color: var(--green); font-weight: 850; letter-spacing: .15em; text-transform: uppercase; }
+    .roadmap h3 { margin: 12px 0 18px; font: 500 30px var(--serif); }
+    .roadmap ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 11px; }
+    .roadmap li { color: var(--muted); font-size: 15px; line-height: 1.35; }
+    .roadmap li::before { content: "✓"; margin-right: 8px; color: var(--green); font-weight: 900; }
+    .roadmap.next li::before { content: "→"; }
+    .roadmap.later li::before { content: "○"; color: #b8683a; }
+
+    .demo-flow { display: grid; grid-template-columns: .72fr 1.28fr; gap: 60px; align-items: center; flex: 1; }
+    .demo-steps { counter-reset: step; display: grid; gap: 10px; }
+    .demo-step { counter-increment: step; display: grid; grid-template-columns: 48px 1fr auto; gap: 15px; align-items: center; padding: 16px 18px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.72); }
+    .demo-step::before { content: "0" counter(step); display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: var(--forest); color: white; font-weight: 800; }
+    .demo-step strong { display: block; }
+    .demo-step span { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; }
+    .demo-step time { color: var(--green); font-weight: 850; }
+
+    .closing { display: grid; grid-template-columns: 1fr .72fr; gap: 60px; align-items: end; flex: 1; }
+    .closing h2 { max-width: 900px; font-size: clamp(64px, 8vw, 120px); }
+    .ask-grid { grid-template-columns: 1fr; align-self: end; }
+    .ask { padding: 20px; border-radius: 18px; border: 1px solid rgba(255,255,255,.17); background: rgba(255,255,255,.07); }
+    .ask strong { display: block; color: var(--lime); }
+    .ask span { display: block; margin-top: 5px; color: #ccdad4; line-height: 1.35; }
+
+    .nav { position: fixed; z-index: 50; right: 20px; bottom: 18px; display: flex; align-items: center; gap: 8px; color: rgba(24,41,35,.68); }
+    .nav button { width: 36px; height: 36px; border-radius: 50%; border: 1px solid rgba(24,41,35,.18); background: rgba(255,253,248,.85); color: var(--forest); cursor: pointer; }
+    .counter { display: grid; place-items: center; min-width: 54px; height: 30px; border-radius: 999px; background: rgba(255,253,248,.86); color: var(--forest); font-size: 12px; font-weight: 800; text-align: center; }
+    .progress { position: fixed; z-index: 49; left: 0; bottom: 0; width: 100%; height: 4px; background: rgba(255,255,255,.25); }
+    .progress span { display: block; width: 0; height: 100%; background: var(--lime); transition: width 240ms ease; }
+    .help { position: fixed; z-index: 50; left: 22px; bottom: 15px; padding: 9px 12px; border-radius: 999px; background: rgba(255,253,248,.82); color: #50605a; font-size: 11px; }
+    .notes-panel { position: fixed; z-index: 60; left: 50%; bottom: 26px; transform: translateX(-50%); width: min(780px, 86vw); max-height: 30vh; overflow: auto; padding: 18px 20px; border-radius: 16px; background: rgba(14,33,27,.96); color: white; box-shadow: var(--shadow); font-size: 14px; line-height: 1.5; }
+    .notes-panel[hidden] { display: none; }
+
+    #slide-1 { padding-top: 38px; padding-bottom: 38px; }
+    #slide-1 .hero-copy h1 { margin-bottom: 14px; font-size: clamp(52px, 5.7vw, 82px); }
+    #slide-1 .hero-copy .lede { font-size: clamp(17px, 1.55vw, 23px); line-height: 1.36; }
+    #slide-1 .pill-row { margin-top: 16px; gap: 8px; }
+    #slide-1 .pill { padding: 7px 9px; font-size: 11px; }
+    #slide-1 .cta-row { margin-top: 14px; }
+    #slide-1 .hero-frame { height: min(61vh, 570px); }
+
+    #slide-4 h2, #slide-6 h2 { font-size: clamp(40px, 4.5vw, 68px); margin-bottom: 16px; }
+    #slide-4 .callout-list, #slide-6 .callout-list { gap: 9px; }
+    #slide-4 .callout, #slide-6 .callout { padding: 13px 15px; }
+    #slide-4 .callout > span, #slide-6 .callout > span { width: 36px; height: 36px; }
+    #slide-4 .callout, #slide-6 .callout { grid-template-columns: 36px 1fr; gap: 12px; }
+    #slide-4 .callout p, #slide-6 .callout p { font-size: 13px; }
+
+    #slide-5 h2 { margin-bottom: 13px; font-size: clamp(38px, 3.7vw, 54px); }
+    #slide-5 .lane-stack { gap: 8px; }
+    #slide-5 .lane { padding: 13px 15px; }
+    #slide-5 .lane strong { font-size: 16px; }
+    #slide-5 .lane span { font-size: 13px; }
+    #slide-5 .truth-line { margin-top: 10px; padding: 12px 14px; font-size: 17px; }
+    #slide-5 .screenshot-frame { height: min(56vh, 500px); }
+
+    @media (max-width: 900px) {
+      .slide { padding: 30px; overflow-y: auto; }
+      .hero-grid, .two-col, .split-screen, .evidence-grid, .demo-flow, .closing { grid-template-columns: 1fr; }
+      .hero-frame, .screenshot-frame { height: 42vh; }
+      .problem-grid, .principle-grid { grid-template-columns: repeat(2, 1fr); }
+      .loop { grid-template-columns: repeat(2, 1fr); }
+      .loop-step:not(:last-child)::after { display: none; }
+      .roadmap-grid, .guardrails { grid-template-columns: 1fr; }
+      .architecture { grid-template-columns: 1fr; gap: 10px; }
+      .arch-arrow { transform: rotate(90deg); }
+      .side-by-side { min-height: 55vh; }
+      .help { display: none; }
+    }
+
+    @media print {
+      @page { size: 13.333in 7.5in; margin: 0; }
+      body { overflow: visible; background: white; }
+      .deck { width: auto; height: auto; }
+      .slide, .slide.active { position: relative; display: flex !important; width: 13.333in; height: 7.5in; break-after: page; animation: none; }
+      .nav, .progress, .help, .notes-panel { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-live="polite">
+    <section class="slide dark active" id="slide-1" data-title="CareerPilot">
+      <div class="topline">
+        <div class="brand"><span class="brand-mark">CP</span>CareerPilot</div>
+        <span class="tiny">Meetup demo · July 2026</span>
+      </div>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="kicker">The job-search agent that can show its work</p>
+          <h1>Automate the search.<span>Keep the truth.</span></h1>
+          <p class="lede">A local-first career companion that remembers context, grounds feedback in evidence, and pauses before consequential actions.</p>
+          <div class="pill-row">
+            <span class="pill">One persistent agent</span>
+            <span class="pill">OpenAI API or ChatGPT/Codex</span>
+            <span class="pill">Skills + MCP</span>
+          </div>
+          <div class="cta-row">
+            <a class="cta" href="http://127.0.0.1:8787/" target="_blank" rel="noreferrer">Open live demo <span>↗</span></a>
+            <span class="tiny"><span class="key">D</span> during the talk</span>
+          </div>
+        </div>
+        <div class="frame hero-frame"><img src="meetup-assets/pilot-fit-card.png" alt="CareerPilot showing a grounded fit check in a conversation with Pilot" /></div>
+      </div>
+      <aside class="speaker-notes" hidden>Open by naming the tension: job search is repetitive enough to automate, but personal enough that unsupported claims can do real harm. CareerPilot is my answer to that tension.</aside>
+    </section>
+
+    <section class="slide" id="slide-2" data-title="The problem">
+      <div class="topline"><p class="kicker">The problem</p><span class="tiny">Faster is not automatically better</span></div>
+      <p class="big-claim">Generic AI makes candidates faster at producing words. It does not make those words <em>defensible.</em></p>
+      <div class="problem-grid">
+        <article class="card"><span class="number">01</span><h3>Context resets</h3><p>The candidate keeps re-explaining goals, experience, and constraints.</p></article>
+        <article class="card"><span class="number">02</span><h3>Evidence disappears</h3><p>Advice sounds confident without showing which claim supports it.</p></article>
+        <article class="card"><span class="number">03</span><h3>Work is fragmented</h3><p>Discovery, tailoring, tracking, and preparation live in separate tools.</p></article>
+        <article class="card"><span class="number">04</span><h3>Automation gets risky</h3><p>A polished false claim or unreviewed submission can damage trust.</p></article>
+      </div>
+      <aside class="speaker-notes" hidden>The product is not “ChatGPT with a job-search prompt.” The problem is continuity, grounding, and control across a long-running workflow.</aside>
+    </section>
+
+    <section class="slide" id="slide-3" data-title="The product loop">
+      <div class="topline"><p class="kicker">The product thesis</p><span class="tiny">One agent, one evidence trail, one controlled loop</span></div>
+      <h2>The job search becomes a loop Pilot can carry with you.</h2>
+      <div class="loop" aria-label="CareerPilot product loop">
+        <article class="loop-step"><strong>01</strong><span>Know</span><small>CV, projects, goals, preferences</small></article>
+        <article class="loop-step"><strong>02</strong><span>Discover</span><small>Roles from selected sources</small></article>
+        <article class="loop-step"><strong>03</strong><span>Decide</span><small>Rank fit and expose gaps</small></article>
+        <article class="loop-step"><strong>04</strong><span>Prepare</span><small>Tailor and rehearse honestly</small></article>
+        <article class="loop-step"><strong>05</strong><span>Approve</span><small>Human controls every external action</small></article>
+        <article class="loop-step"><strong>06</strong><span>Learn</span><small>Outcomes improve future support</small></article>
+      </div>
+      <p class="loop-caption">Today: most of the workspace loop is real. The next milestone is conversational orchestration across the whole chain.</p>
+      <aside class="speaker-notes" hidden>Walk left to right. Be explicit: discovery connectors and some preparation tools exist, but Pilot does not yet orchestrate the entire loop autonomously from chat.</aside>
+    </section>
+
+    <section class="slide" id="slide-4" data-title="Meet Pilot">
+      <div class="topline"><p class="kicker">Actual product · conversation</p><span class="tiny">Persistent sessions + personality + working context</span></div>
+      <div class="two-col">
+        <div>
+          <h2>Meet Pilot: the one place the search can continue.</h2>
+          <div class="callout-list">
+            <article class="callout"><span>1</span><div><h3>A real identity</h3><p>Name and SOUL notes shape tone without weakening safety rules.</p></div></article>
+            <article class="callout"><span>2</span><div><h3>Session continuity</h3><p>Messages, CV text, role context, and fit checks persist locally.</p></div></article>
+            <article class="callout"><span>3</span><div><h3>Visible runtime</h3><p>The user sees the model, thinking effort, usage, and current context.</p></div></article>
+          </div>
+        </div>
+        <div class="frame screenshot-frame"><img src="meetup-assets/pilot-conversation.png" alt="CareerPilot conversation interface with persistent context and a user-approved next action" /></div>
+      </div>
+      <aside class="speaker-notes" hidden>Point to the left rail sessions, the center conversation, and the right-side working memory. The strongest detail is the assistant saying it will pause before changing or submitting anything.</aside>
+    </section>
+
+    <section class="slide" id="slide-5" data-title="Grounded feedback">
+      <div class="topline"><p class="kicker">Actual product · grounded fit</p><span class="tiny">Feedback with citations and an honesty boundary</span></div>
+      <div class="evidence-grid">
+        <div class="frame screenshot-frame report"><img src="meetup-assets/fit-report.png" alt="CareerPilot full grounded fit report with claims checked" /></div>
+        <div>
+          <h2>Every fit opinion has to survive an evidence check.</h2>
+          <div class="lane-stack">
+            <article class="lane good"><strong>Demonstrated</strong><span>Direct candidate evidence supports the requirement.</span></article>
+            <article class="lane near"><strong>Adjacent</strong><span>Transferable experience exists; the exact claim does not.</span></article>
+            <article class="lane gap"><strong>Missing</strong><span>The gap remains visible and becomes a preparation action.</span></article>
+          </div>
+          <p class="truth-line">The agent can say “you are close” without rewriting “close” into “experienced.”</p>
+        </div>
+      </div>
+      <aside class="speaker-notes" hidden>Use the Kubernetes example: Docker and CI/CD evidence does not prove production Kubernetes ownership. This is the product’s differentiator in one sentence.</aside>
+    </section>
+
+    <section class="slide" id="slide-6" data-title="Evidence workspace">
+      <div class="topline"><p class="kicker">Actual product · evidence workspace</p><span class="tiny">The candidate owns the source of truth</span></div>
+      <div class="two-col">
+        <div>
+          <h2>A profile is not a blob of CV text. It is reviewed career evidence.</h2>
+          <div class="callout-list">
+            <article class="callout"><span>✓</span><div><h3>Import and review</h3><p>PDF or DOCX becomes editable claims with source excerpts.</p></div></article>
+            <article class="callout"><span>↗</span><div><h3>Link code evidence</h3><p>Read-only project analysis creates improvements and interview questions.</p></div></article>
+            <article class="callout"><span>⊘</span><div><h3>Choose what is usable</h3><p>Only confirmed facts can enter fit checks and tailored materials.</p></div></article>
+          </div>
+        </div>
+        <div class="frame screenshot-frame profile"><img src="meetup-assets/profile-evidence.png" alt="CareerPilot profile workspace with target roles, locations, languages, and CV import" /></div>
+      </div>
+      <aside class="speaker-notes" hidden>Stress user ownership. Imported facts start as reviewable data, not truth. The candidate confirms or removes them before the agent can use them.</aside>
+    </section>
+
+    <section class="slide" id="slide-7" data-title="Operating workspace">
+      <div class="topline"><p class="kicker">Actual product · operating workspace</p><span class="tiny">From “maybe” to the next controlled action</span></div>
+      <h2>Rank the opportunities. Then carry each one through a visible pipeline.</h2>
+      <div class="side-by-side">
+        <div class="mini-shot"><img src="meetup-assets/job-queue.png" alt="CareerPilot ranked job queue with score reasons" /><span class="caption-tag">Deterministic queue · reason for every score</span></div>
+        <div class="mini-shot"><img src="meetup-assets/applications.png" alt="CareerPilot application pipeline with stages and approved artifacts" /><span class="caption-tag">Human-controlled pipeline · artifacts + outcomes</span></div>
+      </div>
+      <aside class="speaker-notes" hidden>Clarify that the queue score is deterministic prioritization, while the 0–10 fit report is evidence-grounded analysis. This naming and UX distinction still needs polishing.</aside>
+    </section>
+
+    <section class="slide" id="slide-8" data-title="Customization">
+      <div class="topline"><p class="kicker">Actual product · customization</p><span class="tiny">Not a fixed bot—a user-owned agent workspace</span></div>
+      <h2>Personality, memories, skills, and outside tools are all visible.</h2>
+      <div class="side-by-side">
+        <div class="mini-shot"><img src="meetup-assets/agent-customization.png" alt="CareerPilot identity and SOUL editor" /><span class="caption-tag">Identity + SOUL.md</span></div>
+        <div class="mini-shot resources"><img src="meetup-assets/agent-resources.png" alt="CareerPilot editable memories and skills workspace" /><span class="caption-tag">Editable memory + skills · MCP allowlists</span></div>
+      </div>
+      <div class="pill-row">
+        <span class="pill">Built-in job-search skills</span><span class="pill">User-owned Markdown skills</span><span class="pill">MCP presets</span><span class="pill">Explicit tool allowlists</span>
+      </div>
+      <aside class="speaker-notes" hidden>Say what “self-evolving” means today: Pilot can propose versioned memory, skill, and rubric revisions; they are evaluated and reversible. Applying active revisions automatically at runtime is still on the roadmap.</aside>
+    </section>
+
+    <section class="slide dark" id="slide-9" data-title="Safety architecture">
+      <div class="topline"><p class="kicker">Architecture and trust</p><span class="tiny">Local by default · explicit at the boundary</span></div>
+      <h2>The agent can prepare. The user decides what leaves the device.</h2>
+      <div class="architecture" aria-label="CareerPilot architecture">
+        <article class="arch-box"><span>Local source of truth</span><h3>Career workspace</h3><p>SQLite, CV evidence, jobs, applications, artifacts, conversations, revisions, audit events.</p></article>
+        <div class="arch-arrow">→</div>
+        <article class="arch-box"><span>Agent runtime</span><h3>Pilot + skills</h3><p>OpenAI through API key or ChatGPT/Codex. Model routes, MCP allowlists, and guarded local tools.</p></article>
+        <div class="arch-arrow">→</div>
+        <article class="arch-box"><span>Approval boundary</span><h3>Outside world</h3><p>Public job sources, optional MCP services, approved form filling. Final submission stays manual.</p></article>
+      </div>
+      <div class="guardrails">
+        <div class="guardrail"><strong>Truth boundary</strong><span>No unsupported claim becomes a match or tailored fact.</span></div>
+        <div class="guardrail"><strong>Action boundary</strong><span>Preview and approve sensitive operations; tokens are scoped and expiring.</span></div>
+        <div class="guardrail"><strong>Evolution boundary</strong><span>Version, evaluate, quarantine, activate, or roll back user-owned revisions.</span></div>
+      </div>
+      <aside class="speaker-notes" hidden>This slide answers “why local?” and “what can the agent do?” Avoid claiming public multi-user readiness; current deployment is deliberately device-local.</aside>
+    </section>
+
+    <section class="slide" id="slide-10" data-title="Roadmap">
+      <div class="topline"><p class="kicker">Honest product status</p><span class="tiny">Ready now · next build · later scale</span></div>
+      <h2>The core workspace is real. The autonomous loop is the next product.</h2>
+      <div class="roadmap-grid">
+        <article class="roadmap now"><small>Ready now</small><h3>Show this</h3><ul><li>Persistent Pilot sessions + SOUL</li><li>Evidence profile + project review</li><li>Grounded fit with citations</li><li>Ranked jobs + application stages</li><li>Tailored artifacts + approvals</li><li>Skills, MCP, revisions, rollback</li></ul></article>
+        <article class="roadmap next"><small>Next</small><h3>Make it effortless</h3><ul><li>Semantic memory across sessions</li><li>Chat-driven discovery → tracking</li><li>Guided form-fill approval UX</li><li>Interview practice workspace</li><li>Activate evaluated revisions</li><li>Onboarding and clearer next actions</li></ul></article>
+        <article class="roadmap later"><small>Later</small><h3>Make it scalable</h3><ul><li>Safe scheduled search queues</li><li>Guided connector OAuth</li><li>Public hosting + multi-user auth</li><li>Postgres / vector retrieval</li><li>Retention and consent controls</li><li>Production observability + limits</li></ul></article>
+      </div>
+      <aside class="speaker-notes" hidden>Be candid. Semantic memory, complete conversational orchestration, and runtime application of revisions are not done. This honesty makes the rest of the demo more credible.</aside>
+    </section>
+
+    <section class="slide peach" id="slide-11" data-title="Live demo">
+      <div class="topline"><p class="kicker">Five-minute live demo</p><span class="tiny">Use one story; avoid touring every screen</span></div>
+      <div class="demo-flow">
+        <div>
+          <h2>One role. One honest decision. One controlled next step.</h2>
+          <p class="lede">The demo succeeds if people remember the evidence boundary—not the number of features.</p>
+          <a class="cta" href="http://127.0.0.1:8787/" target="_blank" rel="noreferrer">Launch CareerPilot <span>↗</span></a>
+        </div>
+        <div class="demo-steps">
+          <article class="demo-step"><div><strong>Start with Pilot</strong><span>Show personality, sessions, and working context.</span></div><time>0:45</time></article>
+          <article class="demo-step"><div><strong>Ask: “Is this worth pursuing?”</strong><span>Open demonstrated, adjacent, and missing evidence.</span></div><time>1:30</time></article>
+          <article class="demo-step"><div><strong>Open the source of truth</strong><span>Show confirmed claims and project evidence.</span></div><time>0:55</time></article>
+          <article class="demo-step"><div><strong>Move it through the pipeline</strong><span>Show score reason, artifacts, and explicit status.</span></div><time>1:00</time></article>
+          <article class="demo-step"><div><strong>End at the boundary</strong><span>“Prepare and fill; I review and submit.”</span></div><time>0:50</time></article>
+        </div>
+      </div>
+      <aside class="speaker-notes" hidden>Keep a screenshot fallback open. Do not make a paid provider call unless the live provider smoke test has passed before the meetup. The seeded demo workspace is enough to tell the product story.</aside>
+    </section>
+
+    <section class="slide dark" id="slide-12" data-title="Closing">
+      <div class="topline"><div class="brand"><span class="brand-mark">CP</span>CareerPilot</div><span class="tiny">github.com/…/career-pilot</span></div>
+      <div class="closing">
+        <div>
+          <p class="kicker">The promise</p>
+          <h2>Automate the search.<br />Keep the truth.</h2>
+          <p class="lede">I’m building the career agent that can remember, act, improve—and still tell you exactly why.</p>
+        </div>
+        <div class="ask-grid">
+          <article class="ask"><strong>Job seekers</strong><span>Which part of the search should Pilot carry next?</span></article>
+          <article class="ask"><strong>Agent builders</strong><span>Help pressure-test memory, approvals, and safe tool orchestration.</span></article>
+          <article class="ask"><strong>Hiring teams</strong><span>What evidence would make an AI-assisted application more trustworthy?</span></article>
+        </div>
+      </div>
+      <p class="tiny">Feedback welcome · local-first alpha · final submission remains human</p>
+      <aside class="speaker-notes" hidden>End on the product promise, then ask for one kind of feedback from the room. Do not end with the roadmap.</aside>
+    </section>
+  </main>
+
+  <div class="help">← → navigate · D demo · N notes · F fullscreen</div>
+  <nav class="nav" aria-label="Slide navigation">
+    <button id="previous" type="button" aria-label="Previous slide">←</button>
+    <span class="counter" id="counter">1 / 12</span>
+    <button id="next" type="button" aria-label="Next slide">→</button>
+  </nav>
+  <div class="progress" aria-hidden="true"><span id="progress"></span></div>
+  <aside class="notes-panel" id="notes" hidden aria-live="polite"></aside>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    const counter = document.getElementById('counter');
+    const progress = document.getElementById('progress');
+    const notes = document.getElementById('notes');
+    let index = Math.max(0, slides.findIndex((slide) => `#${slide.id}` === location.hash));
+
+    function show(nextIndex, updateHash = true) {
+      index = Math.max(0, Math.min(slides.length - 1, nextIndex));
+      slides.forEach((slide, slideIndex) => slide.classList.toggle('active', slideIndex === index));
+      counter.textContent = `${index + 1} / ${slides.length}`;
+      progress.style.width = `${((index + 1) / slides.length) * 100}%`;
+      document.title = `${slides[index].dataset.title} — CareerPilot meetup`;
+      if (updateHash) history.replaceState(null, '', `#${slides[index].id}`);
+      if (!notes.hidden) updateNotes();
+    }
+
+    function updateNotes() {
+      const source = slides[index].querySelector('.speaker-notes');
+      notes.textContent = source?.textContent?.trim() || 'No notes for this slide.';
+    }
+
+    function toggleNotes() {
+      notes.hidden = !notes.hidden;
+      if (!notes.hidden) updateNotes();
+    }
+
+    document.getElementById('previous').addEventListener('click', () => show(index - 1));
+    document.getElementById('next').addEventListener('click', () => show(index + 1));
+    window.addEventListener('hashchange', () => {
+      const found = slides.findIndex((slide) => `#${slide.id}` === location.hash);
+      if (found >= 0) show(found, false);
+    });
+    window.addEventListener('keydown', (event) => {
+      if (['ArrowRight', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); show(index + 1); }
+      if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(index - 1); }
+      if (event.key === 'Home') show(0);
+      if (event.key === 'End') show(slides.length - 1);
+      if (event.key.toLowerCase() === 'n') toggleNotes();
+      if (event.key.toLowerCase() === 'd') window.open('http://127.0.0.1:8787/', '_blank', 'noopener');
+      if (event.key.toLowerCase() === 'f') document.documentElement.requestFullscreen?.();
+    });
+    show(index, false);
+  </script>
+</body>
+</html>

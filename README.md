@@ -1,115 +1,129 @@
 # CareerPilot
 
-CareerPilot is a local-first AI career companion for discovering opportunities, reviewing
-career evidence, comparing a profile with a role, and managing applications. Instead of
-asking users to orchestrate specialist agents, it provides one consistent partner—Pilot—
-that holds the working context and explains the tools and permissions it wants to use.
+> **Automate the search. Keep the truth.**
 
-The product combines a conversation with a persistent, local career workspace. Pilot can
-discuss direction and next steps through `POST /companion/chat`; the existing retrieval
-and grounding workflow appears inside that conversation as a fit-check capability rather
-than as the whole UI. The local `/workspace` stores reviewed career evidence,
-jobs, applications, artifacts, approvals, model routes, and reversible learned revisions
-in a device-local operational database. Conversation sessions, messages, CV/role context,
-and fit reports are stored in that same account-scoped database until the user deletes
-them. The chosen agent name and supplemental soul notes are also mirrored to readable
-local agent files.
+CareerPilot is a local-first, evidence-grounded job-search companion. Its agent, **Pilot**,
+keeps the working context, explains its recommendations with evidence, and pauses before
+consequential actions.
 
-CareerPilot requires no product account or sign-in. It creates one stable local workspace,
-then requires either ChatGPT plan access through the official Codex app-server runtime or
-a user-owned OpenAI API key. Both paths power Pilot and the same grounded match workflow.
-The stack includes Next.js, FastAPI, encrypted provider and search credentials,
-SQLAlchemy/Alembic operational storage, LangGraph, local
-Chroma retrieval, strict structured outputs, deterministic citation checks, and optional
-Langfuse tracing. Automated tests never make provider or telemetry calls.
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-176b55)](https://www.python.org/)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-20332d)](https://nextjs.org/)
+![Local first](https://img.shields.io/badge/deployment-local--first-f1a36f)
+![Human controlled](https://img.shields.io/badge/applications-human--controlled-d8f65b)
 
-## Demo experience
+![CareerPilot grounded fit check](docs/meetup-assets/pilot-fit-card.png)
 
-- **One companion:** Pilot has a stable identity and speaks as a collaborative partner.
-- **Persistent sessions:** conversations, the current profile, role, and fit report survive
-  refreshes and restarts; sessions can be created, selected, renamed, and deleted.
-- **Durable identity:** the companion name and user-owned soul notes persist locally while
-  built-in safety, approval, evidence, and truthfulness rules remain protected.
-- **Persistent workspace:** reviewed evidence, job ranking, application state, artifacts,
-  approvals, model controls, and learned revisions survive browser sessions on this device.
-- **Capabilities, not agents:** uploading a CV and running a grounded fit check are tools
-  within the conversation.
-- **Understandable tool use:** approval cards summarize the intended action, name the
-  tool and behavior, and keep technical code collapsed unless the user opens it.
-- **Visible setup state:** Settings shows which tools and MCP connections are ready,
-  limited, disabled, or require configuration, including live web search.
-- **Editable agent workspace:** Settings exposes local memory files, built-in and
-  user-owned skills, and MCP server configuration with guarded create, edit, and remove
-  flows.
-- **Opt-in LinkedIn search:** A disabled-by-default community MCP preset can search jobs
-  and read job details through `uvx`; messaging, connection, posting, and application
-  tools are not allowlisted.
-- **Human-controlled evidence:** extracted claims can be corrected, recategorized,
-  verified, or removed before Pilot relies on them.
-- **Honesty by design:** candidate-specific advice is grounded in supplied evidence, and
-  the formal report still verifies every displayed quote deterministically.
+## Why CareerPilot
 
-## Product contract
+Most job-search AI generates text. CareerPilot is being built to carry a long-running,
+high-stakes workflow:
 
-The report distinguishes four cases:
+- **One companion, not a panel of bots.** Pilot has a persistent identity, conversation
+  sessions, working context, model controls, and a user-owned personality.
+- **Evidence before confidence.** Fit feedback separates demonstrated, adjacent, missing,
+  and unsupported skills, with a citation behind every displayed match.
+- **A real operating workspace.** Reviewed career facts, projects, jobs, applications,
+  artifact versions, approvals, model routes, revisions, and audit events survive restarts.
+- **Human control at the boundary.** Pilot may research, prepare, and fill approved fields;
+  the user reviews sensitive changes and submits the final application manually.
+- **Local and extensible.** The current product runs on one trusted device using an OpenAI
+  API key or eligible ChatGPT/Codex access, with skills and allowlisted MCP connections.
 
-- **Matched:** the job skill is directly supported by a verbatim candidate quote.
-- **Adjacent:** explicit candidate experience is transferable, but not equivalent.
-- **Missing:** the job asks for a skill that has no adequate candidate evidence.
-- **Unsupported:** a tempting application claim would overstate the available evidence.
+## Product loop
 
-The API returns a 0–10 score, concise summary, matched and adjacent skills with citations,
-missing skills, important job requirements, preparation actions, and unsupported-claim
-warnings.
+```mermaid
+flowchart LR
+    KNOW[Know the candidate] --> FIND[Discover roles]
+    FIND --> DECIDE[Decide with evidence]
+    DECIDE --> PREPARE[Prepare honestly]
+    PREPARE --> APPROVE[Preview and approve]
+    APPROVE --> LEARN[Record outcomes]
+    LEARN -. improve future support .-> KNOW
+```
+
+The workspace already covers most of this loop. The next major milestone is letting Pilot
+orchestrate the whole chain conversationally, with safe pauses at every external boundary.
+
+## What works today
+
+| Area | Status | Current capability |
+|---|---:|---|
+| Pilot conversations | ✅ Ready | Persistent sessions, rename/delete, stored CV and role context, fit reports, model and reasoning controls |
+| Identity and personality | ✅ Ready | Custom name and SOUL notes mirrored to readable local files; protected safety policy remains read-only |
+| Career evidence | ✅ Ready | PDF/DOCX workspace import, editable claims, source excerpts, verification state, work authorization, languages |
+| Project evidence | ✅ Ready | Read-only local or public GitHub analysis, technologies, improvements, and interview questions |
+| Grounded fit | ✅ Ready | 0–10 fit report with demonstrated, adjacent, missing, requirements, actions, and unsupported-claim warnings |
+| Job queue | ✅ Ready | Manual/CSV import, URL deduplication, deterministic ranking, filters, and visible score reasons |
+| Application pipeline | ✅ Ready | Detailed stages, next actions, status history, follow-ups, artifact versions, and explicit manual-submission confirmation |
+| Tailoring | ✅ Ready | CV, cover letter, gap analysis, honesty ledger, interview plan, PDF generation, exact-version approval |
+| Agent resources | ✅ Ready | Visible built-in skills, editable user memories and skills, guarded create/edit/remove flows |
+| MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
+| Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, activated, and reversible; active revisions are not yet applied automatically to the runtime |
+| Job discovery | 🟡 Partial | Greenhouse/Lever discovery and optional web/MCP sources exist, but the primary agent/UI does not yet expose a complete guided flow |
+| Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
+| Long-term memory | 🟡 Partial | Sessions persist, but normal chat currently uses a bounded recent-turn window rather than cross-session semantic retrieval |
+| Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
+| Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
+
+**Legend:** ✅ usable in the current local build · 🟡 real foundation with incomplete
+orchestration/UX · ⬜ not implemented yet
+
+## What to show in a meetup
+
+The [HTML meetup deck](docs/meetup-slides.html) is a keyboard-controlled, printable
+12-slide story built from the real current interface. Open the file directly, or serve the
+repository so all screenshot assets resolve:
+
+![CareerPilot meetup deck](docs/meetup-assets/meetup-deck-title.png)
+
+```bash
+python3 -m http.server 8080
+```
+
+Then open `http://127.0.0.1:8080/docs/meetup-slides.html`.
+
+Recommended five-minute demo:
+
+1. Open Pilot and show its identity, persistent session, and working context.
+2. Ask whether one role is worth pursuing; open the grounded fit card.
+3. Show one demonstrated claim, one adjacent skill, and one honest gap.
+4. Open the evidence profile, ranked queue, and application stage.
+5. End with the boundary: Pilot can prepare and fill; the user reviews and submits.
+
+The deck supports `←` / `→`, `PageUp` / `PageDown`, `Home` / `End`, `F` for fullscreen,
+`N` for speaker notes, and `D` to open the default local product URL.
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    UI[Next.js companion UI] --> LOCAL[Automatic local workspace]
-    LOCAL --> DB[(Encrypted provider store)]
-    LOCAL --> ODB[(Device-local career.db)]
-    LOCAL --> SETTINGS{Required AI connection}
-    SETTINGS -->|API key| OA[OpenAI API]
-    SETTINGS -->|ChatGPT device OAuth| CX[Codex app-server]
-    UI --> CHAT["Pilot conversations + durable session memory"]
-    UI --> WORK["Persistent career workspace"]
-    WORK --> ODB
-    CHAT --> API[FastAPI]
-    API --> ODB
-    API --> OA
-    API --> CX
-    API --> IN["Bounded PDF / DOCX / TXT ingestion"]
-    IN --> UI
-    CHAT -->|grounded fit check| R["LangGraph: retrieve"]
-    R --> CH["Chroma + local MiniLM embeddings"]
-    CH --> A["LangGraph: analyze"]
-    A --> OA
-    A --> CX
-    OA --> PY[Pydantic validation]
-    CX --> PY
-    PY --> V["LangGraph: verify grounding"]
-    V --> UI
-    R -. optional traces .-> LF[Langfuse]
-    A -. prompt, tokens, latency .-> LF
-    V -. guardrail result .-> LF
-    EV[Fixed eval dataset] --> API
+flowchart TB
+    UI[Next.js companion and workspace] --> API[FastAPI]
+    API --> DB[(Account-scoped career.db)]
+    API --> AUTH[(Encrypted provider store)]
+    API --> PILOT[Pilot runtime and skills]
+    PILOT --> ROUTE{Selected AI connection}
+    ROUTE -->|User API key| OPENAI[OpenAI API]
+    ROUTE -->|Eligible ChatGPT plan| CODEX[Official Codex app-server]
+    PILOT --> MCP[Allowlisted MCP servers]
+    API --> MATCH[Retrieve → analyze → verify]
+    MATCH --> CHROMA[Ephemeral Chroma + local embeddings]
+    MATCH --> REPORT[Strict report + citation checks]
+    API --> APPROVAL[Scoped, expiring approval boundary]
+    APPROVAL --> FORM[Approved form fill only]
+    FORM --> HUMAN[Human review and final submission]
 ```
 
-Chroma remains ephemeral per analysis and never stores profiles. The encrypted local
-SQLite store contains the stable device identity and provider credentials. A separate
-device-scoped `career.db` contains reviewed career
-facts and workflow state, without provider credentials. LangGraph
-coordinates only the three meaningful analysis stages; local identity handling, chunking,
-Pydantic validation, and citation verification remain plain Python. See the
-[architecture notes](docs/architecture.md) for trust boundaries and tradeoffs.
+Provider credentials are encrypted separately from career workflow data. Chroma is
+ephemeral per fit analysis and never becomes the durable profile store. LangGraph covers
+the meaningful retrieve/analyze/verify stages; identity handling, parsing, validation,
+approvals, and deterministic grounding checks remain plain Python.
 
-## Local setup
+Read the [architecture notes](docs/architecture.md) and
+[security model](docs/security.md) for the trust boundaries and tradeoffs.
 
-The supported local path requires Python 3.12+ and Node.js 20.9+. It creates isolated
-Career Companion and Hermes environments, builds the browser interface, verifies and
-installs Tectonic, installs Playwright Chromium, initializes a private local secret, and
-opens the loopback application.
+## Local installation
+
+Requirements: Python 3.12+ and Node.js 20.9+.
 
 macOS and mainstream Linux:
 
@@ -124,27 +138,29 @@ Set-ExecutionPolicy -Scope Process Bypass
 ./install.ps1
 ```
 
-The native interface is `http://127.0.0.1:8787`; no provider key is required during
-installation. Users choose their own OpenAI API key or ChatGPT/Codex authorization after
-opening the app. API charges remain separate from ChatGPT plan usage and the product never
-silently falls back between them. See the [installation guide](docs/installation.md) and
-[security model](docs/security.md) for supported platforms, integrity checks, backups,
-customization, and safe limitations.
+Open `http://127.0.0.1:8787`. Installation does not require a provider credential. In
+Settings, connect either:
 
-For development, install the locked dependencies and create `.env` from the example:
+| Connection | Billing and access |
+|---|---|
+| **ChatGPT plan through Codex** | Uses the official Codex runtime and limits included with an eligible ChatGPT plan |
+| **OpenAI API key** | Uses a user-owned OpenAI Platform project with separate usage billing |
+
+CareerPilot never silently falls back from one provider to the other. Credentials are
+encrypted before local storage.
+
+See the [installation guide](docs/installation.md) for integrity checks, backup/restore,
+platform notes, and the Docker fallback.
+
+### Development setup
 
 ```bash
 uv sync --dev --extra companion
 cp .env.example .env
-```
-
-Run the API:
-
-```bash
 uv run fastapi dev
 ```
 
-In a second terminal, install and run the frontend:
+In a second terminal:
 
 ```bash
 cd frontend
@@ -153,99 +169,69 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`. The frontend defaults to `http://localhost:8000` for
-the API. Set `NEXT_PUBLIC_API_BASE_URL` in `frontend/.env.local` when the API is
-elsewhere, and set backend `FRONTEND_ORIGINS` to a comma-separated list of allowed UI
-origins.
+Open `http://localhost:3000`. The development UI defaults to
+`http://localhost:8000`; change `NEXT_PUBLIC_API_BASE_URL` and the backend
+`FRONTEND_ORIGINS` allowlist when using different origins.
 
-Useful endpoints:
-
-- `GET /health` — process health check; no provider credentials required.
-- `GET /local/session` — initialize and return the automatic local workspace.
-- `GET /settings/providers` — show the connected and active AI providers.
-- `GET /settings/capabilities` — show ready, limited, setup-required, and disabled
-  Pilot tools plus MCP allowlists.
-- `PUT /settings/capabilities/web-search` — encrypt and enable a user-owned Brave
-  Search key without changing the selected AI provider.
-- `DELETE /settings/capabilities/web-search` — remove the saved search key and disable
-  live web search.
-- `GET /settings/agent-resources` — list editable memory files and visible skills.
-- `POST|PUT|DELETE /settings/agent-resources/{kind}/...` — create, edit, or remove
-  user-owned memory and skill files; built-in skills remain read-only.
-- `GET|PUT /settings/agent-identity` — read or update the locally persisted companion
-  name and supplemental soul notes.
-- `GET|POST /companion/sessions` — list persistent sessions or create a new one.
-- `GET|PUT|DELETE /companion/sessions/{id}` — restore, rename, or delete a session.
-- `PUT /companion/sessions/{id}/context` — persist that session's CV, role, and fit report.
-- `GET /settings/mcp` — list MCP presets and custom server settings.
-- `POST|PUT|DELETE /settings/mcp/...` — add, edit, enable, disable, or remove an MCP
-  server with an explicit tool allowlist.
-- `POST /settings/providers/api-key` — validate, encrypt, and activate an OpenAI key.
-- `POST /settings/providers/codex/start` — start local-workspace Codex authorization.
-- `POST /settings/providers/select` — switch between existing provider connections.
-- `DELETE /settings/providers/{provider}` — remove a provider connection.
-- `POST /parse-cv` — bounded PDF, DOCX, or TXT extraction.
-- `POST /companion/chat` — contextual conversation with Pilot.
-- `POST /companion/chat/stream` — route-selected Hermes conversation with structured
-  message and career-tool progress events over SSE.
-- `POST /match` — retrieval, provider analysis, and grounding validation.
-- `GET /api/v1/jobs` — list opportunities in the persistent local workspace.
-- `POST /api/v1/jobs` — save and deduplicate a manual opportunity.
-- `GET /api/v1/applications` — list tracked applications and artifact versions.
-- `GET /api/v1/model-routes` — inspect editable task-specific model and cost controls.
-- `GET /api/v1/revisions` — inspect reversible memory, skill, and rubric evolution.
-- `/docs` — interactive OpenAPI documentation in a running development server.
-
-For an unsupported Linux distribution, run the loopback-only Docker fallback:
+### Docker fallback
 
 ```bash
 docker compose up --build
 ```
 
-The backend image bundles the full Career Companion package, Codex 0.139.0, isolated
-Hermes 0.18.2, verified Tectonic 0.16.9, Playwright Chromium, the sanitized profile, and
-the local MiniLM model. It mounts the encrypted local data at `/app/.data`; keep that
-volume private and backed up.
+Keep the mounted `/app/.data` volume private. Do not run multiple API replicas against
+the same SQLite database; move operational storage to PostgreSQL before horizontal scale.
 
-Conversation CV uploads are limited to 5 MB, 30 PDF pages, 20 MB of expanded DOCX
-content, and 50,000 extracted characters; they are processed in memory. Workspace imports
-accept PDF or DOCX up to 20 MB and persist a hashed source copy in the user's local,
-device-local workspace so reviewed claims retain evidence. PDF parsing reads embedded
-text only; image-only scans need OCR and are rejected with a clear message.
+## Safety and privacy contract
+
+CareerPilot is intentionally conservative around career claims and external actions:
+
+- A **matched** skill requires direct candidate evidence and a verified quote.
+- An **adjacent** skill may be transferable but cannot be described as equivalent.
+- A **missing** skill remains a visible gap and can become a preparation action.
+- An **unsupported** claim is warned about and excluded from tailored facts.
+- Final application submission, LinkedIn applications, employer messages, and connection
+  requests are not autonomous actions.
+- Tool output, job pages, uploaded documents, email, and MCP responses are untrusted input.
+- Provider keys, local databases, uploaded documents, browser state, and generated
+  artifacts must never be committed.
+
+Conversation messages, CV/role text, and fit reports persist in the account-scoped local
+database until the user deletes the session. Workspace source documents remain local so
+reviewed claims retain their evidence. Optional Langfuse traces may include CV and role
+text; keep tracing disabled unless policy and consent cover that data.
+
+Current ingestion limits:
+
+- Conversation uploads: 5 MB, 30 PDF pages, 20 MB expanded DOCX, 50,000 extracted characters.
+- Workspace imports: PDF or DOCX up to 20 MB, with a hashed local source copy.
+- PDF parsing uses embedded text. Image-only scans need the planned OCR flow.
 
 ## Tests and evaluations
+
+The normal test path requires no provider credential and makes no paid model calls:
 
 ```bash
 uv run python -m pytest -q
 uv run python -m evals.run_evals
-career-companion doctor
+uv run python -m scripts.demo_preflight
+
 cd frontend
 npm run lint
 npm run build
 ```
 
-The API matcher, provider client, retrieval embeddings, and telemetry are isolated in
-tests. These commands are safe without credentials and make no paid LLM calls. The
-offline eval command validates five fixed cases across strong, partial, and mismatch
-categories.
+The current local audit passes **139 backend tests** and **25 offline evaluation checks**,
+plus frontend lint, production build, and demo preflight.
 
-Warm the real embedding model and verify local provider encryption, the Codex executable, eval
-coverage, and release versions without making a paid model call:
-
-```bash
-uv run python -m scripts.demo_preflight
-```
-
-Run exactly one optional provider-backed smoke test:
+One explicit provider-backed smoke test is available:
 
 ```bash
 uv run python -m scripts.live_smoke
 ```
 
-That command requires `OPENAI_API_KEY` in the shell and can incur provider charges. It is
-only for operator smoke tests; browser users' encrypted credentials are never read by the
-script. Full live evals are also explicit. A versioned artifact makes prompt comparisons
-auditable:
+It requires `OPENAI_API_KEY` in the shell and can incur charges. Full live evaluations are
+also opt-in:
 
 ```bash
 uv run python -m evals.run_evals --live --output evals/results/live.json
@@ -253,81 +239,130 @@ uv run python -m evals.run_evals --live --output evals/results/live.json
 
 Use `--case strong_python_rag_match` to limit a paid run to one named case.
 
-## Observability
+## Roadmap / TODO
 
-Add `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to `.env` to enable Langfuse.
-CareerPilot records a root agent span plus retriever, analysis, model-generation, and
-grounding-guardrail observations. Traces carry `match-v2-rag` and
-`match-workflow-v1` versions so prompt regressions can be separated by release.
+This list separates meetup/release gates from the features that turn the current workspace
+into a genuinely proactive job-search agent.
 
-Langfuse's native OpenAI wrapper captures model prompts and responses for failure
-inspection. Those payloads can contain CV data. Leave the keys empty or set
-`LANGFUSE_TRACING_ENABLED=false` when that data must not leave the model-provider path.
-Telemetry never determines whether the API returns a match report.
+### P0 — meetup and local-alpha confidence
 
-## Local and container deployment
+- [ ] Run one live ChatGPT/Codex conversation and grounded fit check.
+- [ ] Run one live OpenAI API-key smoke test.
+- [ ] Verify a clean macOS install from the packaged path.
+- [ ] Verify clean Windows 11 and mainstream Linux installs.
+- [ ] Build and run the Docker fallback on a clean machine.
+- [ ] Complete a backup/restore drill with provider credentials excluded.
+- [ ] Inspect one opt-in Langfuse trace and confirm privacy wording.
+- [ ] Rehearse the five-minute story with the seeded/screenshot fallback.
+- [ ] Resolve the bundled-static-build precedence so local source builds cannot serve a stale UI.
 
-The current product has no CareerPilot login boundary and is intended only for a trusted
-single-user device. Do not expose it directly to the public internet. The minimum local
-container setup is:
+### P1 — guided product experience
 
-1. Generate and securely configure `CAREERPILOT_AUTH_SECRET` and configure
-   `FRONTEND_ORIGINS` for the local UI.
-2. Attach a persistent private volume to `/app/.data`. Do not run multiple API replicas
-   against the same SQLite file; migrate the store to PostgreSQL before horizontal scale.
-3. Deploy the root `Dockerfile`; it includes the Codex runtime and needs outbound HTTPS to
-   OpenAI authentication and model endpoints.
-4. Confirm `GET /health` returns `{"status":"ok"}`.
-5. Build `frontend/Dockerfile` with `NEXT_PUBLIC_API_BASE_URL` set to the loopback API.
-6. Test both provider connection methods and run one full analysis. Add an authentication
-   layer before any future public or multi-user deployment.
+- [ ] Add a first-run checklist: connection → profile → target → first fit check.
+- [ ] Give every screen one clear primary “next best action.”
+- [ ] Explain deterministic queue score versus evidence-grounded 0–10 fit score.
+- [ ] Add multiple named CV/profile versions for different role families.
+- [ ] Add OCR for image-only and scanned PDFs.
+- [ ] Build the Interview Practice workspace with evidence-aware feedback.
+- [ ] Improve empty states, error recovery, accessibility, responsive layouts, and keyboard flow.
+- [ ] Add a reusable, non-sensitive seeded demo workspace command.
 
-Optionally add Langfuse variables and verify one trace before release. CV and job text
-can appear in those traces, so keep tracing disabled unless the privacy policy and user
-consent cover it.
+### P1 — agent orchestration and safe automation
 
-The CI workflow in `.github/workflows/ci.yml` runs backend tests/eval validation and
-frontend lint/build on pushes and pull requests.
+- [ ] Expose Greenhouse/Lever discovery through Pilot and the primary UI.
+- [ ] Let Pilot orchestrate discover → deduplicate → rank → track → tailor in one conversation.
+- [ ] Add a guided preview/approve/fill flow around the existing form-fill backend.
+- [ ] Surface approval history and explain exactly what each token authorizes.
+- [ ] Add safe daily/weekly search queues with a visible pause switch and budget.
+- [ ] Draft follow-ups from recorded outcomes; never send without a user preview and approval.
+- [ ] Capture submission and employer outcomes as structured learning signals.
 
-## Learning progression
+### P1 — memory and self-evolution
 
-All three implementations stay in the repository on purpose:
+- [ ] Add cross-session semantic retrieval over user-approved memories and prior outcomes.
+- [ ] Cite career evidence in ordinary conversation, not only formal fit reports.
+- [ ] Let the user inspect why a memory was retrieved for the current turn.
+- [ ] Convert repeated corrections and outcomes into revision proposals.
+- [ ] Replay/evaluate proposed skill and rubric changes against fixed cases.
+- [ ] Apply active, evaluated memory/skill/rubric revisions to the runtime.
+- [ ] Add clear revision comparison, activation, quarantine, and rollback UI.
+- [ ] Define retention, deletion, and consent controls for learned memories.
 
-1. `match_candidate_v1` — deterministic hard-coded learning placeholder.
-2. `match_candidate_v2` — direct OpenAI API call with a user-owned key and strict JSON
-   Schema; `match_candidate_with_codex` provides the equivalent plan-backed path.
-3. `match_candidate_v3` — Chroma retrieval, v2 generation, and grounding verification
-   in a small LangGraph workflow. FastAPI uses this version.
+### P2 — extensibility
 
-This preserves the path from a normal FastAPI function to a model call and then to a
-grounded evidence workflow without hiding simple operations behind frameworks.
+- [ ] Add connection health checks and tool discovery for MCP servers.
+- [ ] Add guided OAuth for selected Gmail/Calendar/Drive connectors.
+- [ ] Add curated, installable job-search skill templates.
+- [ ] Support safe import/export of user-owned skills, rubrics, and memories.
+- [ ] Add per-tool budgets, rate limits, and richer audit views.
+- [ ] Publish the extension contract without exposing protected core policy.
 
-## Project status
+### P2 — public and multi-user deployment
 
-CareerPilot is an active, local-first prototype. The code covers automatic local identity,
-encrypted provider connections,
-ChatGPT/Codex device authorization, required provider selection in Settings,
-provider-specific matching, strict reports,
-retrieval, citations, fixed evals, optional Langfuse, Docker/CI, and documentation. The
-browser always keeps final application submission under the user's control.
+- [ ] Add a real authentication and authorization boundary.
+- [ ] Move operational storage to PostgreSQL and semantic memory to a production vector store.
+- [ ] Add tenant isolation, retention controls, consent records, and deletion workflows.
+- [ ] Add request rate limiting, abuse controls, secret rotation, and incident procedures.
+- [ ] Add production CI/CD, migrations, health checks, backups, and rollback.
+- [ ] Add privacy-safe observability, SLOs, cost budgets, and usage reporting.
+- [ ] Complete a security review before any public internet exposure.
 
-Authentication, multi-user isolation, saved analyses, PostgreSQL, Kubernetes, rate
-limiting, and production-grade CI/CD are required before public hosting.
-CV text and match results are still request-scoped and are not persisted.
+## Suggested parallel worktree lanes
 
-Use the [development plan](docs/build-week-plan.md) and
-[demo script](docs/demo-script.md) as operational checklists. The
-[release-status audit](docs/release-status.md) separates locally proven work from the
-remaining credentialed gates.
+When the roadmap is ready to run with multiple agents, these lanes can be developed in
+separate worktrees with relatively clean ownership:
 
-## Security and privacy
+| Lane | Primary scope | Likely overlap |
+|---|---|---|
+| `memory-runtime` | Semantic retrieval, memory citations, active revision application | Conversation service, agent runtime |
+| `agent-orchestration` | Discovery and discover→track→tailor tool chain | Career tools, chat streaming |
+| `guided-ux` | Onboarding, next actions, score explanation, form approval, interview practice | Frontend and API response copy |
+| `release-hardening` | Installers, Docker, backup drill, provider smoke tests, observability | Build/release scripts and docs |
 
-- Keep `.env`, `.data/`, local databases, uploaded documents, browser state, and generated
-  artifacts private. The repository ignores these by default.
-- Never commit provider keys or `CAREERPILOT_AUTH_SECRET`. Start from `.env.example`.
-- Treat job pages, uploaded documents, email, and MCP output as untrusted input.
-- Do not expose the local server directly to the public internet; it has no multi-user
-  authentication boundary.
+Start each lane with an explicit interface contract and keep database migrations owned by
+one lane at a time. Integration should happen through small reviewed commits rather than
+sharing one mutable worktree.
 
-Please report security-sensitive issues privately to the repository owner instead of
-opening a public issue containing credentials or personal data.
+## API map
+
+<details>
+<summary>Useful local and development endpoints</summary>
+
+- `GET /health` — process health.
+- `GET /local/session` — initialize and return the automatic local workspace.
+- `GET /settings/providers` — connected and active AI providers.
+- `POST /settings/providers/api-key` — validate, encrypt, and activate an OpenAI key.
+- `POST /settings/providers/codex/start` — start local Codex authorization.
+- `POST /settings/providers/select` — switch between existing connections.
+- `GET|PUT /settings/agent-identity` — persistent name and supplemental SOUL notes.
+- `GET /settings/agent-resources` — editable memories and visible skills.
+- `POST|PUT|DELETE /settings/agent-resources/{kind}/...` — guarded user resource changes.
+- `GET|POST /companion/sessions` — list or create persistent sessions.
+- `GET|PUT|DELETE /companion/sessions/{id}` — restore, rename, or delete a session.
+- `PUT /companion/sessions/{id}/context` — persist CV, role, and fit context.
+- `POST /companion/chat` — contextual Pilot conversation.
+- `POST /companion/chat/stream` — structured chat and career-tool events over SSE.
+- `POST /parse-cv` — bounded PDF, DOCX, or TXT extraction.
+- `POST /match` — retrieval, provider analysis, and grounding validation.
+- `GET|POST /api/v1/jobs` — list or save deduplicated jobs.
+- `GET /api/v1/applications` — application stages and artifact versions.
+- `GET /api/v1/model-routes` — task-specific model and cost controls.
+- `GET /api/v1/revisions` — reversible memory, skill, and rubric revisions.
+- `GET|POST|PUT|DELETE /settings/mcp/...` — allowlisted MCP configuration.
+- `/docs` — interactive OpenAPI documentation in development.
+
+</details>
+
+## Repository guides
+
+- [Installation](docs/installation.md)
+- [Architecture](docs/architecture.md)
+- [Security](docs/security.md)
+- [Demo script](docs/demo-script.md)
+- [Meetup slides](docs/meetup-slides.html)
+- [Build-week plan](docs/build-week-plan.md)
+- [Release-status audit](docs/release-status.md)
+
+CareerPilot is an active local-first alpha. Do not expose the current server directly to
+the public internet. Report security-sensitive issues privately to the repository owner
+instead of opening a public issue containing credentials or personal data.
