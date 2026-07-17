@@ -15,6 +15,7 @@ import uvicorn
 
 from career_companion.backup import create_backup, restore_backup
 from career_companion.config import ProductConfig, load_config, save_config
+from career_companion.demo_workspace import DemoWorkspaceError, seed_demo_home
 from career_companion.doctor import checks_json, run_checks
 from career_companion.paths import CompanionPaths
 from career_companion.web import frontend_build_directory
@@ -109,6 +110,27 @@ def restore_command(args: argparse.Namespace) -> int:
         replace=args.replace,
     )
     print("Backup restored. Provider credentials must be configured separately.")
+    return 0
+
+
+def demo_seed_command(args: argparse.Namespace) -> int:
+    try:
+        result = seed_demo_home(args.home, reset=args.reset)
+    except DemoWorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Fictional demo home: {result.home}")
+    print(f"Fictional account workspace: {result.account_paths.root}")
+    print(
+        "Seeded "
+        f"{result.profiles} profile, {result.jobs} jobs, "
+        f"{result.applications} applications, and {result.conversations} conversation."
+    )
+    print("Provider credentials: none; no AI provider was contacted.")
+    print(
+        "AI connection: disconnected; configure one separately inside this demo home "
+        "for live UI rehearsal."
+    )
+    print(f"Start this isolated installation with CAREER_COMPANION_HOME={result.home}")
     return 0
 
 
@@ -217,6 +239,31 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("--replace", action="store_true")
     restore_parser.add_argument("--account-key")
     restore_parser.set_defaults(handler=restore_command)
+    demo_parser = subparsers.add_parser(
+        "demo",
+        help="Manage an isolated, explicitly fictional demo workspace",
+    )
+    demo_subparsers = demo_parser.add_subparsers(dest="demo_command", required=True)
+    demo_seed_parser = demo_subparsers.add_parser(
+        "seed",
+        help="Seed credential-free fictional data without contacting an AI provider",
+        description=(
+            "Seed an isolated CareerPilot home with explicitly fictional meetup data. "
+            "The command never reads provider credentials or contacts an AI provider. "
+            "Live AI remains disconnected after seeding."
+        ),
+    )
+    demo_seed_parser.add_argument(
+        "--home",
+        type=Path,
+        help="Dedicated demo home (default: a sibling of the normal data home)",
+    )
+    demo_seed_parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Recreate only a previously marked CareerPilot demo home",
+    )
+    demo_seed_parser.set_defaults(handler=demo_seed_command)
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove local product data")
     uninstall_parser.add_argument("--yes", action="store_true")
     uninstall_parser.add_argument("--no-backup", action="store_true")
