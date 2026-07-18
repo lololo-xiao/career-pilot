@@ -8,6 +8,9 @@ from urllib.parse import urlsplit
 import httpx
 
 _ACCOUNT_KEY_PATTERN = re.compile(r"[a-f0-9]{64}")
+_RUN_MESSAGE_PATTERN = re.compile(
+    r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
+)
 
 
 class BridgeError(RuntimeError):
@@ -19,6 +22,7 @@ class HermesBridgeClient:
         self.base_url = os.getenv("CAREER_COMPANION_API_URL", "").rstrip("/")
         self.token = os.getenv("CAREER_COMPANION_PLUGIN_TOKEN", "")
         self.account_key = os.getenv("CAREER_COMPANION_ACCOUNT_KEY", "")
+        self.run_message = ""
         self._validate_configuration()
 
     def _validate_configuration(self) -> None:
@@ -44,6 +48,10 @@ class HermesBridgeClient:
             "Authorization": f"Bearer {self.token}",
             "X-Career-Account": self.account_key,
         }
+        if self.run_message:
+            if not _RUN_MESSAGE_PATTERN.fullmatch(self.run_message):
+                raise BridgeError("Career Companion run message binding is invalid")
+            headers["X-Career-Run-Message"] = self.run_message
         try:
             with httpx.Client(timeout=30, trust_env=False, follow_redirects=False) as client:
                 response = client.request(

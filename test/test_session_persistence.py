@@ -383,6 +383,7 @@ def test_streamed_reply_uses_session_key_and_is_persisted(session_client) -> Non
         f"career-companion:web:{'c' * 64}:{session_id}"
     )
     restored = client.get(f"/companion/sessions/{session_id}").json()
+    assert captured["payload"]["session_id"] == restored["messages"][1]["id"]
     assert [message["role"] for message in restored["messages"]] == [
         "assistant",
         "user",

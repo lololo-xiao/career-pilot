@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -9,6 +10,7 @@ from urllib.parse import quote
 from .client import HermesBridgeClient
 
 TOOLSET = "career-web"
+_RUN_MESSAGE = ContextVar("career_companion_run_message", default="")
 
 _BLOCKED_HERMES_TOOLS = {
     "cronjob",
@@ -37,7 +39,9 @@ class ToolDefinition:
 
 
 def _client() -> HermesBridgeClient:
-    return HermesBridgeClient()
+    client = HermesBridgeClient()
+    client.run_message = _RUN_MESSAGE.get()
+    return client
 
 
 def _profile(_: dict[str, Any]) -> Any:
@@ -55,8 +59,6 @@ def _update_identity(args: dict[str, Any]) -> Any:
         json_body={
             "name": args["name"],
             "soul": args["soul"],
-            "source_session": args["source_session"],
-            "user_request": args["user_request"],
         },
     )
 
@@ -115,8 +117,6 @@ def _track_selected_job(args: dict[str, Any]) -> Any:
         "POST",
         f"/jobs/{job_id}/track-selected",
         json_body={
-            "source_session": args["source_session"],
-            "user_request": args["user_request"],
             "selection_reference": args["selection_reference"],
         },
     )
@@ -129,8 +129,6 @@ def _decide_application(args: dict[str, Any]) -> Any:
         f"/applications/{application_id}/decide",
         json_body={
             "decision": args["decision"],
-            "source_session": args["source_session"],
-            "user_request": args["user_request"],
             "decision_reference": args["decision_reference"],
         },
     )
@@ -171,8 +169,6 @@ def _revision(args: dict[str, Any]) -> Any:
             "name": args["name"],
             "content": args["content"],
             "diff": args["diff"],
-            "author": "career-agent",
-            "source_session": args["source_session"],
         },
     )
 
@@ -222,10 +218,8 @@ TOOLS = (
             "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": 80},
                 "soul": {"type": "string", "maxLength": 32768},
-                "source_session": {"type": "string"},
-                "user_request": {"type": "string"},
             },
-            "required": ["name", "soul", "source_session", "user_request"],
+            "required": ["name", "soul"],
             "additionalProperties": False,
         },
         _update_identity,
@@ -327,15 +321,13 @@ TOOLS = (
             "After the latest user message explicitly selects a saved job, run its "
             "deterministic local priority score and idempotently track one application. "
             "This performs local writes only: no network read, messaging, tailoring, "
-            "form filling, or submission. Copy the latest message and its selection "
-            "phrase exactly."
+            "form filling, or submission. Copy the selection phrase exactly; the "
+            "server binds the tool to the current persisted user message."
         ),
         {
             "type": "object",
             "properties": {
                 "job_id": {"type": "string"},
-                "source_session": {"type": "string"},
-                "user_request": {"type": "string"},
                 "selection_reference": {
                     "type": "string",
                     "description": (
@@ -345,8 +337,6 @@ TOOLS = (
             },
             "required": [
                 "job_id",
-                "source_session",
-                "user_request",
                 "selection_reference",
             ],
             "additionalProperties": False,
@@ -377,9 +367,10 @@ TOOLS = (
         "career_application_decide",
         (
             "Record one explicit approve-or-archive decision for a scored tracked "
-            "application. This is an idempotent local write only. Copy the latest "
-            "user message and its positive, unambiguous decision phrase exactly; "
-            "the phrase must identify the saved company and role. This does not "
+            "application. This is an idempotent local write only. Copy its affirmative, "
+            "unconditional decision phrase exactly; the server binds the tool to the "
+            "current persisted user message. The phrase must identify the saved "
+            "application. This does not "
             "generate artifacts, fill forms, send messages, or submit applications."
         ),
         {
@@ -387,8 +378,6 @@ TOOLS = (
             "properties": {
                 "application_id": {"type": "string"},
                 "decision": {"type": "string", "enum": ["approve", "archive"]},
-                "source_session": {"type": "string"},
-                "user_request": {"type": "string"},
                 "decision_reference": {
                     "type": "string",
                     "description": (
@@ -400,8 +389,6 @@ TOOLS = (
             "required": [
                 "application_id",
                 "decision",
-                "source_session",
-                "user_request",
                 "decision_reference",
             ],
             "additionalProperties": False,
@@ -440,9 +427,8 @@ TOOLS = (
                 "name": {"type": "string"},
                 "content": {"type": "object"},
                 "diff": {"type": "string"},
-                "source_session": {"type": "string"},
             },
-            "required": ["kind", "name", "content", "diff", "source_session"],
+            "required": ["kind", "name", "content", "diff"],
             "additionalProperties": False,
         },
         _revision,
@@ -478,13 +464,18 @@ TOOLS = (
 
 def _json_handler(function: Callable[[dict[str, Any]], Any]) -> Callable[..., str]:
     def handler(args: dict[str, Any], **kwargs: Any) -> str:
-        del kwargs
+        run_message = kwargs.get("session_id")
+        context_token = _RUN_MESSAGE.set(
+            run_message if isinstance(run_message, str) else ""
+        )
         try:
             return json.dumps({"ok": True, "data": function(args)}, default=str)
         except Exception as exc:
             return json.dumps(
                 {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
             )
+        finally:
+            _RUN_MESSAGE.reset(context_token)
 
     return handler
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -177,31 +179,32 @@ def test_scored_application_decision_is_exact_and_idempotent(
 ) -> None:
     application = create_application(session, _job(session).id)
     transition_application(session, application.id, ApplicationStatus.SCORED)
+    session.commit()
 
-    decided, event_created, fingerprint = decide_scored_application(
+    decided = decide_scored_application(
         session,
         application.id,
         target,
         source_session="00000000-0000-0000-0000-000000000001",
+        run_message_id="00000000-0000-0000-0000-000000000002",
         user_request=f"{decision_reference}.",
         decision_reference=decision_reference,
     )
-    repeated, repeated_event_created, repeated_fingerprint = (
-        decide_scored_application(
-            session,
-            application.id,
-            target,
-            source_session="00000000-0000-0000-0000-000000000001",
-            user_request=f"{decision_reference}.",
-            decision_reference=decision_reference,
-        )
+    repeated = decide_scored_application(
+        session,
+        application.id,
+        target,
+        source_session="00000000-0000-0000-0000-000000000001",
+        run_message_id="00000000-0000-0000-0000-000000000002",
+        user_request=f"{decision_reference}.",
+        decision_reference=decision_reference,
     )
 
-    assert decided.status == target.value
-    assert repeated.id == decided.id
-    assert event_created is True
-    assert repeated_event_created is False
-    assert repeated_fingerprint == fingerprint
+    assert decided.application.status == target.value
+    assert repeated.application.id == decided.application.id
+    assert decided.status_event_created is True
+    assert repeated.status_event_created is False
+    assert repeated.decision_fingerprint == decided.decision_fingerprint
     decision_events = session.scalars(
         select(StatusEventRecord).where(
             StatusEventRecord.application_id == application.id,
@@ -210,11 +213,13 @@ def test_scored_application_decision_is_exact_and_idempotent(
     ).all()
     assert len(decision_events) == 1
     assert decision_events[0].to_status == target.value
-    assert fingerprint in decision_events[0].note
+    assert decided.decision_fingerprint in decision_events[0].note
+    assert decision_reference not in decision_events[0].note
 
 
 def test_scored_application_decision_rejects_other_targets_and_states(session) -> None:
     application = create_application(session, _job(session).id)
+    session.commit()
 
     with pytest.raises(ValueError, match="must approve or archive"):
         decide_scored_application(
@@ -222,6 +227,7 @@ def test_scored_application_decision_rejects_other_targets_and_states(session) -
             application.id,
             ApplicationStatus.TAILORING,
             source_session="00000000-0000-0000-0000-000000000001",
+            run_message_id="00000000-0000-0000-0000-000000000002",
             user_request="Start tailoring Example GmbH AI Engineer.",
             decision_reference="Start tailoring Example GmbH AI Engineer",
         )
@@ -231,6 +237,7 @@ def test_scored_application_decision_rejects_other_targets_and_states(session) -
             application.id,
             ApplicationStatus.APPROVED,
             source_session="00000000-0000-0000-0000-000000000001",
+            run_message_id="00000000-0000-0000-0000-000000000002",
             user_request="Approve Example GmbH AI Engineer.",
             decision_reference="Approve Example GmbH AI Engineer",
         )
@@ -241,6 +248,42 @@ def test_scored_application_decision_rejects_other_targets_and_states(session) -
             StatusEventRecord.application_id == application.id
         )
     ).all() == []
+
+
+def test_parallel_identical_scored_decisions_create_one_event(paths, session) -> None:
+    application = create_application(session, _job(session).id)
+    transition_application(session, application.id, ApplicationStatus.SCORED)
+    session.commit()
+    barrier = threading.Barrier(2)
+    factory = session_factory_for(paths)
+
+    def decide() -> bool:
+        with factory() as worker_session:
+            barrier.wait()
+            return decide_scored_application(
+                worker_session,
+                application.id,
+                ApplicationStatus.APPROVED,
+                source_session="00000000-0000-0000-0000-000000000001",
+                run_message_id="00000000-0000-0000-0000-000000000002",
+                user_request="Approve Example GmbH AI Engineer.",
+                decision_reference="Approve Example GmbH AI Engineer",
+            ).status_event_created
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(decide) for _ in range(2)]
+        created = sorted(future.result() for future in futures)
+
+    assert created == [False, True]
+    with factory() as verification_session:
+        decision_events = verification_session.scalars(
+            select(StatusEventRecord).where(
+                StatusEventRecord.application_id == application.id,
+                StatusEventRecord.from_status == "scored",
+                StatusEventRecord.to_status == "approved",
+            )
+        ).all()
+    assert len(decision_events) == 1
 
 
 def test_approval_is_bound_to_payload_and_can_only_be_consumed_once(session) -> None:

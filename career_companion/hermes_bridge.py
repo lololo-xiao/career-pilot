@@ -15,7 +15,7 @@ from fastapi import (
     Request,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,7 +24,7 @@ from career_companion.config import load_config
 from career_companion.database import (
     ApplicationRecord,
     CandidateProfileRecord,
-    ConversationSessionRecord,
+    ConversationMessageRecord,
     JobRecord,
     MCPServerRecord,
     ModelRouteRecord,
@@ -33,7 +33,7 @@ from career_companion.database import (
 )
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
-from career_companion.router import RevisionRequest, _application_json, _job_json, _revision_json
+from career_companion.router import _application_json, _job_json, _revision_json
 from career_companion.schemas import ApplicationStatus, Job, JobSpec
 from career_companion.services.applications import (
     decide_scored_application,
@@ -64,7 +64,18 @@ _ARCHIVE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _UNCERTAIN_DECISION_PATTERN = re.compile(
-    r"\b(?:maybe|perhaps|possibly|unsure|uncertain|consider)\b",
+    r"\b(?:maybe|perhaps|possibly|unsure|uncertain|consider|might|may|could)\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_DECISION_PATTERN = re.compile(
+    r"\b(?:if|unless|until|after|before|once|when|pending|provided|assuming)\b"
+    r"|\bsubject\s+to\b|\bonly\s+(?:if|after|when|once)\b",
+    re.IGNORECASE,
+)
+_REVOKED_DECISION_PATTERN = re.compile(
+    r"\bactually\s*,?\s*no\b|\bnever\s+mind\b|\bcancel(?:\s+that)?\b|"
+    r"\brevoke(?:\s+that)?\b|\bscratch\s+that\b|\binstead\b|"
+    r"\bbut\b[^.]{0,120}\b(?:no|not|cancel|revoke)\b",
     re.IGNORECASE,
 )
 _NEGATED_DECISION_PATTERN = re.compile(
@@ -111,11 +122,13 @@ class FormFillPayload(BaseModel):
     headless: bool = False
 
 
-class IdentityUpdatePayload(BaseModel):
+class BoundToolPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class IdentityUpdatePayload(BoundToolPayload):
     name: str = Field(min_length=1, max_length=80)
     soul: str = Field(default="", max_length=32_768)
-    source_session: str = Field(min_length=36, max_length=36)
-    user_request: str = Field(min_length=1, max_length=50_000)
 
 
 class PublicJobDiscoveryPayload(BaseModel):
@@ -124,17 +137,20 @@ class PublicJobDiscoveryPayload(BaseModel):
     limit: int = Field(default=25, ge=1, le=50)
 
 
-class SelectedJobTrackingPayload(BaseModel):
-    source_session: str = Field(min_length=36, max_length=36)
-    user_request: str = Field(min_length=1, max_length=50_000)
+class SelectedJobTrackingPayload(BoundToolPayload):
     selection_reference: str = Field(min_length=1, max_length=500)
 
 
-class ScoredApplicationDecisionPayload(BaseModel):
+class ScoredApplicationDecisionPayload(BoundToolPayload):
     decision: Literal["approve", "archive"]
-    source_session: str = Field(min_length=36, max_length=36)
-    user_request: str = Field(min_length=1, max_length=50_000)
     decision_reference: str = Field(min_length=1, max_length=500)
+
+
+class HermesRevisionPayload(BoundToolPayload):
+    kind: Literal["memory", "skill", "rubric"]
+    name: str
+    content: dict[str, Any]
+    diff: str
 
 
 def _unauthorized() -> HTTPException:
@@ -190,6 +206,33 @@ SessionDep = Annotated[Session, Depends(get_bridge_session)]
 PathsDep = Annotated[CompanionPaths, Depends(get_bridge_paths)]
 
 
+def get_bound_run_message(
+    session: SessionDep,
+    run_message_id: Annotated[
+        str | None,
+        Header(alias="X-Career-Run-Message"),
+    ] = None,
+) -> ConversationMessageRecord:
+    if run_message_id is None:
+        raise HTTPException(
+            409,
+            "This career tool requires a server-bound Pilot run message",
+        )
+    message = session.get(ConversationMessageRecord, run_message_id)
+    if message is None or message.role != "user":
+        raise HTTPException(409, "Pilot run message binding is invalid")
+    conversation = message.conversation
+    if not conversation.messages or conversation.messages[-1].id != message.id:
+        raise HTTPException(
+            409,
+            "Pilot run message is no longer the latest message in its conversation",
+        )
+    return message
+
+
+RunMessageDep = Annotated[ConversationMessageRecord, Depends(get_bound_run_message)]
+
+
 @router.get("/profile")
 def read_profile(session: SessionDep) -> dict[str, Any] | None:
     row = session.scalar(
@@ -215,26 +258,8 @@ def update_identity(
     payload: IdentityUpdatePayload,
     session: SessionDep,
     paths: PathsDep,
+    run_message: RunMessageDep,
 ) -> dict[str, Any]:
-    conversation = session.get(ConversationSessionRecord, payload.source_session)
-    if conversation is None:
-        raise HTTPException(404, "Conversation session not found")
-    latest_user_message = next(
-        (
-            message
-            for message in reversed(conversation.messages)
-            if message.role == "user"
-        ),
-        None,
-    )
-    if (
-        latest_user_message is None
-        or latest_user_message.content != payload.user_request.strip()
-    ):
-        raise HTTPException(
-            409,
-            "Identity changes must match the latest direct user request in this session",
-        )
     try:
         profile = update_agent_profile(
             session,
@@ -243,7 +268,7 @@ def update_identity(
             name=payload.name,
             soul=payload.soul,
             actor="career-agent",
-            source_session=conversation.id,
+            source_session=run_message.session_id,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -315,28 +340,13 @@ def track_selected_job(
     job_id: str,
     payload: SelectedJobTrackingPayload,
     session: SessionDep,
+    run_message: RunMessageDep,
 ) -> dict[str, Any]:
     job = session.get(JobRecord, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
-    conversation = session.get(ConversationSessionRecord, payload.source_session)
-    if conversation is None:
-        raise HTTPException(404, "Conversation session not found")
-    latest_user_message = next(
-        (
-            message
-            for message in reversed(conversation.messages)
-            if message.role == "user"
-        ),
-        None,
-    )
-    current_request = payload.user_request.strip()
+    current_request = run_message.content
     selection_reference = payload.selection_reference.strip()
-    if latest_user_message is None or latest_user_message.content != current_request:
-        raise HTTPException(
-            409,
-            "Tracking requires an explicit selection in the latest user message",
-        )
     if not selection_reference or selection_reference not in current_request:
         raise HTTPException(
             409,
@@ -360,7 +370,8 @@ def track_selected_job(
             "public_network_read": False,
         },
         "selection": {
-            "source_session": conversation.id,
+            "source_session": run_message.session_id,
+            "run_message_id": run_message.id,
             "reference": selection_reference,
         },
         "queued_job": {
@@ -391,6 +402,7 @@ def decide_tracked_application(
     application_id: str,
     payload: ScoredApplicationDecisionPayload,
     session: SessionDep,
+    run_message: RunMessageDep,
 ) -> dict[str, Any]:
     application = session.get(ApplicationRecord, application_id)
     if application is None:
@@ -398,24 +410,8 @@ def decide_tracked_application(
     job = session.get(JobRecord, application.job_id)
     if job is None:
         raise HTTPException(409, "The application is not linked to a saved job")
-    conversation = session.get(ConversationSessionRecord, payload.source_session)
-    if conversation is None:
-        raise HTTPException(404, "Conversation session not found")
-    latest_user_message = next(
-        (
-            message
-            for message in reversed(conversation.messages)
-            if message.role == "user"
-        ),
-        None,
-    )
-    current_request = payload.user_request.strip()
+    current_request = run_message.content
     decision_reference = payload.decision_reference.strip()
-    if latest_user_message is None or latest_user_message.content != current_request:
-        raise HTTPException(
-            409,
-            "Application decisions must match the latest user message in this session",
-        )
     if not decision_reference or decision_reference not in current_request:
         raise HTTPException(
             409,
@@ -436,6 +432,7 @@ def decide_tracked_application(
         )
 
     _validate_explicit_application_decision(
+        session,
         application,
         job,
         payload.decision,
@@ -448,16 +445,20 @@ def decide_tracked_application(
         else ApplicationStatus.WITHDRAWN
     )
     try:
-        application, event_created, fingerprint = decide_scored_application(
+        result = decide_scored_application(
             session,
             application.id,
             target,
-            source_session=conversation.id,
+            source_session=run_message.session_id,
+            run_message_id=run_message.id,
             user_request=current_request,
             decision_reference=decision_reference,
         )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except (PermissionError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
+    application = result.application
 
     return {
         "activity": {
@@ -467,8 +468,7 @@ def decide_tracked_application(
         },
         "decision": {
             "action": payload.decision,
-            "source_session": conversation.id,
-            "reference": decision_reference,
+            "source_session": run_message.session_id,
         },
         "queued_job": {
             "id": job.id,
@@ -484,9 +484,12 @@ def decide_tracked_application(
         "audit": {
             "from_status": ApplicationStatus.SCORED.value,
             "to_status": application.status,
-            "status_event_created": event_created,
-            "idempotent_replay": not event_created,
-            "decision_fingerprint": fingerprint,
+            "status_event_created": result.status_event_created,
+            "idempotent_replay": not result.status_event_created,
+            "run_message_id": run_message.id,
+            "user_request_sha256": result.user_request_sha256,
+            "decision_reference_sha256": result.decision_reference_sha256,
+            "decision_fingerprint": result.decision_fingerprint,
         },
         "next_safe_action": _decision_next_safe_action(application.status),
     }
@@ -535,9 +538,14 @@ def set_application_status(
 
 
 @router.post("/revisions")
-def propose_revision(payload: RevisionRequest, session: SessionDep) -> dict[str, Any]:
+def propose_revision(
+    payload: HermesRevisionPayload,
+    session: SessionDep,
+    run_message: RunMessageDep,
+) -> dict[str, Any]:
     data = payload.model_dump()
     data["author"] = "career-agent"
+    data["source_session"] = run_message.session_id
     try:
         return _revision_json(create_revision(session, **data))
     except PermissionError as exc:
@@ -617,48 +625,65 @@ def _tracking_next_safe_action(application_status: str) -> str:
 
 
 def _validate_explicit_application_decision(
+    session: Session,
     application: ApplicationRecord,
     job: JobRecord,
     decision: Literal["approve", "archive"],
     current_request: str,
     decision_reference: str,
 ) -> None:
-    approve_present = _APPROVE_PATTERN.search(current_request) is not None
-    archive_present = _ARCHIVE_PATTERN.search(current_request) is not None
+    approve_matches = list(_APPROVE_PATTERN.finditer(current_request))
+    archive_matches = list(_ARCHIVE_PATTERN.finditer(current_request))
     expected_pattern = _APPROVE_PATTERN if decision == "approve" else _ARCHIVE_PATTERN
-    if expected_pattern.search(decision_reference) is None:
+    other_pattern = _ARCHIVE_PATTERN if decision == "approve" else _APPROVE_PATTERN
+    if (
+        len(list(expected_pattern.finditer(decision_reference))) != 1
+        or other_pattern.search(decision_reference) is not None
+    ):
         raise HTTPException(
             409,
             "Decision reference must explicitly state the requested decision",
         )
-    if (approve_present, archive_present) != (
-        decision == "approve",
-        decision == "archive",
+    if (len(approve_matches), len(archive_matches)) != (
+        (1, 0) if decision == "approve" else (0, 1)
     ):
         raise HTTPException(
             409,
-            "The latest user message does not contain one unambiguous decision",
+            "The latest user message must contain exactly one decision clause",
         )
     if (
         "?" in current_request
         or _UNCERTAIN_DECISION_PATTERN.search(current_request) is not None
+        or _CONDITIONAL_DECISION_PATTERN.search(current_request) is not None
+        or _REVOKED_DECISION_PATTERN.search(current_request) is not None
         or _NEGATED_DECISION_PATTERN.search(current_request) is not None
     ):
         raise HTTPException(
             409,
-            "The latest user message must contain a positive, unambiguous decision",
+            "The latest user message must contain an affirmative, unconditional decision",
         )
 
-    folded_reference = decision_reference.casefold()
     reference_identity = _decision_reference_identity(decision_reference)
     references_named_job = reference_identity in {
         _decision_reference_identity(f"{job.company} {job.title}"),
         _decision_reference_identity(f"{job.title} {job.company}"),
     }
     references_url = bool(
-        job.canonical_url and job.canonical_url.casefold() in folded_reference
+        job.canonical_url and job.canonical_url in decision_reference
     )
-    references_application = application.id.casefold() in folded_reference
+    references_application = application.id in decision_reference
+    duplicate_job = session.scalar(
+        select(JobRecord.id).where(
+            JobRecord.company == job.company,
+            JobRecord.title == job.title,
+            JobRecord.id != job.id,
+        )
+    )
+    if duplicate_job is not None and not (references_url or references_application):
+        raise HTTPException(
+            409,
+            "Company and title are ambiguous; copy the exact application ID or URL",
+        )
     if not (references_named_job or references_url or references_application):
         raise HTTPException(
             409,

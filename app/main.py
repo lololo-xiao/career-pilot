@@ -143,7 +143,6 @@ from career_companion.services.conversation_sessions import (
     session_json,
     session_list_json,
     session_summary_json,
-    synchronize_agent_identity,
     update_agent_profile,
     update_session_context,
 )
@@ -1439,13 +1438,14 @@ async def stream_companion_reply(
                         else conversation.match_report
                     ),
                 )
-            append_message(
+            user_message = append_message(
                 session,
                 conversation,
                 role="user",
                 content=request.message,
             )
             session_id = conversation.id
+            run_message_id = user_message.id
             effective_request = request.model_copy(
                 update={
                     "session_id": session_id,
@@ -1491,6 +1491,7 @@ async def stream_companion_reply(
         active_memory_context=active_memory_context,
     )
     session_key = f"career-companion:web:{prepared.account_key}:{session_id}"
+    payload["session_id"] = run_message_id
 
     async def events() -> AsyncIterator[bytes]:
         decoder = codecs.getincrementaldecoder("utf-8")()

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from career_companion.database import ApplicationRecord, StatusEventRecord
@@ -94,6 +95,15 @@ NEXT_ACTIONS = {
 }
 
 
+@dataclass(frozen=True)
+class ScoredApplicationDecisionResult:
+    application: ApplicationRecord
+    status_event_created: bool
+    decision_fingerprint: str
+    user_request_sha256: str
+    decision_reference_sha256: str
+
+
 def create_application(session: Session, job_id: str) -> ApplicationRecord:
     application = ApplicationRecord(job_id=job_id)
     session.add(application)
@@ -130,62 +140,114 @@ def decide_scored_application(
     target: ApplicationStatus,
     *,
     source_session: str,
+    run_message_id: str,
     user_request: str,
     decision_reference: str,
-) -> tuple[ApplicationRecord, bool, str]:
-    """Record one exact, idempotent approve-or-archive decision."""
+) -> ScoredApplicationDecisionResult:
+    """Atomically commit one exact decision and its event in SQLite.
+
+    The conditional status update is the compare-and-set guard. SQLite serializes
+    concurrent writers, so losers observe the committed event and become idempotent
+    replays instead of creating a second event.
+    """
 
     if target not in {ApplicationStatus.APPROVED, ApplicationStatus.WITHDRAWN}:
         raise ValueError("A scored decision must approve or archive the application")
-    application = session.get(ApplicationRecord, application_id)
-    if application is None:
-        raise LookupError("Application not found")
-
-    decision_payload = {
+    request_hash = hashlib.sha256(user_request.encode("utf-8")).hexdigest()
+    reference_hash = hashlib.sha256(decision_reference.encode("utf-8")).hexdigest()
+    fingerprint_payload = {
         "application_id": application_id,
         "decision": target.value,
-        "decision_reference": decision_reference,
+        "decision_reference_sha256": reference_hash,
+        "run_message_id": run_message_id,
         "source_session": source_session,
-        "user_request": user_request,
+        "user_request_sha256": request_hash,
     }
     fingerprint = hashlib.sha256(
         json.dumps(
-            decision_payload,
-            ensure_ascii=False,
+            fingerprint_payload,
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
     note = (
-        "Explicit user decision "
-        f"{target.value}; source_session={source_session}; "
-        f"reference={json.dumps(decision_reference, ensure_ascii=False)}; "
+        f"Explicit user decision; action={target.value}; "
+        f"source_session={source_session}; run_message={run_message_id}; "
+        f"user_request_sha256={request_hash}; "
+        f"decision_reference_sha256={reference_hash}; "
         f"fingerprint={fingerprint}"
     )
-    existing_event = session.scalar(
-        select(StatusEventRecord).where(
-            StatusEventRecord.application_id == application.id,
-            StatusEventRecord.from_status == ApplicationStatus.SCORED.value,
-            StatusEventRecord.to_status == target.value,
-            StatusEventRecord.note == note,
+    # End validation-only reads so the compare-and-set starts a fresh transaction.
+    session.rollback()
+    try:
+        updated = session.execute(
+            update(ApplicationRecord)
+            .where(
+                ApplicationRecord.id == application_id,
+                ApplicationRecord.status == ApplicationStatus.SCORED.value,
+            )
+            .values(
+                status=target.value,
+                next_action=NEXT_ACTIONS[target.value],
+            )
         )
-    )
-    if application.status == target.value and existing_event is not None:
-        return application, False, fingerprint
-    if application.status != ApplicationStatus.SCORED.value:
+        if updated.rowcount == 1:
+            session.add(
+                StatusEventRecord(
+                    application_id=application_id,
+                    from_status=ApplicationStatus.SCORED.value,
+                    to_status=target.value,
+                    note=note,
+                )
+            )
+            record_audit(
+                session,
+                "application.status_changed",
+                subject_type="application",
+                subject_id=application_id,
+                payload={
+                    "from": ApplicationStatus.SCORED.value,
+                    "to": target.value,
+                    "note": note,
+                    "manual_override": False,
+                },
+            )
+            session.commit()
+            application = session.get(ApplicationRecord, application_id)
+            assert application is not None
+            return ScoredApplicationDecisionResult(
+                application=application,
+                status_event_created=True,
+                decision_fingerprint=fingerprint,
+                user_request_sha256=request_hash,
+                decision_reference_sha256=reference_hash,
+            )
+        application = session.get(ApplicationRecord, application_id)
+        if application is None:
+            raise LookupError("Application not found")
+        existing_event = session.scalar(
+            select(StatusEventRecord).where(
+                StatusEventRecord.application_id == application.id,
+                StatusEventRecord.from_status == ApplicationStatus.SCORED.value,
+                StatusEventRecord.to_status == target.value,
+                StatusEventRecord.note == note,
+            )
+        )
+        if application.status == target.value and existing_event is not None:
+            session.commit()
+            return ScoredApplicationDecisionResult(
+                application=application,
+                status_event_created=False,
+                decision_fingerprint=fingerprint,
+                user_request_sha256=request_hash,
+                decision_reference_sha256=reference_hash,
+            )
         raise ValueError(
             "Explicit approval or archive is only valid for a scored application"
         )
-    if existing_event is not None:
-        raise ValueError("This exact application decision was already recorded")
-
-    application = transition_application(
-        session,
-        application.id,
-        target,
-        note=note,
-    )
-    return application, True, fingerprint
+    except Exception:
+        session.rollback()
+        raise
 
 
 def transition_application(

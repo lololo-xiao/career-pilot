@@ -15,11 +15,15 @@ description: Discover and normalize public jobs through approved sources without
   next safe action without advancing the application.
 - Selection is not approval. For a scored application, use
   `career_application_decide` only when the latest user message contains one
-  positive, unambiguous approve-or-archive instruction naming the exact saved
-  company and role. Copy the latest message and exact decision phrase into the
-  tool call. Report its local-write audit summary and next safe action.
-- Never infer a decision from history, negated or uncertain language, a question,
-  or Pilot's own suggestion. Do not use `career_application_status` to bypass the
+  affirmative, unconditional approve-or-archive instruction naming the exact
+  saved application, with no hedge, revocation, or second decision. Copy the
+  exact decision phrase into the tool call; the server binds it to the current
+  persisted user message. If company and title are duplicated, include
+  the exact application ID or case-sensitive canonical URL. Report its local-write
+  audit summary and next safe action.
+- Never infer a decision from history, negated, conditional, hedged, or revoked
+  language, a question, or Pilot's own suggestion. Do not use
+  `career_application_status` to bypass the
   selected-job, approval/archive, tailoring/readiness, or form-completion gates;
   it is for supported later outcomes only.
 - Use only explicitly configured company career pages.

@@ -542,7 +542,9 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     assert "latest_user_message" in captured["payload"]["instructions"]
     assert "local" in captured["payload"]["instructions"]
     assert "career_application_decide" in captured["payload"]["instructions"]
-    assert "positive, unambiguous" in captured["payload"]["instructions"]
+    assert "affirmative, unconditional" in captured["payload"]["instructions"]
+    assert len(captured["payload"]["session_id"]) == 36
+    assert not captured["session_key"].endswith(captured["payload"]["session_id"])
     assert "Do not generate artifacts" in captured["payload"]["instructions"]
     assert "fill forms" in captured["payload"]["instructions"]
 
