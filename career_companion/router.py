@@ -53,6 +53,7 @@ from career_companion.services.model_routes import daily_cost, upsert_route
 from career_companion.services.profile import import_profile_document, save_profile
 from career_companion.services.projects import analyze_project
 from career_companion.services.revisions import (
+    MemoryRollbackConflictError,
     create_revision,
     evaluate_revision,
     rollback_revision,
@@ -427,6 +428,8 @@ def rollback_revision_endpoint(revision_id: str, session: SessionDep) -> dict[st
         return _revision_json(rollback_revision(session, revision_id))
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except MemoryRollbackConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
 

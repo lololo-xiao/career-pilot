@@ -200,6 +200,14 @@ def _revision(args: dict[str, Any]) -> Any:
     )
 
 
+def _memory_preference(args: dict[str, Any]) -> Any:
+    return _client().request(
+        "POST",
+        "/memory/preferences",
+        json_body={"correction_phrase": args["correction_phrase"]},
+    )
+
+
 def _policy(_: dict[str, Any]) -> Any:
     return _client().request("GET", "/policy")
 
@@ -219,6 +227,20 @@ _GATED_APPLICATION_STATUSES = {
     "ready",
     "form_filled",
 }
+
+_CAREER_PREFERENCE_SENTENCES = [
+    "I prefer remote roles.",
+    "I prefer remote-first roles.",
+    "I prefer hybrid roles.",
+    "I prefer hybrid-first roles.",
+    "I prefer onsite roles.",
+    "I prefer full-time roles.",
+    "I prefer part-time roles.",
+    "I prefer contract roles.",
+    "I prefer internship roles.",
+    "I am open to relocation.",
+    "I am not open to relocation.",
+]
 
 TOOLS = (
     ToolDefinition(
@@ -454,6 +476,29 @@ TOOLS = (
             "additionalProperties": False,
         },
         _revision,
+    ),
+    ToolDefinition(
+        "career_memory_preference_propose",
+        (
+            "Create or reuse an unevaluated draft structured career-preference "
+            "proposal from the server-bound latest message. Supports only workplace "
+            "preference (remote, remote-first, hybrid, hybrid-first, onsite), "
+            "employment type (full-time, part-time, contract, internship), and "
+            "relocation (open, not open). The message must use a supported exact "
+            "template. This never activates memory or verifies career evidence."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "correction_phrase": {
+                    "type": "string",
+                    "enum": _CAREER_PREFERENCE_SENTENCES,
+                },
+            },
+            "required": ["correction_phrase"],
+            "additionalProperties": False,
+        },
+        _memory_preference,
     ),
     ToolDefinition(
         "career_policy_status",

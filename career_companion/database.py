@@ -156,6 +156,13 @@ class RevisionRecord(Base, TimestampMixin):
     evaluation: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class RevisionLineageCounterRecord(Base):
+    __tablename__ = "revision_lineage_counters"
+    kind: Mapped[str] = mapped_column(String(30), primary_key=True)
+    name: Mapped[str] = mapped_column(String(300), primary_key=True)
+    last_version: Mapped[int] = mapped_column(Integer)
+
+
 class ModelRouteRecord(Base, TimestampMixin):
     __tablename__ = "model_routes"
     name: Mapped[str] = mapped_column(String(50), primary_key=True)

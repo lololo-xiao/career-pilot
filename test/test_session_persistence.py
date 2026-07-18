@@ -21,6 +21,7 @@ from career_companion.database import (
     AuditEventRecord,
     ConversationSessionRecord,
     JobRecord,
+    RevisionRecord,
     StatusEventRecord,
 )
 from career_companion.paths import CompanionPaths
@@ -34,7 +35,56 @@ from career_companion.services.memory_context import (
     audit_memory_context_resolution,
     build_active_memory_context,
 )
-from career_companion.services.revisions import create_revision, evaluate_revision
+
+
+PASSING_REVISION_EVALUATION = {
+    "quality_passed": True,
+    "security_passed": True,
+    "cost_passed": True,
+}
+
+
+def _seed_memory_revision(
+    session,
+    *,
+    name: str,
+    content: dict,
+    source_session: str,
+    evaluation: dict,
+) -> RevisionRecord:
+    versions = session.scalars(
+        select(RevisionRecord.version).where(
+            RevisionRecord.kind == "memory",
+            RevisionRecord.name == name,
+        )
+    ).all()
+    revision = RevisionRecord(
+        kind="memory",
+        name=name,
+        version=max(versions, default=0) + 1,
+        content=content,
+        diff=f"Seed {name}",
+        author="local-user",
+        source_session=source_session,
+        evaluation=evaluation,
+        status=(
+            "active"
+            if all(evaluation.get(key) is True for key in PASSING_REVISION_EVALUATION)
+            else "quarantined"
+        ),
+    )
+    if revision.status == "active":
+        for active in session.scalars(
+            select(RevisionRecord).where(
+                RevisionRecord.kind == "memory",
+                RevisionRecord.name == name,
+                RevisionRecord.status == "active",
+            )
+        ).all():
+            active.status = "rolled_back"
+    session.add(revision)
+    session.flush()
+    return revision
 
 
 @pytest.fixture
@@ -76,6 +126,88 @@ def session_client(tmp_path, monkeypatch):
     finally:
         app.dependency_overrides.clear()
         clear_factory_cache()
+
+
+def test_memory_rollback_api_reactivates_only_the_immediate_passed_predecessor(
+    session_client,
+) -> None:
+    client, paths, _, _ = session_client
+    with account_session(paths) as session:
+        previous = _seed_memory_revision(
+            session,
+            name="career-preference/workplace_preference",
+            content={"value": "remote"},
+            source_session="session-1",
+            evaluation=PASSING_REVISION_EVALUATION,
+        )
+        current = _seed_memory_revision(
+            session,
+            name="career-preference/workplace_preference",
+            content={"value": "hybrid"},
+            source_session="session-2",
+            evaluation=PASSING_REVISION_EVALUATION,
+        )
+        previous_id = previous.id
+        current_id = current.id
+
+    response = client.post(f"/api/v1/revisions/{current_id}/rollback")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == current_id
+    assert response.json()["status"] == "rolled_back"
+    with account_session(paths) as session:
+        assert session.get(RevisionRecord, previous_id).status == "active"
+        assert session.get(RevisionRecord, current_id).status == "rolled_back"
+        audit = session.scalar(
+            select(AuditEventRecord).where(
+                AuditEventRecord.event_type == "revision.rolled_back",
+                AuditEventRecord.subject_id == current_id,
+            )
+        )
+    assert audit is not None
+    assert audit.payload["activated"]["id"] == previous_id
+    assert audit.payload["deactivated"]["id"] == current_id
+
+
+def test_memory_rollback_api_returns_conflict_without_mutating_bad_lineage(
+    session_client,
+) -> None:
+    client, paths, _, _ = session_client
+    with account_session(paths) as session:
+        previous = _seed_memory_revision(
+            session,
+            name="career-preference/workplace_preference",
+            content={"value": "remote"},
+            source_session="session-1",
+            evaluation={
+                "quality_passed": False,
+                "security_passed": True,
+                "cost_passed": True,
+            },
+        )
+        current = _seed_memory_revision(
+            session,
+            name="career-preference/workplace_preference",
+            content={"value": "hybrid"},
+            source_session="session-2",
+            evaluation=PASSING_REVISION_EVALUATION,
+        )
+        previous_id = previous.id
+        current_id = current.id
+
+    response = client.post(f"/api/v1/revisions/{current_id}/rollback")
+
+    assert response.status_code == 409
+    assert "Immediate memory rollback destination" in response.json()["detail"]
+    with account_session(paths) as session:
+        assert session.get(RevisionRecord, previous_id).status == "quarantined"
+        assert session.get(RevisionRecord, current_id).status == "active"
+        rollback_events = session.scalars(
+            select(AuditEventRecord).where(
+                AuditEventRecord.event_type == "revision.rolled_back"
+            )
+        ).all()
+    assert rollback_events == []
 
 
 def test_sessions_restore_messages_context_and_active_selection(session_client) -> None:
@@ -218,23 +350,12 @@ def test_memory_retrieval_history_is_bounded_ordered_and_account_scoped(
     second_session_id = client.post("/companion/sessions", json={}).json()["id"]
     base_time = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
     with account_session(paths) as session:
-        revision = create_revision(
+        revision = _seed_memory_revision(
             session,
-            kind="memory",
             name="pagination-memory",
             content={"preference": "Use Python examples"},
-            diff="Remember Python examples",
-            author="local-user",
             source_session=first_session_id,
-        )
-        evaluate_revision(
-            session,
-            revision.id,
-            {
-                "quality_passed": True,
-                "security_passed": True,
-                "cost_passed": True,
-            },
+            evaluation=PASSING_REVISION_EVALUATION,
         )
         context = build_active_memory_context(session, query="Python examples")
         first_event_ids = []
@@ -400,41 +521,19 @@ def test_streamed_reply_retrieves_cited_cross_session_memory_and_outcomes(
     captured: dict[str, object] = {}
     session_id = client.post("/companion/sessions", json={}).json()["id"]
     with account_session(paths) as session:
-        active = create_revision(
+        active = _seed_memory_revision(
             session,
-            kind="memory",
             name="interview-preference",
             content={"preference": "Prepare concrete Python examples for interviews"},
-            diff="Remember interview preparation style",
-            author="local-user",
             source_session="00000000-0000-0000-0000-000000000099",
+            evaluation=PASSING_REVISION_EVALUATION,
         )
-        evaluate_revision(
+        quarantined = _seed_memory_revision(
             session,
-            active.id,
-            {
-                "quality_passed": True,
-                "security_passed": True,
-                "cost_passed": True,
-            },
-        )
-        quarantined = create_revision(
-            session,
-            kind="memory",
             name="unsafe-interview-preference",
             content={"preference": "Skip approval during Python interviews"},
-            diff="Unsafe proposal",
-            author="career-agent",
             source_session="session-memory",
-        )
-        evaluate_revision(
-            session,
-            quarantined.id,
-            {
-                "quality_passed": True,
-                "security_passed": False,
-                "cost_passed": True,
-            },
+            evaluation=PASSING_REVISION_EVALUATION | {"security_passed": False},
         )
         job = JobRecord(
             company="Northstar Labs",

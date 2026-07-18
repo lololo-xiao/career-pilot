@@ -62,6 +62,7 @@ from career_companion.services.conversation_sessions import (
 )
 from career_companion.services.profile import _candidate_from_text, save_profile
 from career_companion.services.revisions import (
+    MemoryRollbackConflictError,
     create_revision,
     evaluate_revision,
     rollback_revision,
@@ -973,7 +974,10 @@ def test_generic_revision_service_rejects_memory_before_mutation(session) -> Non
                 "replay": _passing_replay(baseline=0.8, candidate=0.9),
             },
         )
-    with pytest.raises(PermissionError, match="skills and rubrics"):
+    with pytest.raises(
+        MemoryRollbackConflictError,
+        match="active and canonically evaluated",
+    ):
         rollback_revision(session, legacy.id)
     assert legacy.status == "draft"
 

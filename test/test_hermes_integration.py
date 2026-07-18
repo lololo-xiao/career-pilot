@@ -14,10 +14,17 @@ import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+import career_companion.services.revisions as revision_service
 from app.auth import AuthStore, AuthenticatedAccount, ProviderConnection
+from app.companion import HERMES_COMPANION_INSTRUCTIONS
 from app.main import app, get_store, require_current_account
 from career_companion.config import ProductConfig
-from career_companion.database import AuditEventRecord, ConversationSessionRecord
+from career_companion.database import (
+    AuditEventRecord,
+    ConversationSessionRecord,
+    RevisionLineageCounterRecord,
+    RevisionRecord,
+)
 from career_companion.hermes import HermesSupervisor
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
@@ -188,6 +195,7 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
         "career_application_decide",
         "career_application_status",
         "career_revision_propose",
+        "career_memory_preference_propose",
         "career_policy_status",
     }
     assert {entry["toolset"] for entry in context.tools.values()} == {"career-web"}
@@ -251,6 +259,7 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
         "career_public_job_discover",
         "career_job_track_selected",
         "career_application_decide",
+        "career_memory_preference_propose",
         "mcp__company_jobs__web_job_search",
         "mcp__linkedin_search__search_jobs",
     }:
@@ -341,6 +350,17 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
     ]
     assert revision_parameters["required"] == ["kind", "name", "content", "diff"]
     assert "source_session" not in revision_parameters["properties"]
+
+    preference_tool = context.tools["career_memory_preference_propose"]
+    preference_parameters = preference_tool["schema"]["parameters"]
+    assert preference_parameters["required"] == ["correction_phrase"]
+    assert set(preference_parameters["properties"]) == {"correction_phrase"}
+    assert set(
+        preference_parameters["properties"]["correction_phrase"]["enum"]
+    ) == set(revision_service.SUPPORTED_CAREER_PREFERENCE_SENTENCES)
+    assert preference_parameters["additionalProperties"] is False
+    assert "unevaluated draft" in preference_tool["description"]
+    assert "never activates memory" in preference_tool["description"]
 
     monkeypatch.setattr(plugin, "_skill_view_is_safe", lambda: False)
     assert guard("skill_view", {}, **runtime_kwargs)["action"] == "block"
@@ -441,6 +461,73 @@ def test_profile_revision_tool_rejects_generic_memory_proposals(monkeypatch) -> 
     assert result["ok"] is False
     assert result["error_type"] == "PermissionError"
     assert requests == []
+
+
+def test_profile_plugin_sends_memory_preference_with_canonical_run_binding(
+    monkeypatch,
+) -> None:
+    plugin = _load_profile_plugin()
+    context = FakePluginContext()
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        run_message = ""
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "run_message": self.run_message,
+                    **kwargs,
+                }
+            )
+            return {"status": "draft", "created": True, "review_required": True}
+
+    monkeypatch.setattr(plugin, "HermesBridgeClient", FakeClient)
+    plugin.register(context)
+    run_message_id = "00000000-0000-0000-0000-000000000001"
+    result = json.loads(
+        context.tools["career_memory_preference_propose"]["handler"](
+            {"correction_phrase": "I prefer remote-first roles."},
+            session_id=run_message_id,
+        )
+    )
+
+    assert result["ok"] is True
+    assert calls == [
+        {
+            "method": "POST",
+            "path": "/memory/preferences",
+            "run_message": run_message_id,
+            "json_body": {
+                "correction_phrase": "I prefer remote-first roles.",
+            },
+        }
+    ]
+
+
+def test_protected_pilot_instructions_keep_memory_preferences_as_drafts() -> None:
+    instructions = " ".join(HERMES_COMPANION_INSTRUCTIONS.split())
+    assert "career_memory_preference_propose" in instructions
+    assert "structured career preference" in instructions
+    assert "remote, remote-first, hybrid, hybrid-first, or onsite" in instructions
+    assert "full-time, part-time, contract, or internship" in instructions
+    assert "relocation preference (open or not open)" in instructions
+    assert "never supply a category or value" in instructions
+    assert "never use career_revision_propose for memory" in instructions
+    assert "unevaluated draft for later user review" in instructions
+    assert "never as remembered, active, or verified" in instructions
+
+    soul = " ".join(
+        (REPOSITORY_ROOT / "agent-profile" / "SOUL.md").read_text().split()
+    )
+    assert "structured career-preference proposal tool" in soul
+    assert "remote, remote-first, hybrid, hybrid-first, onsite" in soul
+    assert "full-time, part-time, contract, internship" in soul
+    assert "relocation (open, not open)" in soul
+    assert "unevaluated draft for review" in soul
+    assert "may never create, evaluate, or activate memory" in soul
 
 
 def test_forbidden_platform_tools_cannot_make_originless_mutations(
@@ -909,6 +996,187 @@ def test_internal_bridge_requires_account_secret_and_shares_account_state(
     assert client.get("/openapi.json").json()["paths"].get(
         "/api/internal/hermes/v1/jobs"
     ) is None
+
+
+def test_memory_preference_bridge_creates_bound_structured_draft_idempotently(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    correction_phrase = "I prefer remote-first roles."
+    first_request = f"Please remember that {correction_phrase}"
+    second_request = f"Please update your memory: {correction_phrase}"
+    with account_session(paths) as session:
+        first_conversation = create_conversation_session(session, paths)
+        first_message = append_message(
+            session,
+            first_conversation,
+            role="user",
+            content=first_request,
+        )
+        second_conversation = create_conversation_session(session, paths)
+        second_message = append_message(
+            session,
+            second_conversation,
+            role="user",
+            content=second_request,
+        )
+
+    payload = {"correction_phrase": correction_phrase}
+    created = client.post(
+        "/api/internal/hermes/v1/memory/preferences",
+        headers=headers | {"X-Career-Run-Message": first_message.id},
+        json=payload,
+    )
+    reused = client.post(
+        "/api/internal/hermes/v1/memory/preferences",
+        headers=headers | {"X-Career-Run-Message": second_message.id},
+        json=payload,
+    )
+
+    assert created.status_code == 200
+    assert reused.status_code == 200
+    assert created.json()["created"] is True
+    assert reused.json()["created"] is False
+    assert created.json()["id"] == reused.json()["id"]
+    assert created.json()["name"] == "career-preference/workplace_preference"
+    assert created.json()["version"] == 1
+    assert created.json()["status"] == "draft"
+    assert created.json()["evaluation"] == {}
+    assert created.json()["review_required"] is True
+    content = created.json()["content"]
+    assert content["schema_version"] == "structured-career-preference-proposal-v1"
+    assert content["proposal_type"] == "structured_career_preference"
+    assert content["field"] == "workplace_preference"
+    assert content["value"] == "remote-first"
+    assert content["display"] == correction_phrase
+    assert content["evidence_status"] == "unverified_user_preference"
+    assert content["review_required"] is True
+    assert content["provenance"]["source_session"] == first_conversation.id
+    assert content["provenance"]["source_message_id"] == first_message.id
+    assert "user_request" not in content
+    assert correction_phrase not in created.json()["diff"]
+
+    with account_session(paths) as session:
+        revisions = session.scalars(select(RevisionRecord)).all()
+        counter = session.get(
+            RevisionLineageCounterRecord,
+            ("memory", "career-preference/workplace_preference"),
+        )
+        events = session.scalars(
+            select(AuditEventRecord).where(
+                AuditEventRecord.subject_id == created.json()["id"]
+            )
+        ).all()
+    assert len(revisions) == 1
+    assert counter is not None and counter.last_version == 1
+    assert revisions[0].author == "career-agent"
+    assert revisions[0].source_session == first_conversation.id
+    assert {event.event_type for event in events} == {
+        "revision.created",
+        "memory.career_preference_proposed",
+        "memory.career_preference_proposal_reused",
+    }
+    serialized_audit = json.dumps(
+        [event.payload for event in events], ensure_ascii=False, sort_keys=True
+    )
+    assert first_request not in serialized_audit
+    assert second_request not in serialized_audit
+    assert correction_phrase not in serialized_audit
+
+
+def test_memory_preference_bridge_versions_alternatives_in_one_lineage(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    phrases = ["I prefer remote roles.", "I prefer hybrid roles."]
+    responses = []
+    for phrase in phrases:
+        with account_session(paths) as session:
+            conversation = create_conversation_session(session, paths)
+            message = append_message(
+                session,
+                conversation,
+                role="user",
+                content=f"Please remember this preference: {phrase}",
+            )
+        responses.append(
+            client.post(
+                "/api/internal/hermes/v1/memory/preferences",
+                headers=headers | {"X-Career-Run-Message": message.id},
+                json={"correction_phrase": phrase},
+            )
+        )
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert [response.json()["version"] for response in responses] == [1, 2]
+    assert [response.json()["content"]["value"] for response in responses] == [
+        "remote",
+        "hybrid",
+    ]
+    assert responses[0].json()["id"] != responses[1].json()["id"]
+    with account_session(paths) as session:
+        counter = session.get(
+            RevisionLineageCounterRecord,
+            ("memory", "career-preference/workplace_preference"),
+        )
+    assert counter is not None and counter.last_version == 2
+
+
+def test_memory_preference_bridge_fails_closed_on_unbound_or_mismatched_input(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        stale_message = append_message(
+            session,
+            conversation,
+            role="user",
+            content="Please remember that I prefer remote roles.",
+        )
+        latest_message = append_message(
+            session,
+            conversation,
+            role="user",
+            content="Please remember that I prefer hybrid roles.",
+        )
+
+    path = "/api/internal/hermes/v1/memory/preferences"
+    missing_binding = client.post(
+        path,
+        headers=headers,
+        json={"correction_phrase": "I prefer hybrid roles."},
+    )
+    stale_binding = client.post(
+        path,
+        headers=headers | {"X-Career-Run-Message": stale_message.id},
+        json={"correction_phrase": "I prefer remote roles."},
+    )
+    mismatched_phrase = client.post(
+        path,
+        headers=headers | {"X-Career-Run-Message": latest_message.id},
+        json={"correction_phrase": "I prefer remote roles."},
+    )
+    extra_field = client.post(
+        path,
+        headers=headers | {"X-Career-Run-Message": latest_message.id},
+        json={
+            "correction_phrase": "I prefer hybrid roles.",
+            "source_session": conversation.id,
+        },
+    )
+
+    assert missing_binding.status_code == 409
+    assert stale_binding.status_code == 409
+    assert "no longer the latest" in stale_binding.json()["detail"]
+    assert mismatched_phrase.status_code == 409
+    assert "canonical preference sentence" in mismatched_phrase.json()["detail"]
+    assert extra_field.status_code == 422
+    with account_session(paths) as session:
+        assert session.scalars(select(RevisionRecord)).all() == []
 
 
 def test_internal_bridge_discovers_without_storing_then_deduplicates_selection(

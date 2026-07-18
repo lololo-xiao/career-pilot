@@ -31,6 +31,7 @@ _CAREER_TOOLS = [
     "career_application_decide",
     "career_application_status",
     "career_revision_propose",
+    "career_memory_preference_propose",
     "career_policy_status",
 ]
 

@@ -49,7 +49,13 @@ from career_companion.services.conversation_sessions import (
 )
 from career_companion.services.discovery import DiscoveryError, discover_public_jobs
 from career_companion.services.jobs import add_job, score_job
-from career_companion.services.revisions import create_revision
+from career_companion.services.revisions import (
+    MemoryPreferenceConflictError,
+    MemoryPreferenceProvenanceError,
+    MemoryPreferenceValidationError,
+    create_revision,
+    propose_memory_preference,
+)
 
 router = APIRouter(
     prefix="/api/internal/hermes/v1",
@@ -109,6 +115,10 @@ class HermesRevisionPayload(BoundToolPayload):
     name: str
     content: dict[str, Any]
     diff: str
+
+
+class MemoryPreferenceProposalPayload(BoundToolPayload):
+    correction_phrase: str = Field(min_length=1, max_length=200)
 
 
 def _unauthorized() -> HTTPException:
@@ -554,6 +564,33 @@ def propose_revision(
         return _revision_json(create_revision(session, **data))
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
+
+
+@router.post("/memory/preferences")
+def propose_user_memory_preference(
+    payload: MemoryPreferenceProposalPayload,
+    session: SessionDep,
+    run_message: RunMessageDep,
+) -> dict[str, Any]:
+    run_message = _rebind_latest_run_message_for_write(session, run_message.id)
+    try:
+        revision, created = propose_memory_preference(
+            session,
+            source_session=run_message.session_id,
+            user_request=run_message.content,
+            correction_phrase=payload.correction_phrase,
+            author="career-agent",
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (MemoryPreferenceProvenanceError, MemoryPreferenceConflictError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except MemoryPreferenceValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return _revision_json(revision) | {
+        "created": created,
+        "review_required": True,
+    }
 
 
 @router.get("/policy")
