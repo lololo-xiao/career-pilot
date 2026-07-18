@@ -57,7 +57,7 @@ tailoring, interview practice, and preview-only form assistance.
 | Grounded fit | ✅ Ready | 0–10 fit report with demonstrated, adjacent, missing, requirements, actions, and unsupported-claim warnings |
 | Job queue | ✅ Ready | Manual/CSV import, URL deduplication, deterministic ranking, filters, and visible score reasons |
 | Application pipeline | ✅ Ready | Detailed stages, next actions, status history, follow-ups, artifact versions, and explicit manual-submission confirmation |
-| Tailoring | ✅ Ready | CV, cover letter, gap analysis, honesty ledger, interview plan, PDF generation, exact-version approval |
+| Tailoring | 🟡 Partial | Draft/PDF/version-approval foundations exist; cited evidence snapshots, unsupported-gap handling, and retry/concurrency safety are being hardened before this is meetup-ready |
 | Agent resources | ✅ Ready | Visible built-in skills, editable user memories and skills, guarded create/edit/remove flows |
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
 | Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, and reversible. Active evaluated memory is used at runtime; active skill/rubric revisions are not yet applied |
