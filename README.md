@@ -76,9 +76,7 @@ orchestration/UX · ⬜ not implemented yet
 
 The [HTML meetup deck](docs/meetup-slides.html) is a keyboard-controlled, printable
 12-slide story built from the real current interface. Open the file directly, or serve the
-repository so all screenshot assets resolve:
-
-![CareerPilot meetup deck](docs/meetup-assets/meetup-deck-title.png)
+repository so its current product screenshots resolve:
 
 ```bash
 python3 -m http.server 8080
