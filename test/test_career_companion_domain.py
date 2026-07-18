@@ -11,6 +11,7 @@ from career_companion.database import (
     JobRecord,
     RevisionRecord,
     SourceDocumentRecord,
+    StatusEventRecord,
     UsageRunRecord,
 )
 from career_companion.paths import CompanionPaths
@@ -28,6 +29,7 @@ from career_companion.schemas import (
 )
 from career_companion.services.applications import (
     create_application,
+    decide_scored_application,
     ensure_application,
     transition_application,
 )
@@ -159,6 +161,86 @@ def test_ensure_application_is_idempotent_for_one_saved_job(session) -> None:
     assert session.scalars(
         select(ApplicationRecord).where(ApplicationRecord.job_id == job.id)
     ).all() == [first]
+
+
+@pytest.mark.parametrize(
+    ("target", "decision_reference"),
+    [
+        (ApplicationStatus.APPROVED, "Approve Example GmbH AI Engineer"),
+        (ApplicationStatus.WITHDRAWN, "Archive Example GmbH AI Engineer"),
+    ],
+)
+def test_scored_application_decision_is_exact_and_idempotent(
+    session,
+    target: ApplicationStatus,
+    decision_reference: str,
+) -> None:
+    application = create_application(session, _job(session).id)
+    transition_application(session, application.id, ApplicationStatus.SCORED)
+
+    decided, event_created, fingerprint = decide_scored_application(
+        session,
+        application.id,
+        target,
+        source_session="00000000-0000-0000-0000-000000000001",
+        user_request=f"{decision_reference}.",
+        decision_reference=decision_reference,
+    )
+    repeated, repeated_event_created, repeated_fingerprint = (
+        decide_scored_application(
+            session,
+            application.id,
+            target,
+            source_session="00000000-0000-0000-0000-000000000001",
+            user_request=f"{decision_reference}.",
+            decision_reference=decision_reference,
+        )
+    )
+
+    assert decided.status == target.value
+    assert repeated.id == decided.id
+    assert event_created is True
+    assert repeated_event_created is False
+    assert repeated_fingerprint == fingerprint
+    decision_events = session.scalars(
+        select(StatusEventRecord).where(
+            StatusEventRecord.application_id == application.id,
+            StatusEventRecord.from_status == "scored",
+        )
+    ).all()
+    assert len(decision_events) == 1
+    assert decision_events[0].to_status == target.value
+    assert fingerprint in decision_events[0].note
+
+
+def test_scored_application_decision_rejects_other_targets_and_states(session) -> None:
+    application = create_application(session, _job(session).id)
+
+    with pytest.raises(ValueError, match="must approve or archive"):
+        decide_scored_application(
+            session,
+            application.id,
+            ApplicationStatus.TAILORING,
+            source_session="00000000-0000-0000-0000-000000000001",
+            user_request="Start tailoring Example GmbH AI Engineer.",
+            decision_reference="Start tailoring Example GmbH AI Engineer",
+        )
+    with pytest.raises(ValueError, match="only valid for a scored"):
+        decide_scored_application(
+            session,
+            application.id,
+            ApplicationStatus.APPROVED,
+            source_session="00000000-0000-0000-0000-000000000001",
+            user_request="Approve Example GmbH AI Engineer.",
+            decision_reference="Approve Example GmbH AI Engineer",
+        )
+
+    assert application.status == "discovered"
+    assert session.scalars(
+        select(StatusEventRecord).where(
+            StatusEventRecord.application_id == application.id
+        )
+    ).all() == []
 
 
 def test_approval_is_bound_to_payload_and_can_only_be_consumed_once(session) -> None:

@@ -28,6 +28,7 @@ _CAREER_TOOLS = [
     "career_job_track_selected",
     "career_job_queue",
     "career_application_queue",
+    "career_application_decide",
     "career_application_status",
     "career_revision_propose",
     "career_policy_status",

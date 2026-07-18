@@ -122,6 +122,20 @@ def _track_selected_job(args: dict[str, Any]) -> Any:
     )
 
 
+def _decide_application(args: dict[str, Any]) -> Any:
+    application_id = quote(str(args["application_id"]), safe="")
+    return _client().request(
+        "POST",
+        f"/applications/{application_id}/decide",
+        json_body={
+            "decision": args["decision"],
+            "source_session": args["source_session"],
+            "user_request": args["user_request"],
+            "decision_reference": args["decision_reference"],
+        },
+    )
+
+
 def _job_queue(args: dict[str, Any]) -> Any:
     return _client().request("GET", "/jobs", params={"limit": args.get("limit", 10)})
 
@@ -133,8 +147,13 @@ def _application_queue(args: dict[str, Any]) -> Any:
 
 
 def _application_status(args: dict[str, Any]) -> Any:
-    if args.get("status") == "submitted":
+    status = args.get("status")
+    if status == "submitted":
         raise PermissionError("Hermes cannot record application submission")
+    if status in _GATED_APPLICATION_STATUSES:
+        raise PermissionError(
+            "Use the explicit decision or dedicated artifact workflow for this status"
+        )
     application_id = quote(str(args["application_id"]), safe="")
     return _client().request(
         "POST",
@@ -167,17 +186,20 @@ def _browser_fill(args: dict[str, Any]) -> Any:
 
 
 _STATUS_ENUM = [
-    "scored",
-    "approved",
-    "tailoring",
-    "ready",
-    "form_filled",
     "followed_up",
     "interview",
     "offer",
     "rejected",
-    "withdrawn",
 ]
+
+_GATED_APPLICATION_STATUSES = {
+    "scored",
+    "approved",
+    "withdrawn",
+    "tailoring",
+    "ready",
+    "form_filled",
+}
 
 TOOLS = (
     ToolDefinition(
@@ -352,8 +374,47 @@ TOOLS = (
         _application_queue,
     ),
     ToolDefinition(
+        "career_application_decide",
+        (
+            "Record one explicit approve-or-archive decision for a scored tracked "
+            "application. This is an idempotent local write only. Copy the latest "
+            "user message and its positive, unambiguous decision phrase exactly; "
+            "the phrase must identify the saved company and role. This does not "
+            "generate artifacts, fill forms, send messages, or submit applications."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "application_id": {"type": "string"},
+                "decision": {"type": "string", "enum": ["approve", "archive"]},
+                "source_session": {"type": "string"},
+                "user_request": {"type": "string"},
+                "decision_reference": {
+                    "type": "string",
+                    "description": (
+                        "Exact user-written phrase stating the decision and identifying "
+                        "the saved company and role."
+                    ),
+                },
+            },
+            "required": [
+                "application_id",
+                "decision",
+                "source_session",
+                "user_request",
+                "decision_reference",
+            ],
+            "additionalProperties": False,
+        },
+        _decide_application,
+    ),
+    ToolDefinition(
         "career_application_status",
-        "Advance a valid application state transition. Submission is not available to Hermes.",
+        (
+            "Record supported post-submission application outcomes. This generic tool "
+            "cannot score a selected job, approve, archive, start tailoring, mark "
+            "readiness or form completion, or record submission."
+        ),
         {
             "type": "object",
             "properties": {
@@ -435,11 +496,21 @@ def _guard_tool_call(tool_name: str, args: dict[str, Any], **kwargs: Any) -> dic
             "action": "block",
             "message": f"{tool_name} is outside Pilot's local task boundary",
         }
-    if tool_name == "career_application_status" and args.get("status") == "submitted":
-        return {
-            "action": "block",
-            "message": "Only the user can confirm that an application was submitted",
-        }
+    if tool_name == "career_application_status":
+        status = args.get("status")
+        if status == "submitted":
+            return {
+                "action": "block",
+                "message": "Only the user can confirm that an application was submitted",
+            }
+        if status in _GATED_APPLICATION_STATUSES:
+            return {
+                "action": "block",
+                "message": (
+                    "Scoring and decisions require their explicit tools; tailoring, "
+                    "readiness, and form completion require dedicated workflows"
+                ),
+            }
     if tool_name == "career_identity_update":
         return {
             "action": "approve",

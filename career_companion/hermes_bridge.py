@@ -29,12 +29,14 @@ from career_companion.database import (
     MCPServerRecord,
     ModelRouteRecord,
     ScheduleRecord,
+    StatusEventRecord,
 )
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.router import RevisionRequest, _application_json, _job_json, _revision_json
 from career_companion.schemas import ApplicationStatus, Job, JobSpec
 from career_companion.services.applications import (
+    decide_scored_application,
     ensure_application,
     transition_application,
 )
@@ -55,6 +57,45 @@ router = APIRouter(
 )
 
 _ACCOUNT_KEY_PATTERN = re.compile(r"[a-f0-9]{64}")
+_TRACKED_SELECTION_NOTE = "Deterministic priority recorded after explicit user selection"
+_APPROVE_PATTERN = re.compile(r"\bapprov(?:e|ed|ing)\b", re.IGNORECASE)
+_ARCHIVE_PATTERN = re.compile(
+    r"\b(?:archiv(?:e|ed|ing)|withdraw(?:n|ing)?)\b",
+    re.IGNORECASE,
+)
+_UNCERTAIN_DECISION_PATTERN = re.compile(
+    r"\b(?:maybe|perhaps|possibly|unsure|uncertain|consider)\b",
+    re.IGNORECASE,
+)
+_NEGATED_DECISION_PATTERN = re.compile(
+    r"\b(?:do\s+not|don['’]?t|cannot|can['’]?t|will\s+not|won['’]?t|"
+    r"never|not|no|without|refuse|decline|reject|avoid|against)\b"
+    r"(?:\W+\w+){0,4}\W+"
+    r"(?:approv(?:e|ed|ing)|archiv(?:e|ed|ing)|withdraw(?:n|ing)?)\b",
+    re.IGNORECASE,
+)
+_DECISION_REFERENCE_FILLER = {
+    "application",
+    "at",
+    "for",
+    "job",
+    "my",
+    "opportunity",
+    "please",
+    "role",
+    "saved",
+    "the",
+    "this",
+    "tracked",
+}
+_PILOT_GATED_APPLICATION_STATUSES = {
+    ApplicationStatus.SCORED,
+    ApplicationStatus.APPROVED,
+    ApplicationStatus.WITHDRAWN,
+    ApplicationStatus.TAILORING,
+    ApplicationStatus.READY,
+    ApplicationStatus.FORM_FILLED,
+}
 
 
 class ApplicationTransition(BaseModel):
@@ -87,6 +128,13 @@ class SelectedJobTrackingPayload(BaseModel):
     source_session: str = Field(min_length=36, max_length=36)
     user_request: str = Field(min_length=1, max_length=50_000)
     selection_reference: str = Field(min_length=1, max_length=500)
+
+
+class ScoredApplicationDecisionPayload(BaseModel):
+    decision: Literal["approve", "archive"]
+    source_session: str = Field(min_length=36, max_length=36)
+    user_request: str = Field(min_length=1, max_length=50_000)
+    decision_reference: str = Field(min_length=1, max_length=500)
 
 
 def _unauthorized() -> HTTPException:
@@ -302,7 +350,7 @@ def track_selected_job(
             session,
             application.id,
             ApplicationStatus.SCORED,
-            note="Deterministic priority recorded after explicit user selection",
+            note=_TRACKED_SELECTION_NOTE,
         )
     spec = JobSpec.model_validate(ranked_job.normalized_spec)
     return {
@@ -338,6 +386,112 @@ def track_selected_job(
     }
 
 
+@router.post("/applications/{application_id}/decide")
+def decide_tracked_application(
+    application_id: str,
+    payload: ScoredApplicationDecisionPayload,
+    session: SessionDep,
+) -> dict[str, Any]:
+    application = session.get(ApplicationRecord, application_id)
+    if application is None:
+        raise HTTPException(404, "Application not found")
+    job = session.get(JobRecord, application.job_id)
+    if job is None:
+        raise HTTPException(409, "The application is not linked to a saved job")
+    conversation = session.get(ConversationSessionRecord, payload.source_session)
+    if conversation is None:
+        raise HTTPException(404, "Conversation session not found")
+    latest_user_message = next(
+        (
+            message
+            for message in reversed(conversation.messages)
+            if message.role == "user"
+        ),
+        None,
+    )
+    current_request = payload.user_request.strip()
+    decision_reference = payload.decision_reference.strip()
+    if latest_user_message is None or latest_user_message.content != current_request:
+        raise HTTPException(
+            409,
+            "Application decisions must match the latest user message in this session",
+        )
+    if not decision_reference or decision_reference not in current_request:
+        raise HTTPException(
+            409,
+            "Decision reference must be copied from the latest user message",
+        )
+    tracked_event = session.scalar(
+        select(StatusEventRecord).where(
+            StatusEventRecord.application_id == application.id,
+            StatusEventRecord.from_status == ApplicationStatus.DISCOVERED.value,
+            StatusEventRecord.to_status == ApplicationStatus.SCORED.value,
+            StatusEventRecord.note == _TRACKED_SELECTION_NOTE,
+        )
+    )
+    if job.score is None or job.tier is None or tracked_event is None:
+        raise HTTPException(
+            409,
+            "Application decisions require the explicit selected-job tracking path",
+        )
+
+    _validate_explicit_application_decision(
+        application,
+        job,
+        payload.decision,
+        current_request,
+        decision_reference,
+    )
+    target = (
+        ApplicationStatus.APPROVED
+        if payload.decision == "approve"
+        else ApplicationStatus.WITHDRAWN
+    )
+    try:
+        application, event_created, fingerprint = decide_scored_application(
+            session,
+            application.id,
+            target,
+            source_session=conversation.id,
+            user_request=current_request,
+            decision_reference=decision_reference,
+        )
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+    return {
+        "activity": {
+            "type": "local_write",
+            "operations": ["scored_application_decision"],
+            "public_network_read": False,
+        },
+        "decision": {
+            "action": payload.decision,
+            "source_session": conversation.id,
+            "reference": decision_reference,
+        },
+        "queued_job": {
+            "id": job.id,
+            "company": job.company,
+            "title": job.title,
+            "canonical_url": job.canonical_url,
+        },
+        "application": {
+            "id": application.id,
+            "job_id": application.job_id,
+            "status": application.status,
+        },
+        "audit": {
+            "from_status": ApplicationStatus.SCORED.value,
+            "to_status": application.status,
+            "status_event_created": event_created,
+            "idempotent_replay": not event_created,
+            "decision_fingerprint": fingerprint,
+        },
+        "next_safe_action": _decision_next_safe_action(application.status),
+    }
+
+
 @router.get("/applications")
 def list_applications(
     session: SessionDep,
@@ -359,6 +513,12 @@ def set_application_status(
 ) -> dict[str, Any]:
     if payload.status is ApplicationStatus.SUBMITTED:
         raise HTTPException(403, "Hermes cannot record application submission")
+    if payload.status in _PILOT_GATED_APPLICATION_STATUSES:
+        raise HTTPException(
+            403,
+            "Pilot cannot use generic status updates for selected-job scoring, "
+            "approval, archive, tailoring, readiness, or form completion",
+        )
     try:
         row = transition_application(
             session,
@@ -453,4 +613,73 @@ def _tracking_next_safe_action(application_status: str) -> str:
     return (
         f"Review the existing {application_status} application without advancing it "
         "or claiming any materials are complete"
+    )
+
+
+def _validate_explicit_application_decision(
+    application: ApplicationRecord,
+    job: JobRecord,
+    decision: Literal["approve", "archive"],
+    current_request: str,
+    decision_reference: str,
+) -> None:
+    approve_present = _APPROVE_PATTERN.search(current_request) is not None
+    archive_present = _ARCHIVE_PATTERN.search(current_request) is not None
+    expected_pattern = _APPROVE_PATTERN if decision == "approve" else _ARCHIVE_PATTERN
+    if expected_pattern.search(decision_reference) is None:
+        raise HTTPException(
+            409,
+            "Decision reference must explicitly state the requested decision",
+        )
+    if (approve_present, archive_present) != (
+        decision == "approve",
+        decision == "archive",
+    ):
+        raise HTTPException(
+            409,
+            "The latest user message does not contain one unambiguous decision",
+        )
+    if (
+        "?" in current_request
+        or _UNCERTAIN_DECISION_PATTERN.search(current_request) is not None
+        or _NEGATED_DECISION_PATTERN.search(current_request) is not None
+    ):
+        raise HTTPException(
+            409,
+            "The latest user message must contain a positive, unambiguous decision",
+        )
+
+    folded_reference = decision_reference.casefold()
+    reference_identity = _decision_reference_identity(decision_reference)
+    references_named_job = reference_identity in {
+        _decision_reference_identity(f"{job.company} {job.title}"),
+        _decision_reference_identity(f"{job.title} {job.company}"),
+    }
+    references_url = bool(
+        job.canonical_url and job.canonical_url.casefold() in folded_reference
+    )
+    references_application = application.id.casefold() in folded_reference
+    if not (references_named_job or references_url or references_application):
+        raise HTTPException(
+            409,
+            "Decision reference does not identify this saved application",
+        )
+
+
+def _decision_next_safe_action(application_status: str) -> str:
+    if application_status == ApplicationStatus.APPROVED.value:
+        return (
+            "Wait for a new explicit user request before starting evidence-backed "
+            "tailoring; no artifacts have been generated"
+        )
+    return "No further action; the opportunity is archived locally"
+
+
+def _decision_reference_identity(value: str) -> tuple[str, ...]:
+    without_actions = _APPROVE_PATTERN.sub(" ", value)
+    without_actions = _ARCHIVE_PATTERN.sub(" ", without_actions)
+    return tuple(
+        token
+        for token in re.findall(r"\w+", without_actions.casefold())
+        if token not in _DECISION_REFERENCE_FILLER
     )

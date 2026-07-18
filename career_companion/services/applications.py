@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -120,6 +122,70 @@ def ensure_application(
     if existing is not None:
         return existing, False
     return create_application(session, job_id), True
+
+
+def decide_scored_application(
+    session: Session,
+    application_id: str,
+    target: ApplicationStatus,
+    *,
+    source_session: str,
+    user_request: str,
+    decision_reference: str,
+) -> tuple[ApplicationRecord, bool, str]:
+    """Record one exact, idempotent approve-or-archive decision."""
+
+    if target not in {ApplicationStatus.APPROVED, ApplicationStatus.WITHDRAWN}:
+        raise ValueError("A scored decision must approve or archive the application")
+    application = session.get(ApplicationRecord, application_id)
+    if application is None:
+        raise LookupError("Application not found")
+
+    decision_payload = {
+        "application_id": application_id,
+        "decision": target.value,
+        "decision_reference": decision_reference,
+        "source_session": source_session,
+        "user_request": user_request,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            decision_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    note = (
+        "Explicit user decision "
+        f"{target.value}; source_session={source_session}; "
+        f"reference={json.dumps(decision_reference, ensure_ascii=False)}; "
+        f"fingerprint={fingerprint}"
+    )
+    existing_event = session.scalar(
+        select(StatusEventRecord).where(
+            StatusEventRecord.application_id == application.id,
+            StatusEventRecord.from_status == ApplicationStatus.SCORED.value,
+            StatusEventRecord.to_status == target.value,
+            StatusEventRecord.note == note,
+        )
+    )
+    if application.status == target.value and existing_event is not None:
+        return application, False, fingerprint
+    if application.status != ApplicationStatus.SCORED.value:
+        raise ValueError(
+            "Explicit approval or archive is only valid for a scored application"
+        )
+    if existing_event is not None:
+        raise ValueError("This exact application decision was already recorded")
+
+    application = transition_application(
+        session,
+        application.id,
+        target,
+        note=note,
+    )
+    return application, True, fingerprint
 
 
 def transition_application(

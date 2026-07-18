@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from app.auth import AuthStore, AuthenticatedAccount, ProviderConnection
 from app.main import app, get_store, require_current_account
 from career_companion.config import ProductConfig
+from career_companion.database import ConversationSessionRecord
 from career_companion.hermes import HermesSupervisor
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
@@ -109,6 +110,40 @@ def _job_payload() -> dict[str, Any]:
     }
 
 
+def _tracked_application(
+    client: TestClient,
+    headers: dict[str, str],
+) -> tuple[str, str, str]:
+    job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
+    ).json()["id"]
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    user_request = "Track Bridge GmbH ML Engineer."
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        append_message(session, conversation, role="user", content=user_request)
+        session_id = conversation.id
+    tracked = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers,
+        json={
+            "source_session": session_id,
+            "user_request": user_request,
+            "selection_reference": "Bridge GmbH ML Engineer",
+        },
+    )
+    assert tracked.status_code == 200
+    return job_id, tracked.json()["application"]["id"], session_id
+
+
+def _append_user_message(session_id: str, content: str) -> None:
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        conversation = session.get(ConversationSessionRecord, session_id)
+        assert conversation is not None
+        append_message(session, conversation, role="user", content=content)
+
+
 def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     plugin = _load_profile_plugin()
     context = FakePluginContext()
@@ -125,6 +160,7 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
         "career_job_track_selected",
         "career_job_queue",
         "career_application_queue",
+        "career_application_decide",
         "career_application_status",
         "career_revision_propose",
         "career_policy_status",
@@ -141,6 +177,13 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     assert guard("career_job_queue", {}) is None
     assert guard("career_public_job_discover", {}) is None
     assert guard("career_job_track_selected", {}) is None
+    assert guard("career_application_decide", {}) is None
+    assert guard(
+        "career_application_status", {"status": "approved"}
+    )["action"] == "block"
+    assert guard(
+        "career_application_status", {"status": "withdrawn"}
+    )["action"] == "block"
     identity_guard = guard("career_identity_update", {"name": "Zey"})
     assert identity_guard["action"] == "approve"
     assert identity_guard["rule_key"] == "career_identity_update"
@@ -166,6 +209,35 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     assert tracking_parameters["additionalProperties"] is False
     assert "local writes only" in tracking_tool["description"]
     assert "submission" in tracking_tool["description"]
+
+    decision_tool = context.tools["career_application_decide"]
+    decision_parameters = decision_tool["schema"]["parameters"]
+    assert decision_parameters["properties"]["decision"]["enum"] == [
+        "approve",
+        "archive",
+    ]
+    assert decision_parameters["required"] == [
+        "application_id",
+        "decision",
+        "source_session",
+        "user_request",
+        "decision_reference",
+    ]
+    assert decision_parameters["additionalProperties"] is False
+    assert "idempotent local write" in decision_tool["description"]
+    assert "generate artifacts" in decision_tool["description"]
+
+    status_tool = context.tools["career_application_status"]
+    status_values = status_tool["schema"]["parameters"]["properties"]["status"][
+        "enum"
+    ]
+    assert "approved" not in status_values
+    assert "withdrawn" not in status_values
+    assert "tailoring" not in status_values
+    assert "ready" not in status_values
+    assert "scored" not in status_values
+    assert "form_filled" not in status_values
+    assert "interview" in status_values
 
 
 def test_profile_plugin_dispatches_explicit_public_discovery(monkeypatch) -> None:
@@ -278,6 +350,48 @@ def test_profile_plugin_dispatches_selected_job_tracking(monkeypatch) -> None:
                 "source_session": args["source_session"],
                 "user_request": args["user_request"],
                 "selection_reference": args["selection_reference"],
+            },
+        }
+    ]
+
+
+def test_profile_plugin_dispatches_explicit_application_decision(monkeypatch) -> None:
+    plugin = _load_profile_plugin()
+    context = FakePluginContext()
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append({"method": method, "path": path, **kwargs})
+            return {
+                "application": {"id": "application/1", "status": "approved"},
+                "audit": {"status_event_created": True},
+            }
+
+    monkeypatch.setattr(plugin, "HermesBridgeClient", FakeClient)
+    plugin.register(context)
+    args = {
+        "application_id": "application/1",
+        "decision": "approve",
+        "source_session": "00000000-0000-0000-0000-000000000001",
+        "user_request": "Approve Bridge GmbH ML Engineer.",
+        "decision_reference": "Approve Bridge GmbH ML Engineer",
+    }
+    result = json.loads(
+        context.tools["career_application_decide"]["handler"](args)
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["application"]["status"] == "approved"
+    assert calls == [
+        {
+            "method": "POST",
+            "path": "/applications/application%2F1/decide",
+            "json_body": {
+                "decision": "approve",
+                "source_session": args["source_session"],
+                "user_request": args["user_request"],
+                "decision_reference": args["decision_reference"],
             },
         }
     ]
@@ -657,7 +771,297 @@ def test_internal_bridge_rejects_stale_or_invented_job_selection(
     assert queued_job["tier"] is None
 
 
-def test_internal_bridge_cannot_confirm_submission(bridge_client) -> None:
+@pytest.mark.parametrize(
+    ("decision", "reference", "expected_status"),
+    [
+        (
+            "approve",
+            "Approve Bridge GmbH ML Engineer",
+            "approved",
+        ),
+        (
+            "archive",
+            "Archive Bridge GmbH ML Engineer",
+            "withdrawn",
+        ),
+    ],
+)
+def test_internal_bridge_records_scored_decision_idempotently(
+    bridge_client,
+    decision: str,
+    reference: str,
+    expected_status: str,
+) -> None:
+    client, headers = bridge_client
+    job_id, application_id, session_id = _tracked_application(client, headers)
+    user_request = f"{reference}."
+    _append_user_message(session_id, user_request)
+    payload = {
+        "decision": decision,
+        "source_session": session_id,
+        "user_request": user_request,
+        "decision_reference": reference,
+    }
+
+    first = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers,
+        json=payload,
+    )
+    repeated = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers,
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert first.json()["activity"] == {
+        "type": "local_write",
+        "operations": ["scored_application_decision"],
+        "public_network_read": False,
+    }
+    assert first.json()["decision"] == {
+        "action": decision,
+        "source_session": session_id,
+        "reference": reference,
+    }
+    assert first.json()["queued_job"] == {
+        "id": job_id,
+        "company": "Bridge GmbH",
+        "title": "ML Engineer",
+        "canonical_url": "https://jobs.example.test/ml-engineer",
+    }
+    assert first.json()["application"] == {
+        "id": application_id,
+        "job_id": job_id,
+        "status": expected_status,
+    }
+    assert first.json()["audit"]["from_status"] == "scored"
+    assert first.json()["audit"]["to_status"] == expected_status
+    assert first.json()["audit"]["status_event_created"] is True
+    assert first.json()["audit"]["idempotent_replay"] is False
+    assert len(first.json()["audit"]["decision_fingerprint"]) == 64
+    assert repeated.status_code == 200
+    assert repeated.json()["audit"] == first.json()["audit"] | {
+        "status_event_created": False,
+        "idempotent_replay": True,
+    }
+    if decision == "approve":
+        assert "no artifacts have been generated" in first.json()["next_safe_action"]
+    else:
+        assert first.json()["next_safe_action"] == (
+            "No further action; the opportunity is archived locally"
+        )
+
+    applications = client.get(
+        "/api/internal/hermes/v1/applications", headers=headers
+    ).json()
+    saved = next(item for item in applications if item["id"] == application_id)
+    decision_events = [
+        event for event in saved["status_events"] if event["from"] == "scored"
+    ]
+    assert len(decision_events) == 1
+    assert decision_events[0]["to"] == expected_status
+    assert saved["artifacts"] == []
+
+
+def test_internal_bridge_rejects_stale_invented_negated_and_ambiguous_decisions(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    _, application_id, session_id = _tracked_application(client, headers)
+
+    decision_request = "Approve Bridge GmbH ML Engineer."
+    _append_user_message(session_id, decision_request)
+    _append_user_message(session_id, "Show the application queue instead.")
+    rejected_payloads = [
+        {
+            "decision": "approve",
+            "source_session": session_id,
+            "user_request": decision_request,
+            "decision_reference": "Approve Bridge GmbH ML Engineer",
+        },
+        {
+            "decision": "approve",
+            "source_session": session_id,
+            "user_request": "Show the application queue instead.",
+            "decision_reference": "Approve Bridge GmbH ML Engineer",
+        },
+    ]
+    for payload in rejected_payloads:
+        response = client.post(
+            f"/api/internal/hermes/v1/applications/{application_id}/decide",
+            headers=headers,
+            json=payload,
+        )
+        assert response.status_code == 409
+
+    for user_request, decision, reference in (
+        (
+            "Do not approve Bridge GmbH ML Engineer.",
+            "approve",
+            "Do not approve Bridge GmbH ML Engineer",
+        ),
+        (
+            "Approve or archive Bridge GmbH ML Engineer.",
+            "approve",
+            "Approve or archive Bridge GmbH ML Engineer",
+        ),
+        (
+            "Maybe archive Bridge GmbH ML Engineer.",
+            "archive",
+            "Maybe archive Bridge GmbH ML Engineer",
+        ),
+    ):
+        _append_user_message(session_id, user_request)
+        response = client.post(
+            f"/api/internal/hermes/v1/applications/{application_id}/decide",
+            headers=headers,
+            json={
+                "decision": decision,
+                "source_session": session_id,
+                "user_request": user_request,
+                "decision_reference": reference,
+            },
+        )
+        assert response.status_code == 409
+
+    application = next(
+        item
+        for item in client.get(
+            "/api/internal/hermes/v1/applications", headers=headers
+        ).json()
+        if item["id"] == application_id
+    )
+    assert application["status"] == "scored"
+    assert len(application["status_events"]) == 1
+
+
+def test_internal_bridge_rejects_wrong_application_and_invalid_state_decisions(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    _, application_id, session_id = _tracked_application(client, headers)
+    other_payload = _job_payload()
+    other_payload["spec"] = other_payload["spec"] | {
+        "title": "Data Engineer",
+        "company": "Other Labs",
+    }
+    other_payload["canonical_url"] = "https://jobs.example.test/data-engineer"
+    other_job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=other_payload
+    ).json()["id"]
+    other_selection = "Track Other Labs Data Engineer."
+    _append_user_message(session_id, other_selection)
+    other_tracking = client.post(
+        f"/api/internal/hermes/v1/jobs/{other_job_id}/track-selected",
+        headers=headers,
+        json={
+            "source_session": session_id,
+            "user_request": other_selection,
+            "selection_reference": "Other Labs Data Engineer",
+        },
+    )
+    assert other_tracking.status_code == 200
+    other_application_id = other_tracking.json()["application"]["id"]
+
+    wrong_request = "Approve Other Labs Data Engineer."
+    _append_user_message(session_id, wrong_request)
+    wrong_application = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers,
+        json={
+            "decision": "approve",
+            "source_session": session_id,
+            "user_request": wrong_request,
+            "decision_reference": "Approve Other Labs Data Engineer",
+        },
+    )
+    assert wrong_application.status_code == 409
+    assert "does not identify" in wrong_application.json()["detail"]
+
+    valid = client.post(
+        f"/api/internal/hermes/v1/applications/{other_application_id}/decide",
+        headers=headers,
+        json={
+            "decision": "approve",
+            "source_session": session_id,
+            "user_request": wrong_request,
+            "decision_reference": "Approve Other Labs Data Engineer",
+        },
+    )
+    assert valid.status_code == 200
+    invalid_request = "Archive Other Labs Data Engineer."
+    _append_user_message(session_id, invalid_request)
+    invalid_state = client.post(
+        f"/api/internal/hermes/v1/applications/{other_application_id}/decide",
+        headers=headers,
+        json={
+            "decision": "archive",
+            "source_session": session_id,
+            "user_request": invalid_request,
+            "decision_reference": "Archive Other Labs Data Engineer",
+        },
+    )
+    assert invalid_state.status_code == 409
+    assert "only valid for a scored" in invalid_state.json()["detail"]
+
+    applications = {
+        item["id"]: item
+        for item in client.get(
+            "/api/internal/hermes/v1/applications", headers=headers
+        ).json()
+    }
+    assert applications[application_id]["status"] == "scored"
+    assert len(applications[application_id]["status_events"]) == 1
+    assert applications[other_application_id]["status"] == "approved"
+    assert len(applications[other_application_id]["status_events"]) == 2
+
+
+def test_internal_bridge_decision_requires_selected_job_tracking(bridge_client) -> None:
+    client, headers = bridge_client
+    job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
+    ).json()["id"]
+    client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/score",
+        headers=headers,
+    )
+    application_id = client.post(
+        "/api/v1/applications", params={"job_id": job_id}
+    ).json()["id"]
+    client.post(
+        f"/api/v1/applications/{application_id}/status",
+        json={"status": "scored"},
+    )
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    user_request = "Approve Bridge GmbH ML Engineer."
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        append_message(session, conversation, role="user", content=user_request)
+        session_id = conversation.id
+
+    rejected = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers,
+        json={
+            "decision": "approve",
+            "source_session": session_id,
+            "user_request": user_request,
+            "decision_reference": "Approve Bridge GmbH ML Engineer",
+        },
+    )
+
+    assert rejected.status_code == 409
+    assert "selected-job tracking" in rejected.json()["detail"]
+    application = client.get("/api/v1/applications").json()[0]
+    assert application["status"] == "scored"
+    assert len(application["status_events"]) == 1
+
+
+def test_internal_bridge_generic_status_preserves_outcomes_but_not_gated_states(
+    bridge_client,
+) -> None:
     client, headers = bridge_client
     job_id = client.post(
         "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
@@ -665,13 +1069,20 @@ def test_internal_bridge_cannot_confirm_submission(bridge_client) -> None:
     application_id = client.post(
         "/api/v1/applications", params={"job_id": job_id}
     ).json()["id"]
-    for target in ("scored", "approved", "tailoring", "ready"):
-        response = client.post(
+    for target in (
+        "scored",
+        "approved",
+        "withdrawn",
+        "tailoring",
+        "ready",
+        "form_filled",
+    ):
+        blocked = client.post(
             f"/api/internal/hermes/v1/applications/{application_id}/status",
             headers=headers,
             json={"status": target},
         )
-        assert response.status_code == 200
+        assert blocked.status_code == 403
 
     blocked = client.post(
         f"/api/internal/hermes/v1/applications/{application_id}/status",
@@ -680,7 +1091,26 @@ def test_internal_bridge_cannot_confirm_submission(bridge_client) -> None:
     )
 
     assert blocked.status_code == 403
-    assert client.get("/api/v1/applications").json()[0]["status"] == "ready"
+    untouched = client.get("/api/v1/applications").json()[0]
+    assert untouched["status"] == "discovered"
+    assert untouched["status_events"] == []
+
+    recorded_by_user = client.post(
+        f"/api/v1/applications/{application_id}/status",
+        json={
+            "status": "submitted",
+            "manual_override": True,
+            "confirmed_by_user": True,
+        },
+    )
+    assert recorded_by_user.status_code == 200
+    outcome = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/status",
+        headers=headers,
+        json={"status": "interview", "note": "Outcome reported by the user"},
+    )
+    assert outcome.status_code == 200
+    assert outcome.json()["status"] == "interview"
 
 
 def test_internal_bridge_updates_identity_only_from_latest_direct_request(
