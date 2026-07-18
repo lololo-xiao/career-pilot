@@ -63,6 +63,7 @@ orchestrate the whole chain conversationally, with safe pauses at every external
 | Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
 | Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes, cites relied-upon sources, and exposes a privacy-safe retrieval inspector; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
+| Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install verification is still planned |
 | Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
 
 **Legend:** ✅ usable in the current local build · 🟡 real foundation with incomplete
@@ -87,8 +88,8 @@ Recommended five-minute demo:
 1. Open Pilot and show its identity, persistent session, and working context.
 2. Ask whether one role is worth pursuing; open the grounded fit card.
 3. Show one demonstrated claim, one adjacent skill, and one honest gap.
-4. Open the evidence profile, ranked queue, and application stage.
-5. End with the boundary: Pilot prepares locally; the user reviews every artifact and submits.
+4. Open the memory inspector and show why a prior fact was retrieved without exposing internal prompts or identifiers.
+5. Move through the evidence profile, ranked queue, and application stage, then end at the boundary: Pilot prepares locally; the user reviews every artifact and submits.
 
 The deck supports `←` / `→`, `PageUp` / `PageDown`, `Home` / `End`, `F` for fullscreen,
 `N` for speaker notes, and `D` to open the default local product URL.
@@ -222,9 +223,10 @@ npm run lint
 npm run build
 ```
 
-The current development audit passes **173 backend tests** and **20 frontend unit tests**.
-The offline evaluator validates **25 strong, partial, and mismatch cases**; frontend lint,
-the production build, and demo preflight also pass.
+The current clean-archive development audit passes **415 backend tests** with **4
+Windows-only skips**, plus **20 frontend unit tests**. The offline evaluator validates **25
+strong, partial, and mismatch cases**; frontend lint, the production build, and demo
+preflight also pass.
 
 One explicit provider-backed smoke test is available:
 
@@ -256,7 +258,7 @@ into a genuinely proactive job-search agent.
 - [ ] Complete a backup/restore drill with provider credentials excluded.
 - [ ] Inspect one opt-in Langfuse trace and confirm privacy wording.
 - [ ] Rehearse the five-minute story with the seeded/screenshot fallback.
-- [ ] Resolve the bundled-static-build precedence so local source builds cannot serve a stale UI.
+- [x] Bundle a reproducibly verified static UI and reject stale, mixed-build, or tampered release artifacts.
 
 ### P1 — guided product experience
 
