@@ -41,6 +41,9 @@ packages = ["app", "career_companion", "job_pipeline"]
 [tool.hatch.build.targets.wheel.shared-data]
 "agent-profile" = "share/career-pilot/agent-profile"
 
+[tool.hatch.build.hooks.custom]
+path = "career_companion/hatch_build.py"
+
 [tool.hatch.build.targets.sdist]
 include = [
     "/app",
@@ -50,6 +53,7 @@ include = [
     "/migrations",
     "/frontend",
     "/installers",
+    "/scripts",
     "/alembic.ini",
     "/README.md",
 ]

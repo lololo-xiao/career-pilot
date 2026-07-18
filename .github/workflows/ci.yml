@@ -40,9 +40,6 @@ jobs:
         run: uv run --frozen --extra companion python -m evals.run_evals
       - name: Smoke CLI package
         run: uv run --frozen --extra companion career-companion --help
-      - name: Build public Python artifacts
-        if: runner.os == 'Linux'
-        run: uv build --out-dir dist
       - name: Validate shell installer syntax
         if: runner.os != 'Windows'
         run: bash -n install.sh
@@ -71,6 +68,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - name: Install uv and Python for release packaging
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
       - name: Install locked dependencies
         run: npm ci
       - name: Lint
@@ -81,11 +83,12 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
         run: npm run build
-      - name: Build same-origin local bundle
-        env:
-          CAREERPILOT_STATIC_EXPORT: "true"
-          NEXT_PUBLIC_API_BASE_URL: ""
-        run: npm run build
+      - name: Build and fingerprint same-origin release bundle
+        working-directory: .
+        run: uv run --no-project --python 3.12 python -m scripts.static_ui_release build
+      - name: Build public Python artifacts with bundled UI
+        working-directory: .
+        run: uv build --out-dir dist
 
   hermes-contract:
     runs-on: ubuntu-latest
