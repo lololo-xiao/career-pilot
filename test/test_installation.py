@@ -61,6 +61,28 @@ def test_fastapi_serves_exported_frontend_after_api_routes(tmp_path) -> None:
     assert "Workspace" in client.get("/workspace/").text
 
 
+def test_static_fallback_keeps_root_absolute_assets_at_deep_unknown_urls(
+    tmp_path,
+) -> None:
+    web = tmp_path / "out"
+    asset = web / "_next" / "static" / "chunks" / "fallback.js"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("self.__FALLBACK=true;", encoding="utf-8")
+    (web / "index.html").write_text("CareerPilot", encoding="utf-8")
+    (web / "404.html").write_text(
+        '<script src="/_next/static/chunks/fallback.js"></script>',
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    mount_static_frontend(app, web)
+
+    response = TestClient(app).get("/deep/unknown/route")
+
+    assert response.status_code == 404
+    assert 'src="/_next/static/chunks/fallback.js"' in response.text
+    assert TestClient(app).get("/_next/static/chunks/fallback.js").status_code == 200
+
+
 def test_setup_creates_private_runtime_secret_and_pins_executables(
     tmp_path, monkeypatch
 ) -> None:

@@ -56,7 +56,7 @@ def _verified_source(repository: Path, marker: str = "fresh source UI") -> Path:
     build_directory = expected / "_next" / "static" / build_id
     build_directory.mkdir(parents=True)
     (build_directory / "_buildManifest.js").write_text(
-        f"self.__BUILD_MANIFEST={{buildId:{build_id!r}}};", encoding="utf-8"
+        f'self.__BUILD_MANIFEST={{"buildId":"{build_id}"}};', encoding="utf-8"
     )
     (build_directory / "_ssgManifest.js").write_text(
         "self.__SSG_MANIFEST=new Set([]);", encoding="utf-8"

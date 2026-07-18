@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import argparse
 import functools
-import json
 import shutil
 import sys
 import threading
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote
 
 from career_companion.static_ui_release import (
-    MANIFEST_NAME,
+    MAX_STATIC_UI_HTML_FILES,
+    MAX_STATIC_UI_REFERENCED_ASSETS,
     static_ui_frontend_asset_paths,
     static_ui_manifest_asset_paths,
+    verify_bundled_static_ui,
 )
 from career_companion.web import frontend_build_directory
 
@@ -43,12 +45,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.require_no_node and shutil.which("node") is not None:
         raise SystemExit("Node unexpectedly remained available to the runtime smoke")
 
-    manifest = json.loads((package_ui / MANIFEST_NAME).read_text(encoding="utf-8"))
-    if manifest.get("export_fingerprint") != args.expected_fingerprint:
-        raise SystemExit("Installed UI fingerprint differs from the release export")
-    build_id = manifest.get("build_id")
-    if not isinstance(build_id, str):
-        raise SystemExit("Installed UI manifest does not carry its build ID attestation")
+    verified = verify_bundled_static_ui(
+        package_ui,
+        expected_export_fingerprint=args.expected_fingerprint,
+    )
+    build_id = verified.build_id
+    html_paths = tuple(
+        file.path
+        for file in verified.files
+        if Path(file.path).suffix.casefold() == ".html"
+    )
+    if not html_paths or len(html_paths) > MAX_STATIC_UI_HTML_FILES:
+        raise SystemExit("Installed UI has an invalid bounded HTML route inventory")
 
     handler = functools.partial(_QuietHandler, directory=str(package_ui))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -56,47 +64,63 @@ def main(argv: list[str] | None = None) -> int:
     thread.start()
     try:
         base_url = f"http://127.0.0.1:{server.server_port}"
-        with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
-            f"{base_url}/",
-            timeout=10,
-        ) as response:
-            page = response.read()
-        if response.status != 200:
-            raise SystemExit(f"Bundled UI returned HTTP {response.status}")
-        if b"CareerPilot" not in page or build_id.encode("ascii") not in page:
-            raise SystemExit("Bundled UI index lacks its release/build-ID markers")
-        manifest_paths = static_ui_manifest_asset_paths(page, build_id)
-        expected_tokens = (b"__BUILD_MANIFEST", b"__SSG_MANIFEST")
-        for path, expected_token in zip(manifest_paths, expected_tokens, strict=True):
+        referenced_assets: set[str] = set()
+        manifest_paths: tuple[str, str] | None = None
+        for html_path in html_paths:
+            request_path = "/" if html_path == "index.html" else "/" + quote(
+                html_path,
+                safe="/",
+            )
             with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
-                f"{base_url}/{path}",
+                base_url + request_path,
+                timeout=10,
+            ) as response:
+                page = response.read()
+            if response.status != 200 or not page:
+                raise SystemExit(
+                    f"Bundled UI HTML route is invalid over HTTP: {html_path}"
+                )
+            if html_path == "index.html":
+                if b"CareerPilot" not in page or build_id.encode("ascii") not in page:
+                    raise SystemExit(
+                        "Bundled UI index lacks its release/build-ID markers"
+                    )
+                manifest_paths = static_ui_manifest_asset_paths(page, build_id)
+            referenced_assets.update(
+                static_ui_frontend_asset_paths(
+                    page,
+                    document_path=html_path,
+                )
+            )
+        if manifest_paths is None:
+            raise SystemExit("Bundled UI index route was not HTTP-smoked")
+        if len(referenced_assets) > MAX_STATIC_UI_REFERENCED_ASSETS:
+            raise SystemExit("Bundled UI has too many referenced assets to HTTP-smoke")
+
+        expected_tokens = dict(
+            zip(
+                manifest_paths,
+                (b"__BUILD_MANIFEST", b"__SSG_MANIFEST"),
+                strict=True,
+            )
+        )
+        for asset_path in sorted(referenced_assets):
+            with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
+                f"{base_url}/{quote(asset_path, safe='/')}",
                 timeout=10,
             ) as response:
                 asset = response.read()
-            if response.status != 200 or expected_token not in asset or len(asset) < 24:
-                raise SystemExit(f"Bundled Next manifest asset is invalid: {path}")
-
-        manifest_set = set(manifest_paths)
-        representative = next(
-            (
-                path
-                for path in static_ui_frontend_asset_paths(page)
-                if path not in manifest_set
-                and path.casefold().endswith((".js", ".css"))
-            ),
-            None,
-        )
-        if representative is None:
-            raise SystemExit("Bundled UI index lacks a representative JS or CSS asset")
-        with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
-            f"{base_url}/{representative}",
-            timeout=10,
-        ) as response:
-            representative_payload = response.read()
-        if response.status != 200 or not representative_payload:
-            raise SystemExit(
-                f"Bundled representative frontend asset is invalid: {representative}"
-            )
+            if response.status != 200 or not asset:
+                raise SystemExit(
+                    f"Bundled referenced frontend asset is invalid: {asset_path}"
+                )
+            expected_token = expected_tokens.get(asset_path)
+            if expected_token is not None and (
+                expected_token not in asset or len(asset) < 24
+            ):
+                raise SystemExit(
+                    f"Bundled Next manifest asset is invalid: {asset_path}"
+                )
     finally:
         server.shutdown()
         server.server_close()
