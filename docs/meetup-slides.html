@@ -342,7 +342,7 @@
         <div class="mini-shot"><img src="meetup-assets/job-queue.png" alt="CareerPilot ranked job queue with score reasons" /><span class="caption-tag">Deterministic queue · reason for every score</span></div>
         <div class="mini-shot"><img src="meetup-assets/applications.png" alt="CareerPilot application pipeline with stages and approved artifacts" /><span class="caption-tag">Human-controlled pipeline · artifacts + outcomes</span></div>
       </div>
-      <aside class="speaker-notes" hidden>Clarify that the queue score is deterministic prioritization, while the 0–10 fit report is evidence-grounded analysis. This naming and UX distinction still needs polishing.</aside>
+      <aside class="speaker-notes" hidden>Clarify that the queue score is deterministic prioritization, while the 0–10 fit report is evidence-grounded analysis. The first-run guide and Workspace now make that distinction explicit.</aside>
     </section>
 
     <section class="slide" id="slide-8" data-title="Customization">
@@ -355,7 +355,7 @@
       <div class="pill-row">
         <span class="pill">Built-in job-search skills</span><span class="pill">User-owned Markdown skills</span><span class="pill">MCP presets</span><span class="pill">Explicit tool allowlists</span>
       </div>
-      <aside class="speaker-notes" hidden>Say what “self-evolving” means today: Pilot can propose versioned memory, skill, and rubric revisions; they are evaluated and reversible. Applying active revisions automatically at runtime is still on the roadmap.</aside>
+      <aside class="speaker-notes" hidden>Say what “self-evolving” means today: Pilot can propose versioned memory, skill, and rubric revisions; they are evaluated and reversible. Active evaluated memory is retrieved at runtime with citations. Applying active skill and rubric revisions remains on the roadmap.</aside>
     </section>
 
     <section class="slide dark" id="slide-9" data-title="Safety architecture">
@@ -380,11 +380,11 @@
       <div class="topline"><p class="kicker">Honest product status</p><span class="tiny">Ready now · next build · later scale</span></div>
       <h2>The core workspace is real. The autonomous loop is the next product.</h2>
       <div class="roadmap-grid">
-        <article class="roadmap now"><small>Ready now</small><h3>Show this</h3><ul><li>Persistent Pilot sessions + SOUL</li><li>Evidence profile + project review</li><li>Grounded fit with citations</li><li>Ranked jobs + application stages</li><li>Tailored artifacts + approvals</li><li>Skills, MCP, revisions, rollback</li></ul></article>
-        <article class="roadmap next"><small>Next</small><h3>Make it effortless</h3><ul><li>Semantic memory across sessions</li><li>Chat-driven discovery → tracking</li><li>Guided form-fill approval UX</li><li>Interview practice workspace</li><li>Activate evaluated revisions</li><li>Onboarding and clearer next actions</li></ul></article>
+        <article class="roadmap now"><small>Ready now</small><h3>Show this</h3><ul><li>Persistent Pilot sessions + SOUL</li><li>Evidence profile + grounded fit</li><li>Cited cross-session memory + outcomes</li><li>Ranked jobs + application stages</li><li>Tailored artifacts + exact approvals</li><li>Guided first run + seeded demo</li></ul></article>
+        <article class="roadmap next"><small>Next</small><h3>Make it effortless</h3><ul><li>Semantic/vector memory retrieval</li><li>Chat-driven discovery → tracking</li><li>Guided form-fill approval UX</li><li>Interview practice workspace</li><li>Apply evaluated skills + rubrics</li><li>User-facing memory inspector</li></ul></article>
         <article class="roadmap later"><small>Later</small><h3>Make it scalable</h3><ul><li>Safe scheduled search queues</li><li>Guided connector OAuth</li><li>Public hosting + multi-user auth</li><li>Postgres / vector retrieval</li><li>Retention and consent controls</li><li>Production observability + limits</li></ul></article>
       </div>
-      <aside class="speaker-notes" hidden>Be candid. Semantic memory, complete conversational orchestration, and runtime application of revisions are not done. This honesty makes the rest of the demo more credible.</aside>
+      <aside class="speaker-notes" hidden>Be candid. Current cross-session retrieval is deterministic weighted-token matching, not semantic/vector search. Active evaluated memory is applied at runtime; complete conversational orchestration and runtime skill/rubric application are not done.</aside>
     </section>
 
     <section class="slide peach" id="slide-11" data-title="Live demo">
@@ -400,7 +400,7 @@
           <article class="demo-step"><div><strong>Ask: “Is this worth pursuing?”</strong><span>Open demonstrated, adjacent, and missing evidence.</span></div><time>1:30</time></article>
           <article class="demo-step"><div><strong>Open the source of truth</strong><span>Show confirmed claims and project evidence.</span></div><time>0:55</time></article>
           <article class="demo-step"><div><strong>Move it through the pipeline</strong><span>Show score reason, artifacts, and explicit status.</span></div><time>1:00</time></article>
-          <article class="demo-step"><div><strong>End at the boundary</strong><span>“Prepare and fill; I review and submit.”</span></div><time>0:50</time></article>
+          <article class="demo-step"><div><strong>End at the boundary</strong><span>“Prepare locally; I review every artifact and submit.”</span></div><time>0:50</time></article>
         </div>
       </div>
       <aside class="speaker-notes" hidden>Keep a screenshot fallback open. Do not make a paid provider call unless the live provider smoke test has passed before the meetup. The seeded demo workspace is enough to tell the product story.</aside>
@@ -412,7 +412,7 @@
         <div>
           <p class="kicker">The promise</p>
           <h2>Automate the search.<br />Keep the truth.</h2>
-          <p class="lede">I’m building the career agent that can remember, act, improve—and still tell you exactly why.</p>
+          <p class="lede">I’m building the career agent that can remember, act, propose improvements—and still tell you exactly why.</p>
         </div>
         <div class="ask-grid">
           <article class="ask"><strong>Job seekers</strong><span>Which part of the search should Pilot carry next?</span></article>

@@ -58,10 +58,10 @@ orchestrate the whole chain conversationally, with safe pauses at every external
 | Tailoring | ✅ Ready | CV, cover letter, gap analysis, honesty ledger, interview plan, PDF generation, exact-version approval |
 | Agent resources | ✅ Ready | Visible built-in skills, editable user memories and skills, guarded create/edit/remove flows |
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
-| Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, activated, and reversible; active revisions are not yet applied automatically to the runtime |
-| Job discovery | 🟡 Partial | Greenhouse/Lever discovery and optional web/MCP sources exist, but the primary agent/UI does not yet expose a complete guided flow |
+| Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, and reversible. Active evaluated memory is used at runtime; active skill/rubric revisions are not yet applied |
+| Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, and track an explicit selection; dedicated guided discovery and tailoring orchestration remain unfinished |
 | Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
-| Long-term memory | 🟡 Partial | Sessions persist, but normal chat currently uses a bounded recent-turn window rather than cross-session semantic retrieval |
+| Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes, cites relied-upon sources, and stores privacy-safe provenance; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
 | Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
 
@@ -88,7 +88,7 @@ Recommended five-minute demo:
 2. Ask whether one role is worth pursuing; open the grounded fit card.
 3. Show one demonstrated claim, one adjacent skill, and one honest gap.
 4. Open the evidence profile, ranked queue, and application stage.
-5. End with the boundary: Pilot can prepare and fill; the user reviews and submits.
+5. End with the boundary: Pilot prepares locally; the user reviews every artifact and submits.
 
 The deck supports `←` / `→`, `PageUp` / `PageDown`, `Home` / `End`, `F` for fullscreen,
 `N` for speaker notes, and `D` to open the default local product URL.
@@ -217,12 +217,14 @@ uv run python -m evals.run_evals
 uv run python -m scripts.demo_preflight
 
 cd frontend
+node --test test/*.test.ts
 npm run lint
 npm run build
 ```
 
-The current local audit passes **139 backend tests** and **25 offline evaluation checks**,
-plus frontend lint, production build, and demo preflight.
+The current main-branch audit passes **173 backend tests** and **8 frontend unit tests**.
+The offline evaluator validates **25 strong, partial, and mismatch cases**; frontend lint,
+the production build, and demo preflight also pass.
 
 One explicit provider-backed smoke test is available:
 
@@ -258,34 +260,39 @@ into a genuinely proactive job-search agent.
 
 ### P1 — guided product experience
 
-- [ ] Add a first-run checklist: connection → profile → target → first fit check.
-- [ ] Give every screen one clear primary “next best action.”
-- [ ] Explain deterministic queue score versus evidence-grounded 0–10 fit score.
+- [x] Add a first-run checklist: connection → profile → target → first fit check.
+- [x] Give Pilot and Workspace one clear primary “next best action.”
+- [ ] Extend the primary next action and recovery guidance across every Settings screen.
+- [x] Explain deterministic queue score versus evidence-grounded 0–10 fit score.
 - [ ] Add multiple named CV/profile versions for different role families.
 - [ ] Add OCR for image-only and scanned PDFs.
 - [ ] Build the Interview Practice workspace with evidence-aware feedback.
 - [ ] Improve empty states, error recovery, accessibility, responsive layouts, and keyboard flow.
-- [ ] Add a reusable, non-sensitive seeded demo workspace command.
+- [x] Add a reusable, non-sensitive seeded demo workspace command.
 
 ### P1 — agent orchestration and safe automation
 
-- [ ] Expose Greenhouse/Lever discovery through Pilot and the primary UI.
+- [x] Expose Greenhouse/Lever discovery through Pilot.
+- [ ] Add a dedicated guided discovery experience to the primary UI.
 - [ ] Let Pilot orchestrate discover → deduplicate → rank → track → tailor in one conversation.
 - [ ] Add a guided preview/approve/fill flow around the existing form-fill backend.
 - [ ] Surface approval history and explain exactly what each token authorizes.
 - [ ] Add safe daily/weekly search queues with a visible pause switch and budget.
 - [ ] Draft follow-ups from recorded outcomes; never send without a user preview and approval.
-- [ ] Capture submission and employer outcomes as structured learning signals.
+- [x] Capture submission and employer outcomes as structured learning signals.
 
 ### P1 — memory and self-evolution
 
-- [ ] Add cross-session semantic retrieval over user-approved memories and prior outcomes.
+- [x] Add bounded deterministic cross-session retrieval over active evaluated memories and prior outcomes.
+- [ ] Add semantic/vector retrieval once the retention and production-storage contract is defined.
 - [ ] Cite career evidence in ordinary conversation, not only formal fit reports.
-- [ ] Let the user inspect why a memory was retrieved for the current turn.
+- [x] Expose a bounded, privacy-safe API showing why memory was retrieved for a turn.
+- [ ] Add the user-facing retrieval inspector to Pilot.
 - [ ] Convert repeated corrections and outcomes into revision proposals.
 - [ ] Replay/evaluate proposed skill and rubric changes against fixed cases.
-- [ ] Apply active, evaluated memory/skill/rubric revisions to the runtime.
-- [ ] Add clear revision comparison, activation, quarantine, and rollback UI.
+- [x] Apply active, evaluated memory revisions to the runtime.
+- [ ] Apply active, evaluated skill and rubric revisions to the runtime.
+- [ ] Add clear revision comparison and evaluation-detail UI; activation, quarantine, and rollback foundations already exist.
 - [ ] Define retention, deletion, and consent controls for learned memories.
 
 ### P2 — extensibility
@@ -340,15 +347,16 @@ sharing one mutable worktree.
 - `GET|POST /companion/sessions` — list or create persistent sessions.
 - `GET|PUT|DELETE /companion/sessions/{id}` — restore, rename, or delete a session.
 - `PUT /companion/sessions/{id}/context` — persist CV, role, and fit context.
+- `GET /companion/sessions/{id}/memory-retrievals` — bounded, privacy-safe retrieval provenance.
 - `POST /companion/chat` — contextual Pilot conversation.
 - `POST /companion/chat/stream` — structured chat and career-tool events over SSE.
 - `POST /parse-cv` — bounded PDF, DOCX, or TXT extraction.
 - `POST /match` — retrieval, provider analysis, and grounding validation.
-- `GET|POST /api/v1/jobs` — list or save deduplicated jobs.
-- `GET /api/v1/applications` — application stages and artifact versions.
-- `GET /api/v1/model-routes` — task-specific model and cost controls.
-- `GET /api/v1/revisions` — reversible memory, skill, and rubric revisions.
-- `GET|POST|PUT|DELETE /settings/mcp/...` — allowlisted MCP configuration.
+- `GET|POST /api/v1/jobs` plus discovery, import, and score routes — deduplicated job queue.
+- `GET|POST /api/v1/applications` plus status and artifact routes — pipeline and versioned materials.
+- `GET /api/v1/model-routes` and `PUT /api/v1/model-routes/{route_name}` — task-specific model and cost controls.
+- `GET|POST /api/v1/revisions`, `POST /{id}/evaluate`, and `POST /{id}/rollback` — reversible user-owned revisions.
+- `GET|POST /settings/mcp` and `PUT|DELETE /settings/mcp/{name}` — allowlisted MCP configuration.
 - `/docs` — interactive OpenAPI documentation in development.
 
 </details>
