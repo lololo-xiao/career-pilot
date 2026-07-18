@@ -181,8 +181,15 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     assert guard("career_browser_fill", {})["action"] == "block"
     assert guard("career_artifact_generate", {})["action"] == "block"
     assert guard("career_application_submit", {})["action"] == "block"
+    assert guard("custom_tool", {}, toolset="terminal")["action"] == "block"
     assert guard("memory", {})["action"] == "block"
     assert guard("send_message", {})["action"] == "block"
+    assert guard("skill_search", {}, toolset="skills") is None
+    assert guard("session_search", {}, toolset="session_search") is None
+    assert guard("todo", {}, toolset="todo") is None
+    assert guard("clarify", {}, toolset="clarify") is None
+    assert guard("web_job_search", {}, toolset="mcp:company-jobs") is None
+    assert guard("search_jobs", {}, toolset="mcp:linkedin-search") is None
     assert guard("career_job_queue", {}) is None
     assert guard("career_public_job_discover", {}) is None
     assert guard("career_job_track_selected", {}) is None
@@ -599,6 +606,10 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
     assert config["plugins"]["enabled"] == ["career-companion"]
     assert config["platform_toolsets"]["api_server"] == [
         "career-web",
+        "todo",
+        "session_search",
+        "skills",
+        "clarify",
     ]
     assert config["agent"]["disabled_toolsets"] == [
         "delegation",
@@ -610,8 +621,6 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
         "terminal",
         "file",
         "code_execution",
-        "skills",
-        "session_search",
     ]
     assert {
         "memory",
@@ -620,11 +629,13 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
         "terminal",
         "file",
         "code_execution",
-        "skills",
-        "session_search",
     }.isdisjoint(
         config["platform_toolsets"]["api_server"]
     )
+    assert {"skills", "session_search", "todo", "clarify"}.issubset(
+        config["platform_toolsets"]["api_server"]
+    )
+    assert config["skills"]["write_approval"] is True
     for server in config["mcp_servers"].values():
         assert server["tools"]["include"]
         assert server["tools"]["prompts"] is False

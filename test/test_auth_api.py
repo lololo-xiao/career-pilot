@@ -64,6 +64,12 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
     assert group_states["local-workspace"] == "disabled"
     assert group_states["web-search"] == "disabled"
     assert group_states["browser-assistance"] == "disabled"
+    assert {"skills", "session_search", "todo", "clarify"}.issubset(
+        payload["enabled_toolsets"]
+    )
+    assert {"web", "terminal", "file", "code_execution", "browser"}.isdisjoint(
+        payload["enabled_toolsets"]
+    )
     career_tools = next(
         group["tools"] for group in payload["groups"] if group["id"] == "career-workspace"
     )

@@ -16,6 +16,7 @@ _BLOCKED_HERMES_TOOLS = {
     "apply_patch",
     "bash",
     "browser",
+    "browser_open",
     "career_application_submit",
     "career_approval_decide",
     "career_approval_request",
@@ -51,17 +52,13 @@ _BLOCKED_HERMES_TOOLS = {
     "wget",
     "write_file",
 }
-_BLOCKED_HERMES_TOOL_PREFIXES = (
-    "browser_",
-    "code_",
-    "execute_",
-    "file_",
-    "http_",
-    "localhost_",
-    "shell_",
-    "terminal_",
-    "web_",
-)
+_BLOCKED_HERMES_TOOLSETS = {
+    "browser",
+    "code_execution",
+    "file",
+    "terminal",
+    "web",
+}
 
 
 @dataclass(frozen=True)
@@ -498,13 +495,15 @@ def _json_handler(function: Callable[[dict[str, Any]], Any]) -> Callable[..., st
 
 
 def _guard_tool_call(tool_name: str, args: dict[str, Any], **kwargs: Any) -> dict[str, str] | None:
-    del kwargs
     normalized_tool_name = "".join(
         character if character.isalnum() else "_"
         for character in tool_name.casefold()
     ).strip("_")
-    if normalized_tool_name in _BLOCKED_HERMES_TOOLS or normalized_tool_name.startswith(
-        _BLOCKED_HERMES_TOOL_PREFIXES
+    toolset = kwargs.get("toolset") or kwargs.get("toolset_name")
+    normalized_toolset = str(toolset).casefold() if toolset is not None else ""
+    if (
+        normalized_tool_name in _BLOCKED_HERMES_TOOLS
+        or normalized_toolset in _BLOCKED_HERMES_TOOLSETS
     ):
         return {
             "action": "block",

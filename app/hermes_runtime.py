@@ -79,6 +79,10 @@ _ACCOUNT_TO_HERMES_PROVIDER: dict[ProviderMethod, str] = {
 # existing account-scoped profiles receive capability and safety-policy migrations.
 PILOT_API_SERVER_TOOLSETS = (
     "career-web",
+    "todo",
+    "session_search",
+    "skills",
+    "clarify",
 )
 PILOT_DISABLED_TOOLSETS = (
     "delegation",
@@ -90,8 +94,6 @@ PILOT_DISABLED_TOOLSETS = (
     "terminal",
     "file",
     "code_execution",
-    "skills",
-    "session_search",
 )
 
 

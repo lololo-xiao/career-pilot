@@ -534,6 +534,9 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     assert "untrusted reference data" in captured["payload"]["instructions"]
     assert "no general web" in captured["payload"]["instructions"]
     assert "localhost-HTTP" in captured["payload"]["instructions"]
+    assert "Skills discovery/use, session search, todo, and clarification" in captured[
+        "payload"
+    ]["instructions"]
     assert "public network" in captured["payload"]["instructions"]
     assert "latest_user_message" in captured["payload"]["instructions"]
     assert "local" in captured["payload"]["instructions"]
