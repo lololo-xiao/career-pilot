@@ -994,12 +994,15 @@ async def create_mcp_setting(
     runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
 ) -> MCPSettingsResponse:
     distribution = profile_distribution_directory()
-    with account_session(paths) as session:
-        ensure_default_mcp_servers(session, distribution)
-        if session.get(MCPServerRecord, request.name) is not None:
-            raise HTTPException(status_code=409, detail="An MCP server with that name already exists")
-        upsert_mcp_server(session, request.model_dump(mode="json"))
     try:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, distribution)
+            if session.get(MCPServerRecord, request.name) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="An MCP server with that name already exists",
+                )
+            upsert_mcp_server(session, request.model_dump(mode="json"))
         synchronize_mcp_profile_config(paths, distribution)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

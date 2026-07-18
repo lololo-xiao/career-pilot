@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from career_companion.database import AuditEventRecord, MCPServerRecord
+from career_companion.hermes import PILOT_ALLOWED_MCP_TOOLS_ENV
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.services.audit import record_audit
@@ -27,6 +28,7 @@ MCP_RESERVED_ENVIRONMENT = {
     "API_SERVER_PORT",
     "BRAVE_SEARCH_API_KEY",
     "CAREER_COMPANION_ACCOUNT_KEY",
+    PILOT_ALLOWED_MCP_TOOLS_ENV,
     "CAREER_COMPANION_API_URL",
     "CAREER_COMPANION_PLUGIN_TOKEN",
     "HERMES_HOME",
@@ -36,6 +38,7 @@ MCP_RESERVED_ENVIRONMENT = {
 }
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_MCP_NAME_COMPONENT = re.compile(r"[^A-Za-z0-9_]")
 
 
 def _profile_directory(paths: CompanionPaths) -> Path:
@@ -177,6 +180,58 @@ def list_mcp_servers(session: Session, distribution: Path) -> list[dict[str, Any
     return [mcp_server_json(row) for row in rows]
 
 
+def _mcp_registry_name(server_name: str, tool_name: str) -> str | None:
+    """Mirror Hermes 0.18.2's exact MCP registry-name construction."""
+
+    if not server_name or not tool_name or "*" in tool_name:
+        return None
+    safe_server = _MCP_NAME_COMPONENT.sub("_", server_name)
+    safe_tool = _MCP_NAME_COMPONENT.sub("_", tool_name)
+    if not safe_server or not safe_tool:
+        return None
+    return f"mcp__{safe_server}__{safe_tool}"
+
+
+def _configured_mcp_tool_names_from_servers(
+    servers: list[dict[str, Any]],
+) -> list[str]:
+    origins: dict[str, tuple[str, str]] = {}
+    for server in servers:
+        if not server["enabled"]:
+            continue
+        for tool_name in server["tool_allowlist"]:
+            if not isinstance(tool_name, str):
+                raise ValueError("Enabled MCP tool allowlists must contain exact names")
+            registry_name = _mcp_registry_name(server["name"], tool_name)
+            if registry_name is None:
+                raise ValueError(
+                    "Enabled MCP tool allowlists must contain exact non-wildcard names"
+                )
+            if len(registry_name) > 400:
+                raise ValueError("Enabled MCP registry names cannot exceed 400 characters")
+            origin = (server["name"], tool_name)
+            previous = origins.setdefault(registry_name, origin)
+            if previous != origin:
+                raise ValueError(
+                    "Enabled MCP tool allowlists collide after Hermes name "
+                    f"normalization: {previous!r} and {origin!r}"
+                )
+    if len(origins) > 128:
+        raise ValueError("Pilot supports at most 128 explicitly allowed MCP tools")
+    return sorted(origins)
+
+
+def configured_mcp_tool_names(
+    paths: CompanionPaths,
+    distribution: Path,
+) -> list[str]:
+    """Return only exact names from enabled servers' explicit include lists."""
+
+    with account_session(paths) as session:
+        servers = list_mcp_servers(session, distribution)
+    return _configured_mcp_tool_names_from_servers(servers)
+
+
 def upsert_mcp_server(
     session: Session,
     payload: dict[str, Any],
@@ -221,6 +276,9 @@ def upsert_mcp_server(
         row.config = config
         row.enabled = bool(payload["enabled"])
     session.flush()
+    _configured_mcp_tool_names_from_servers(
+        [mcp_server_json(item) for item in session.scalars(select(MCPServerRecord))]
+    )
     record_audit(
         session,
         "mcp.updated",
@@ -268,6 +326,7 @@ def _render_server(server: dict[str, Any]) -> dict[str, Any]:
 def synchronize_mcp_profile_config(paths: CompanionPaths, distribution: Path) -> list[str]:
     with account_session(paths) as session:
         servers = list_mcp_servers(session, distribution)
+    _configured_mcp_tool_names_from_servers(servers)
     forwarded = sorted(
         {
             name

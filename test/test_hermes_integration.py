@@ -146,8 +146,20 @@ def _append_user_message(session_id: str, content: str) -> str:
         ).id
 
 
-def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
+def test_profile_plugin_registers_only_the_restricted_career_surface(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "CAREER_COMPANION_ALLOWED_MCP_TOOLS",
+        json.dumps(
+            [
+                "mcp__company_jobs__web_job_search",
+                "mcp__linkedin_search__search_jobs",
+            ]
+        ),
+    )
     plugin = _load_profile_plugin()
+    monkeypatch.setattr(plugin, "_skill_view_is_safe", lambda: True)
     context = FakePluginContext()
 
     plugin.register(context)
@@ -168,39 +180,86 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
         "career_policy_status",
     }
     assert {entry["toolset"] for entry in context.tools.values()} == {"career-web"}
+    assert plugin._ALLOWED_HERMES_TOOLS == (
+        plugin._SAFE_HERMES_HELPERS
+        | set(context.tools)
+        | {
+            "mcp__company_jobs__web_job_search",
+            "mcp__linkedin_search__search_jobs",
+        }
+    )
     assert set(context.hooks) == {"pre_tool_call"}
     guard = context.hooks["pre_tool_call"]
-    assert guard("terminal", {})["action"] == "block"
-    assert guard("write_file", {})["action"] == "block"
-    assert guard("execute_code", {})["action"] == "block"
-    assert guard("web_search", {})["action"] == "block"
-    assert guard("browser.open", {})["action"] == "block"
-    assert guard("http_request", {})["action"] == "block"
-    assert guard("curl", {})["action"] == "block"
-    assert guard("urlopen", {})["action"] == "block"
-    assert guard("career_browser_fill", {})["action"] == "block"
-    assert guard("career_artifact_generate", {})["action"] == "block"
-    assert guard("career_application_submit", {})["action"] == "block"
-    assert guard("custom_tool", {}, toolset="terminal")["action"] == "block"
-    assert guard("memory", {})["action"] == "block"
-    assert guard("send_message", {})["action"] == "block"
-    assert guard("skill_search", {}, toolset="skills") is None
-    assert guard("session_search", {}, toolset="session_search") is None
-    assert guard("todo", {}, toolset="todo") is None
-    assert guard("clarify", {}, toolset="clarify") is None
-    assert guard("web_job_search", {}, toolset="mcp:company-jobs") is None
-    assert guard("search_jobs", {}, toolset="mcp:linkedin-search") is None
-    assert guard("career_job_queue", {}) is None
-    assert guard("career_public_job_discover", {}) is None
-    assert guard("career_job_track_selected", {}) is None
-    assert guard("career_application_decide", {}) is None
+    runtime_kwargs = {
+        "task_id": "task-1",
+        "session_id": "message-1",
+        "tool_call_id": "call-1",
+        "turn_id": "turn-1",
+        "api_request_id": "request-1",
+        "middleware_trace": [],
+    }
+    dangerous_tools = {
+        "browser_back",
+        "browser_cdp",
+        "browser_click",
+        "browser_console",
+        "browser_dialog",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "career_application_submit",
+        "career_artifact_generate",
+        "career_browser_fill",
+        "close_terminal",
+        "computer_use",
+        "execute_code",
+        "patch",
+        "process",
+        "read_file",
+        "read_terminal",
+        "search_files",
+        "skill_manage",
+        "terminal",
+        "web_extract",
+        "web_search",
+        "write_file",
+    }
+    for tool_name in dangerous_tools | {"unknown_future_tool"}:
+        assert guard(tool_name, {}, **runtime_kwargs)["action"] == "block"
+    for tool_name in {
+        "clarify",
+        "session_search",
+        "skill_view",
+        "skills_list",
+        "todo",
+        "career_job_queue",
+        "career_public_job_discover",
+        "career_job_track_selected",
+        "career_application_decide",
+        "mcp__company_jobs__web_job_search",
+        "mcp__linkedin_search__search_jobs",
+    }:
+        assert guard(tool_name, {}, **runtime_kwargs) is None
+    assert guard("mcp__linkedin_search__read_file", {}, **runtime_kwargs)[
+        "action"
+    ] == "block"
+    assert guard("search_jobs", {}, **runtime_kwargs)["action"] == "block"
+    for tool_name in {"tool_call", "tool_describe", "tool_search"}:
+        assert guard(tool_name, {}, **runtime_kwargs)["action"] == "block"
+    assert guard("career_job_queue", None, **runtime_kwargs)["action"] == "block"
     assert guard(
-        "career_application_status", {"status": "approved"}
+        "career_application_status", {"status": "approved"}, **runtime_kwargs
     )["action"] == "block"
     assert guard(
-        "career_application_status", {"status": "withdrawn"}
+        "career_application_status", {"status": "withdrawn"}, **runtime_kwargs
     )["action"] == "block"
-    identity_guard = guard("career_identity_update", {"name": "Zey"})
+    identity_guard = guard(
+        "career_identity_update", {"name": "Zey"}, **runtime_kwargs
+    )
     assert identity_guard["action"] == "approve"
     assert identity_guard["rule_key"] == "career_identity_update"
 
@@ -265,8 +324,58 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     revision_parameters = context.tools["career_revision_propose"]["schema"][
         "parameters"
     ]
+    assert revision_parameters["properties"]["kind"]["enum"] == [
+        "skill",
+        "rubric",
+    ]
     assert revision_parameters["required"] == ["kind", "name", "content", "diff"]
     assert "source_session" not in revision_parameters["properties"]
+
+    monkeypatch.setattr(plugin, "_skill_view_is_safe", lambda: False)
+    assert guard("skill_view", {}, **runtime_kwargs)["action"] == "block"
+
+
+def test_profile_plugin_fails_closed_on_invalid_mcp_boundary(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "CAREER_COMPANION_ALLOWED_MCP_TOOLS",
+        json.dumps(["mcp__linkedin_search__search_jobs", "terminal"]),
+    )
+    plugin = _load_profile_plugin()
+
+    assert plugin._configured_mcp_tools() == frozenset()
+    assert plugin._guard_tool_call("mcp__linkedin_search__search_jobs", {})[
+        "action"
+    ] == "block"
+    assert plugin._guard_tool_call("terminal", {})["action"] == "block"
+    assert plugin._guard_tool_call("career_job_queue", {}) is None
+
+
+def test_profile_revision_tool_rejects_generic_memory_proposals(monkeypatch) -> None:
+    plugin = _load_profile_plugin()
+    context = FakePluginContext()
+    requests: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def request(self, method: str, path: str, **_: Any) -> dict[str, Any]:
+            requests.append((method, path))
+            return {"status": "draft"}
+
+    monkeypatch.setattr(plugin, "HermesBridgeClient", FakeClient)
+    plugin.register(context)
+    result = json.loads(
+        context.tools["career_revision_propose"]["handler"](
+            {
+                "kind": "memory",
+                "name": "arbitrary-memory",
+                "content": {"value": "unsafe"},
+                "diff": "unsafe",
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_type"] == "PermissionError"
+    assert requests == []
 
 
 def test_forbidden_platform_tools_cannot_make_originless_mutations(
@@ -556,7 +665,11 @@ def test_hermes_supervisor_forwards_only_explicit_environment(
     monkeypatch.setenv("GOOGLE_SHEETS_MCP_URL", "http://127.0.0.1:9000/mcp")
     monkeypatch.setenv("USERPROFILE", "C:\\Users\\career-user")
     config = ProductConfig(mcp_env_allowlist=["GOOGLE_SHEETS_MCP_URL"])
-    supervisor = HermesSupervisor(paths, config)
+    supervisor = HermesSupervisor(
+        paths,
+        config,
+        allowed_mcp_tool_names=["mcp__linkedin_search__search_jobs"],
+    )
 
     environment = supervisor.environment(
         {
@@ -571,6 +684,9 @@ def test_hermes_supervisor_forwards_only_explicit_environment(
     assert environment["BRAVE_SEARCH_API_KEY"] == "brave-test"
     assert environment["USERPROFILE"] == "C:\\Users\\career-user"
     assert environment["CAREER_COMPANION_ACCOUNT_KEY"] == paths.root.name
+    assert json.loads(environment["CAREER_COMPANION_ALLOWED_MCP_TOOLS"]) == [
+        "mcp__linkedin_search__search_jobs"
+    ]
     assert environment["API_SERVER_HOST"] == "127.0.0.1"
     assert {"127.0.0.1", "localhost", "::1"}.issubset(
         set(environment["NO_PROXY"].split(","))
@@ -585,8 +701,18 @@ def test_hermes_supervisor_forwards_only_explicit_environment(
     )
     with pytest.raises(ValueError, match="reserved"):
         reserved.environment()
+    reserved_mcp_boundary = HermesSupervisor(
+        paths,
+        ProductConfig(
+            mcp_env_allowlist=["CAREER_COMPANION_ALLOWED_MCP_TOOLS"]
+        ),
+    )
+    with pytest.raises(ValueError, match="reserved"):
+        reserved_mcp_boundary.environment()
     with pytest.raises(ValueError, match="account-scoped"):
         HermesSupervisor(base, config).environment()
+    with pytest.raises(ValueError, match="exact registry names"):
+        HermesSupervisor(paths, config, allowed_mcp_tool_names=["search_jobs"])
 
 
 def test_profile_distribution_matches_pinned_hermes_contract() -> None:
@@ -636,6 +762,8 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
         config["platform_toolsets"]["api_server"]
     )
     assert config["skills"]["write_approval"] is True
+    assert config["skills"]["inline_shell"] is False
+    assert config["tools"]["tool_search"] == {"enabled": "off"}
     for server in config["mcp_servers"].values():
         assert server["tools"]["include"]
         assert server["tools"]["prompts"] is False
@@ -1636,14 +1764,14 @@ def test_internal_bridge_creates_only_inactive_revisions(bridge_client) -> None:
     assert response.json()["source_session"] == run_message.session_id
     assert response.json()["status"] == "draft"
 
-    immutable = client.post(
+    memory_bypass = client.post(
         "/api/internal/hermes/v1/revisions",
         headers=run_headers,
         json={
             "kind": "memory",
-            "name": "verified-fact:work-authorization",
+            "name": "arbitrary-memory",
             "content": {"value": "changed"},
             "diff": "unsafe",
         },
     )
-    assert immutable.status_code == 403
+    assert memory_bypass.status_code == 422

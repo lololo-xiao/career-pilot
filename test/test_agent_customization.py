@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
@@ -10,6 +11,13 @@ from app.auth import AuthStore
 from app.dependencies import get_local_companion_paths
 from app.main import app, get_hermes_runtime_manager, get_store
 from career_companion.paths import CompanionPaths
+from career_companion.services.mcp_servers import (
+    _configured_mcp_tool_names_from_servers,
+    configured_mcp_tool_names,
+)
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -147,6 +155,10 @@ def test_linkedin_mcp_preset_is_allowlisted_and_mcp_crud_updates_runtime_config(
     assert configured["args"] == ["mcp-server-linkedin@latest"]
     assert configured["env"] == {"UV_HTTP_TIMEOUT": "300"}
     assert configured["tools"]["include"] == ["search_jobs", "get_job_details"]
+    assert configured_mcp_tool_names(paths, REPOSITORY_ROOT / "agent-profile") == [
+        "mcp__linkedin_search__get_job_details",
+        "mcp__linkedin_search__search_jobs",
+    ]
 
     unsafe_linkedin = editable | {
         "tool_allowlist": ["search_jobs", "send_message"]
@@ -156,6 +168,28 @@ def test_linkedin_mcp_preset_is_allowlisted_and_mcp_crud_updates_runtime_config(
         json=unsafe_linkedin,
     )
     assert rejected_linkedin.status_code == 422
+
+    colliding = {
+        "name": "normalization-collision",
+        "display_name": "Normalization collision",
+        "description": "Must not reach the runtime registry.",
+        "transport": "http",
+        "command": None,
+        "args": [],
+        "url": "http://127.0.0.1:9912/mcp",
+        "tool_allowlist": ["search-jobs", "search_jobs"],
+        "forwarded_environment": [],
+        "environment": {},
+        "source_url": None,
+        "warning": None,
+        "enabled": True,
+    }
+    rejected_collision = client.post("/settings/mcp", json=colliding)
+    assert rejected_collision.status_code == 409
+    assert not any(
+        server["name"] == "normalization-collision"
+        for server in client.get("/settings/mcp").json()["servers"]
+    )
 
     custom = {
         "name": "local-research",
@@ -184,6 +218,48 @@ def test_linkedin_mcp_preset_is_allowlisted_and_mcp_crud_updates_runtime_config(
     assert removed.status_code == 200
     assert not any(server["name"] == "local-research" for server in removed.json()["servers"])
     assert len(runtime.invalidated) == 3
+
+
+@pytest.mark.parametrize(
+    "servers",
+    [
+        [
+            {
+                "name": "company-jobs",
+                "enabled": True,
+                "tool_allowlist": ["search-jobs", "search_jobs"],
+            }
+        ],
+        [
+            {
+                "name": "company-jobs",
+                "enabled": True,
+                "tool_allowlist": ["search"],
+            },
+            {
+                "name": "company_jobs",
+                "enabled": True,
+                "tool_allowlist": ["search"],
+            },
+        ],
+    ],
+)
+def test_mcp_registry_name_collisions_fail_closed(servers) -> None:
+    with pytest.raises(ValueError, match="collide after Hermes name normalization"):
+        _configured_mcp_tool_names_from_servers(servers)
+
+
+def test_mcp_runtime_name_construction_rejects_wildcards() -> None:
+    with pytest.raises(ValueError, match="exact non-wildcard names"):
+        _configured_mcp_tool_names_from_servers(
+            [
+                {
+                    "name": "company-jobs",
+                    "enabled": True,
+                    "tool_allowlist": ["*"],
+                }
+            ]
+        )
 
 
 def test_parallel_first_load_seeds_mcp_presets_once(customization_client) -> None:

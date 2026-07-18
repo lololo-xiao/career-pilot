@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -11,54 +13,17 @@ from .client import HermesBridgeClient
 
 TOOLSET = "career-web"
 _RUN_MESSAGE = ContextVar("career_companion_run_message", default="")
-
-_BLOCKED_HERMES_TOOLS = {
-    "apply_patch",
-    "bash",
-    "browser",
-    "browser_open",
-    "career_application_submit",
-    "career_approval_decide",
-    "career_approval_request",
-    "career_artifact_approve",
-    "career_artifact_generate",
-    "career_browser_fill",
-    "career_message_send",
-    "code_execution",
-    "cronjob",
-    "curl",
-    "delegate_task",
-    "edit_file",
-    "execute_code",
-    "fetch_url",
-    "file",
-    "http_request",
-    "list_directory",
-    "memory",
-    "patch_file",
-    "python",
-    "python_repl",
-    "requests",
-    "read_file",
-    "read_terminal",
-    "send_message",
-    "shell",
-    "skill_manage",
-    "terminal",
-    "urlopen",
-    "web",
-    "web_fetch",
-    "web_search",
-    "wget",
-    "write_file",
-}
-_BLOCKED_HERMES_TOOLSETS = {
-    "browser",
-    "code_execution",
-    "file",
-    "terminal",
-    "web",
-}
+_ALLOWED_MCP_TOOLS_ENV = "CAREER_COMPANION_ALLOWED_MCP_TOOLS"
+_EXACT_MCP_TOOL_NAME = re.compile(r"mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+\Z")
+_SAFE_HERMES_HELPERS = frozenset(
+    {
+        "clarify",
+        "session_search",
+        "skill_view",
+        "skills_list",
+        "todo",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -200,6 +165,8 @@ def _application_status(args: dict[str, Any]) -> Any:
 
 
 def _revision(args: dict[str, Any]) -> Any:
+    if args.get("kind") not in {"skill", "rubric"}:
+        raise PermissionError("Pilot's generic revision tool cannot propose memories")
     return _client().request(
         "POST",
         "/revisions",
@@ -451,13 +418,13 @@ TOOLS = (
     ToolDefinition(
         "career_revision_propose",
         (
-            "Create an inactive, versioned memory, user-skill, or rubric "
-            "proposal for replay evaluation."
+            "Create an inactive, versioned user-skill or rubric proposal "
+            "for replay evaluation."
         ),
         {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["memory", "skill", "rubric"]},
+                "kind": {"type": "string", "enum": ["skill", "rubric"]},
                 "name": {"type": "string"},
                 "content": {"type": "object"},
                 "diff": {"type": "string"},
@@ -494,20 +461,61 @@ def _json_handler(function: Callable[[dict[str, Any]], Any]) -> Callable[..., st
     return handler
 
 
-def _guard_tool_call(tool_name: str, args: dict[str, Any], **kwargs: Any) -> dict[str, str] | None:
-    normalized_tool_name = "".join(
-        character if character.isalnum() else "_"
-        for character in tool_name.casefold()
-    ).strip("_")
-    toolset = kwargs.get("toolset") or kwargs.get("toolset_name")
-    normalized_toolset = str(toolset).casefold() if toolset is not None else ""
+def _configured_mcp_tools() -> frozenset[str]:
+    try:
+        raw = json.loads(os.environ.get(_ALLOWED_MCP_TOOLS_ENV, "[]"))
+    except json.JSONDecodeError:
+        return frozenset()
+    if not isinstance(raw, list) or len(raw) > 128:
+        return frozenset()
+    if any(
+        not isinstance(name, str)
+        or len(name) > 400
+        or _EXACT_MCP_TOOL_NAME.fullmatch(name) is None
+        for name in raw
+    ):
+        return frozenset()
+    return frozenset(raw)
+
+
+_ALLOWED_HERMES_TOOLS = (
+    _SAFE_HERMES_HELPERS
+    | frozenset(tool.name for tool in TOOLS)
+    | _configured_mcp_tools()
+)
+
+
+def _skill_view_is_safe() -> bool:
+    """Allow skill reads only while Hermes inline-shell expansion is disabled."""
+
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+    except Exception:
+        return False
+    skills = config.get("skills") if isinstance(config, dict) else None
+    return not (isinstance(skills, dict) and skills.get("inline_shell") is True)
+
+
+def _guard_tool_call(
+    tool_name: str,
+    args: dict[str, Any],
+    **_: Any,
+) -> dict[str, str] | None:
     if (
-        normalized_tool_name in _BLOCKED_HERMES_TOOLS
-        or normalized_toolset in _BLOCKED_HERMES_TOOLSETS
+        not isinstance(tool_name, str)
+        or tool_name not in _ALLOWED_HERMES_TOOLS
+        or not isinstance(args, dict)
     ):
         return {
             "action": "block",
             "message": f"{tool_name} is outside Pilot's local task boundary",
+        }
+    if tool_name == "skill_view" and not _skill_view_is_safe():
+        return {
+            "action": "block",
+            "message": "skill_view is unavailable while inline shell expansion is enabled",
         }
     if tool_name == "career_application_status":
         status = args.get("status")

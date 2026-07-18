@@ -102,6 +102,8 @@ def test_provider_sync_is_explicit_and_keeps_secrets_out_of_yaml(tmp_path) -> No
     )
     assert "terminal" not in config
     assert config["approvals"] == {"mode": "manual", "cron_mode": "deny"}
+    assert config["skills"]["inline_shell"] is False
+    assert config["tools"]["tool_search"] == {"enabled": "off"}
     assert environment == {"OPENAI_API_KEY": "sk-test-career-companion-key"}
     assert "sk-test" not in (profile / "config.yaml").read_text()
     assert not auth_path.exists()
@@ -172,10 +174,18 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
     supervisors: list[Any] = []
 
     class FakeSupervisor:
-        def __init__(self, paths, config, *, api_base_url):
+        def __init__(
+            self,
+            paths,
+            config,
+            *,
+            api_base_url,
+            allowed_mcp_tool_names,
+        ):
             self.paths = paths
             self.config = config
             self.api_base_url = api_base_url
+            self.allowed_mcp_tool_names = allowed_mcp_tool_names
             self.is_running = False
             self.started_with: dict[str, str] | None = None
             self.stop_count = 0
@@ -215,6 +225,7 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         assert supervisors[0].started_with == {
             "OPENAI_API_KEY": "sk-test-career-companion-key",
         }
+        assert supervisors[0].allowed_mcp_tool_names == []
         assert supervisors[0].api_base_url.endswith("/api/internal/hermes/v1")
         assert await manager.prepare(_account(), store) is first  # type: ignore[arg-type]
         assert len(supervisors) == 1

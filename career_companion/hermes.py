@@ -18,6 +18,8 @@ from career_companion.config import ProductConfig
 from career_companion.paths import CompanionPaths
 
 PROFILE_NAME = "career-companion"
+PILOT_ALLOWED_MCP_TOOLS_ENV = "CAREER_COMPANION_ALLOWED_MCP_TOOLS"
+_EXACT_MCP_TOOL_NAME = re.compile(r"mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+\Z")
 
 _SAFE_PARENT_ENV = {
     "APPDATA",
@@ -59,6 +61,7 @@ _RESERVED_ENV = _RUNTIME_CREDENTIAL_ENV | {
     "API_SERVER_KEY",
     "API_SERVER_PORT",
     "CAREER_COMPANION_ACCOUNT_KEY",
+    PILOT_ALLOWED_MCP_TOOLS_ENV,
     "CAREER_COMPANION_API_URL",
     "CAREER_COMPANION_PLUGIN_TOKEN",
     "HERMES_HOME",
@@ -73,6 +76,7 @@ class HermesSupervisor:
         config: ProductConfig,
         *,
         api_base_url: str | None = None,
+        allowed_mcp_tool_names: tuple[str, ...] | list[str] = (),
     ) -> None:
         self.paths = paths
         self.config = config
@@ -82,6 +86,13 @@ class HermesSupervisor:
         self.api_base_url = api_base_url or (
             f"http://127.0.0.1:{config.server.port}/api/internal/hermes/v1"
         )
+        allowed_mcp_tools = tuple(sorted(set(allowed_mcp_tool_names)))
+        if len(allowed_mcp_tools) > 128 or any(
+            len(name) > 400 or _EXACT_MCP_TOOL_NAME.fullmatch(name) is None
+            for name in allowed_mcp_tools
+        ):
+            raise ValueError("Pilot MCP tools require bounded exact registry names")
+        self.allowed_mcp_tool_names = allowed_mcp_tools
 
     @property
     def executable(self) -> str | None:
@@ -145,6 +156,10 @@ class HermesSupervisor:
                 "HERMES_HOME": str(self.paths.hermes_profile),
                 "HERMES_WRITE_SAFE_ROOT": str(self.paths.workspace),
                 "CAREER_COMPANION_ACCOUNT_KEY": account_key,
+                PILOT_ALLOWED_MCP_TOOLS_ENV: json.dumps(
+                    self.allowed_mcp_tool_names,
+                    separators=(",", ":"),
+                ),
                 "CAREER_COMPANION_API_URL": self.api_base_url,
                 "CAREER_COMPANION_PLUGIN_TOKEN": self.bridge_secret(),
                 "API_SERVER_ENABLED": "true",

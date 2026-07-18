@@ -104,7 +104,7 @@ class ScoredApplicationDecisionPayload(BoundToolPayload):
 
 
 class HermesRevisionPayload(BoundToolPayload):
-    kind: Literal["memory", "skill", "rubric"]
+    kind: Literal["skill", "rubric"]
     name: str
     content: dict[str, Any]
     diff: str

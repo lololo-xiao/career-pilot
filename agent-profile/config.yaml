@@ -35,8 +35,12 @@ memory:
   write_approval: true
 skills:
   write_approval: true
+  inline_shell: false
 security:
   allow_lazy_installs: false
+tools:
+  tool_search:
+    enabled: "off"
 mcp_servers:
   google-sheets:
     enabled: false

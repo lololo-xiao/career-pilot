@@ -32,7 +32,10 @@ from career_companion.services.conversation_sessions import (
     ensure_agent_profile,
     synchronize_agent_identity,
 )
-from career_companion.services.mcp_servers import synchronize_mcp_profile_config
+from career_companion.services.mcp_servers import (
+    configured_mcp_tool_names,
+    synchronize_mcp_profile_config,
+)
 from career_companion.services.model_routes import ensure_default_routes
 
 
@@ -322,6 +325,18 @@ def synchronize_hermes_provider(
         raw_config["platform_toolsets"] = platform_toolsets
     platform_toolsets["api_server"] = list(PILOT_API_SERVER_TOOLSETS)
 
+    skills_config = raw_config.get("skills")
+    if not isinstance(skills_config, dict):
+        skills_config = {}
+        raw_config["skills"] = skills_config
+    skills_config["inline_shell"] = False
+
+    tools_config = raw_config.get("tools")
+    if not isinstance(tools_config, dict):
+        tools_config = {}
+        raw_config["tools"] = tools_config
+    tools_config["tool_search"] = {"enabled": "off"}
+
     # Remove stale terminal configuration from previously installed profiles. Pilot's
     # Hermes process holds the bridge credential and must not expose arbitrary local I/O.
     raw_config.pop("terminal", None)
@@ -498,6 +513,11 @@ class HermesRuntimeManager:
                     paths,
                     self._distribution_path,
                 )
+                allowed_mcp_tool_names = await asyncio.to_thread(
+                    configured_mcp_tool_names,
+                    paths,
+                    self._distribution_path,
+                )
             except (OSError, ValueError) as exc:
                 raise HermesProviderConfigurationError(
                     "Pilot's editable agent or MCP settings could not be synchronized"
@@ -529,6 +549,7 @@ class HermesRuntimeManager:
                 api_base_url=(
                     f"{self._internal_api_url}/api/internal/hermes/v1"
                 ),
+                allowed_mcp_tool_names=allowed_mcp_tool_names,
             )
             try:
                 await supervisor.start(provider_environment)
