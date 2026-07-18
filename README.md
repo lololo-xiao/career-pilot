@@ -316,21 +316,23 @@ into a genuinely proactive job-search agent.
 - [ ] Add privacy-safe observability, SLOs, cost budgets, and usage reporting.
 - [ ] Complete a security review before any public internet exposure.
 
-## Suggested parallel worktree lanes
+## Parallel implementation lanes
 
-When the roadmap is ready to run with multiple agents, these lanes can be developed in
-separate worktrees with relatively clean ownership:
+Roadmap work runs in isolated git worktrees so each boundary can be tested and reviewed
+before it reaches `main`:
 
-| Lane | Primary scope | Likely overlap |
-|---|---|---|
-| `memory-runtime` | Semantic retrieval, memory citations, active revision application | Conversation service, agent runtime |
-| `agent-orchestration` | Discovery and discover→track→tailor tool chain | Career tools, chat streaming |
-| `guided-ux` | Onboarding, next actions, score explanation, form approval, interview practice | Frontend and API response copy |
-| `release-hardening` | Installers, Docker, backup drill, provider smoke tests, observability | Build/release scripts and docs |
+| Lane | Status | Primary scope | Next gate |
+|---|---:|---|---|
+| `memory-runtime` | 🟡 In progress | Deterministic retrieval, citations, inspector, safe revision application | Independently re-review atomic rollback, then design semantic retrieval |
+| `agent-orchestration` | 🟡 Security review | Discover → deduplicate → rank → track plus exact Pilot tool boundaries | Prove concurrent message authorization, guarded plugin activation, and MCP validation |
+| `guided-ux` | 🟡 In progress | First run, next actions, form approval, and interview practice | Prove credential/process isolation before merging practice; then build form-fill UX |
+| `release-hardening` | 🟡 In progress | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
+| `tailoring-drafts` | ⬜ Queued | Evidence-safe CV and cover-letter drafts from an explicit saved role | Start after the orchestration authorization contract is accepted |
+| `form-fill-workspace` | ⬜ Queued | Preview, approve, and fill one visible application without submitting | Start after the orchestration authorization contract is accepted |
 
-Start each lane with an explicit interface contract and keep database migrations owned by
-one lane at a time. Integration should happen through small reviewed commits rather than
-sharing one mutable worktree.
+Each lane starts with an explicit interface contract. Database migrations stay owned by
+one lane at a time, and integration uses small reviewed commits instead of a shared mutable
+worktree.
 
 ## API map
 
