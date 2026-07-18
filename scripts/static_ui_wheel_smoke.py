@@ -12,7 +12,11 @@ import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from career_companion.static_ui_release import MANIFEST_NAME
+from career_companion.static_ui_release import (
+    MANIFEST_NAME,
+    static_ui_frontend_asset_paths,
+    static_ui_manifest_asset_paths,
+)
 from career_companion.web import frontend_build_directory
 
 
@@ -51,8 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
         with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
-            f"http://127.0.0.1:{server.server_port}/",
+            f"{base_url}/",
             timeout=10,
         ) as response:
             page = response.read()
@@ -60,6 +65,38 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"Bundled UI returned HTTP {response.status}")
         if b"CareerPilot" not in page or build_id.encode("ascii") not in page:
             raise SystemExit("Bundled UI index lacks its release/build-ID markers")
+        manifest_paths = static_ui_manifest_asset_paths(page, build_id)
+        expected_tokens = (b"__BUILD_MANIFEST", b"__SSG_MANIFEST")
+        for path, expected_token in zip(manifest_paths, expected_tokens, strict=True):
+            with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
+                f"{base_url}/{path}",
+                timeout=10,
+            ) as response:
+                asset = response.read()
+            if response.status != 200 or expected_token not in asset or len(asset) < 24:
+                raise SystemExit(f"Bundled Next manifest asset is invalid: {path}")
+
+        manifest_set = set(manifest_paths)
+        representative = next(
+            (
+                path
+                for path in static_ui_frontend_asset_paths(page)
+                if path not in manifest_set
+                and path.casefold().endswith((".js", ".css"))
+            ),
+            None,
+        )
+        if representative is None:
+            raise SystemExit("Bundled UI index lacks a representative JS or CSS asset")
+        with urllib.request.urlopen(  # noqa: S310 - fixed loopback test server
+            f"{base_url}/{representative}",
+            timeout=10,
+        ) as response:
+            representative_payload = response.read()
+        if response.status != 200 or not representative_payload:
+            raise SystemExit(
+                f"Bundled representative frontend asset is invalid: {representative}"
+            )
     finally:
         server.shutdown()
         server.server_close()

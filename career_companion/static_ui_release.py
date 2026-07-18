@@ -8,12 +8,14 @@ import shutil
 import stat
 import subprocess
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 MANIFEST_NAME = ".careerpilot-static-ui.json"
 BUILD_ID_ATTESTATION_NAME = ".careerpilot-build-id"
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 INDEX_MARKER = "CareerPilot"
 BUILD_CONTRACT = {
     "CAREERPILOT_STATIC_EXPORT": "true",
@@ -26,6 +28,11 @@ _IGNORED_GENERATED_SOURCE_FILES = frozenset({"next-env.d.ts"})
 _JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 _JUNK_DIRECTORIES = frozenset({"__MACOSX"})
 _BUILD_ID_PATTERN = re.compile(rb"careerpilot-[0-9A-Fa-f]{64}")
+_NEXT_MANIFEST_NAMES = ("_buildManifest.js", "_ssgManifest.js")
+_NEXT_MANIFEST_NAMES_CASEFOLDED = frozenset(
+    name.casefold() for name in _NEXT_MANIFEST_NAMES
+)
+_NEXT_STATIC_CONTENT_DIRECTORIES = frozenset({"chunks", "css", "media"})
 _BUILD_ENVIRONMENT_ALLOWLIST = frozenset(
     {
         "COMSPEC",
@@ -75,6 +82,183 @@ class _ReleaseBoundary:
     project_resolved: Path
     frontend: Path
     frontend_resolved: Path
+
+
+class _ScriptSourceParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.sources: list[str] = []
+        self.executable_sources: list[str] = []
+        self.stylesheet_sources: list[str] = []
+        self.has_base = False
+        self.invalid_reserved_source = False
+        self._inert_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        folded_tag = tag.casefold()
+        if folded_tag in {"template", "noscript"}:
+            self._inert_depth += 1
+            return
+        if folded_tag == "base":
+            self.has_base = True
+            return
+        if folded_tag == "link":
+            attributes = {name.casefold(): value for name, value in attrs}
+            if (
+                not self._inert_depth
+                and "stylesheet" in (attributes.get("rel") or "").casefold().split()
+                and attributes.get("href")
+            ):
+                self.stylesheet_sources.append(attributes["href"] or "")
+            return
+        if folded_tag != "script":
+            return
+        attributes = {name.casefold(): value for name, value in attrs}
+        sources = [
+            value
+            for name, value in attrs
+            if name.casefold() == "src" and value is not None
+        ]
+        for source in sources:
+            self.sources.append(source)
+            script_type = (attributes.get("type") or "").casefold()
+            executable = not self._inert_depth and script_type in {
+                "",
+                "text/javascript",
+                "application/javascript",
+                "module",
+            }
+            if executable:
+                self.executable_sources.append(source)
+            if any(
+                name in source.casefold() for name in _NEXT_MANIFEST_NAMES_CASEFOLDED
+            ) and (
+                not executable
+                or len(sources) != 1
+                or "integrity" in attributes
+            ):
+                self.invalid_reserved_source = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() in {"template", "noscript"} and self._inert_depth:
+            self._inert_depth -= 1
+
+
+def static_ui_manifest_asset_paths(
+    index_payload: bytes,
+    expected_build_id: str,
+) -> tuple[str, str]:
+    """Return the uniquely referenced, source-derived Next manifest asset paths."""
+
+    try:
+        index_text = index_payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StaticUIReleaseError("Static UI index.html must be valid UTF-8.") from exc
+    parser = _ScriptSourceParser()
+    try:
+        parser.feed(index_text)
+        parser.close()
+    except ValueError as exc:
+        raise StaticUIReleaseError("Static UI index.html contains malformed HTML.") from exc
+
+    if parser.has_base or parser.invalid_reserved_source:
+        raise StaticUIReleaseError(
+            "Static UI index.html build-manifest references must be directly executable."
+        )
+    reserved_sources = [
+        source
+        for source in parser.sources
+        if any(name in source.casefold() for name in _NEXT_MANIFEST_NAMES_CASEFOLDED)
+    ]
+    referenced_paths = tuple(
+        _canonical_export_script_reference(source) for source in reserved_sources
+    )
+    expected_paths = tuple(
+        f"_next/static/{expected_build_id}/{name}" for name in _NEXT_MANIFEST_NAMES
+    )
+    if len(referenced_paths) != 2 or set(referenced_paths) != set(expected_paths):
+        raise StaticUIReleaseError(
+            "Static UI index.html must reference exactly one source-derived Next "
+            "build-manifest pair."
+        )
+    return expected_paths
+
+
+def static_ui_frontend_asset_paths(index_payload: bytes) -> tuple[str, ...]:
+    """Return all executable script and stylesheet paths in a release index."""
+
+    try:
+        index_text = index_payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise StaticUIReleaseError("Static UI index.html must be valid UTF-8.") from exc
+    parser = _ScriptSourceParser()
+    try:
+        parser.feed(index_text)
+        parser.close()
+    except ValueError as exc:
+        raise StaticUIReleaseError("Static UI index.html contains malformed HTML.") from exc
+    if parser.has_base:
+        raise StaticUIReleaseError(
+            "Static UI index.html cannot use a base URL for release assets."
+        )
+    paths = tuple(
+        _canonical_export_asset_reference(source)
+        for source in (*parser.executable_sources, *parser.stylesheet_sources)
+    )
+    if not paths:
+        raise StaticUIReleaseError(
+            "Static UI index.html must reference executable or stylesheet assets."
+        )
+    return paths
+
+
+def _canonical_export_asset_reference(source: str) -> str:
+    if not source or "\\" in source or any(ord(character) < 0x20 for character in source):
+        raise StaticUIReleaseError(
+            "Static UI index.html contains a malformed frontend asset reference."
+        )
+    try:
+        parsed = urlsplit(source)
+    except ValueError as exc:
+        raise StaticUIReleaseError(
+            "Static UI index.html contains a malformed frontend asset reference."
+        ) from exc
+    if parsed.scheme or parsed.netloc or parsed.fragment or parsed.path.startswith("//"):
+        raise StaticUIReleaseError(
+            "Static UI index.html frontend asset references must be local export paths."
+        )
+    raw_path = parsed.path
+    if not raw_path or "%" in raw_path:
+        raise StaticUIReleaseError(
+            "Static UI index.html contains a malformed frontend asset reference."
+        )
+    relative = raw_path[1:] if raw_path.startswith("/") else raw_path
+    if relative.startswith("./"):
+        relative = relative[2:]
+    path = PurePosixPath(relative)
+    if (
+        not relative
+        or ".." in path.parts
+        or relative != path.as_posix()
+        or not path.as_posix().startswith("_next/static/")
+    ):
+        raise StaticUIReleaseError(
+            "Static UI index.html contains an unsafe frontend asset reference."
+        )
+    return path.as_posix()
+
+
+def _canonical_export_script_reference(source: str) -> str:
+    path = _canonical_export_asset_reference(source)
+    if PurePosixPath(path).name.casefold() not in _NEXT_MANIFEST_NAMES_CASEFOLDED:
+        raise StaticUIReleaseError(
+            "Static UI index.html contains an unsafe build-manifest reference."
+        )
+    return path
 
 
 def build_static_ui(
@@ -592,10 +776,7 @@ def _validate_index(
         raise StaticUIReleaseError(
             f"Static UI index.html must contain the {INDEX_MARKER!r} release marker."
         )
-    if expected_build_id.encode("utf-8") not in payload:
-        raise StaticUIReleaseError(
-            "Static UI index.html does not reference the expected source-derived build ID."
-        )
+    static_ui_manifest_asset_paths(payload, expected_build_id)
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -633,6 +814,11 @@ def _attest_next_build(boundary: _ReleaseBoundary, expected_build_id: str) -> No
         raise StaticUIReleaseError(
             "Next BUILD_ID does not match the expected source-derived release build ID."
         )
+    files = _export_files(boundary)
+    _validate_next_manifest_file_pair(files, expected_build_id)
+    _validate_observed_build_ids(boundary, files, expected_build_id)
+    _ensure_next_manifest_references(boundary, expected_build_id)
+    _validate_export_structure(boundary, expected_build_id)
     attestation = _assert_safe_path(
         boundary.frontend / "out" / BUILD_ID_ATTESTATION_NAME,
         boundary,
@@ -642,6 +828,55 @@ def _attest_next_build(boundary: _ReleaseBoundary, expected_build_id: str) -> No
     except OSError as exc:
         raise StaticUIReleaseError("Could not write the static UI build ID attestation.") from exc
     _validate_export_structure(boundary, expected_build_id)
+
+
+def _ensure_next_manifest_references(
+    boundary: _ReleaseBoundary,
+    expected_build_id: str,
+) -> None:
+    index = boundary.frontend / "out" / "index.html"
+    payload = _read_safe_bytes(index, boundary)
+    parser = _ScriptSourceParser()
+    try:
+        parser.feed(payload.decode("utf-8"))
+        parser.close()
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise StaticUIReleaseError("Static UI index.html is not valid release HTML.") from exc
+    if parser.has_base:
+        raise StaticUIReleaseError(
+            "Static UI index.html cannot use a base URL for release assets."
+        )
+    reserved_sources = [
+        source
+        for source in parser.sources
+        if any(name in source.casefold() for name in _NEXT_MANIFEST_NAMES_CASEFOLDED)
+    ]
+    if reserved_sources:
+        static_ui_manifest_asset_paths(payload, expected_build_id)
+        return
+
+    text = payload.decode("utf-8")
+    insertion = text.casefold().rfind("</body>")
+    if insertion < 0:
+        raise StaticUIReleaseError(
+            "Static UI index.html cannot receive build-manifest attestations."
+        )
+    tags = "".join(
+        f'<script src="/_next/static/{expected_build_id}/{name}"></script>'
+        for name in _NEXT_MANIFEST_NAMES
+    )
+    updated = (text[:insertion] + tags + text[insertion:]).encode("utf-8")
+    temporary = _assert_safe_path(
+        boundary.frontend / "out" / ".careerpilot-index.html.tmp",
+        boundary,
+    )
+    try:
+        temporary.write_bytes(updated)
+        os.replace(temporary, index)
+    except OSError as exc:
+        raise StaticUIReleaseError(
+            "Could not write static UI build-manifest attestations."
+        ) from exc
 
 
 def _validate_export_structure(
@@ -656,16 +891,82 @@ def _validate_export_structure(
         raise StaticUIReleaseError(
             "Static UI export is missing the expected source-derived build directory."
         )
-    for required_name in ("_buildManifest.js", "_ssgManifest.js"):
+    files = _export_files(boundary)
+    _validate_next_manifest_file_pair(files, expected_build_id)
+    for required_name in _NEXT_MANIFEST_NAMES:
         _assert_safe_regular_file(build_directory / required_name, boundary)
+    index = boundary.frontend / "out" / "index.html"
     _validate_index(
-        boundary.frontend / "out" / "index.html",
+        index,
         boundary,
         expected_build_id,
     )
+    actual_paths = {file.path for file in files}
+    referenced_assets = static_ui_frontend_asset_paths(
+        _read_safe_bytes(index, boundary)
+    )
+    missing_assets = sorted(set(referenced_assets) - actual_paths)
+    if missing_assets:
+        raise StaticUIReleaseError(
+            "Static UI index.html references files outside the manifested export: "
+            + ", ".join(missing_assets)
+        )
+    manifest_assets = {
+        f"_next/static/{expected_build_id}/{name}" for name in _NEXT_MANIFEST_NAMES
+    }
+    if not set(referenced_assets) - manifest_assets:
+        raise StaticUIReleaseError(
+            "Static UI index.html must reference at least one non-manifest JS or CSS asset."
+        )
+    allowed_static_roots = {
+        expected_build_id,
+        *_NEXT_STATIC_CONTENT_DIRECTORIES,
+    }
+    unexpected_static_roots = sorted(
+        {
+            parts[2]
+            for file in files
+            if len(parts := PurePosixPath(file.path).parts) >= 3
+            and parts[:2] == ("_next", "static")
+            and parts[2] not in allowed_static_roots
+        }
+    )
+    if unexpected_static_roots:
+        raise StaticUIReleaseError(
+            "Static UI export contains unknown first-level _next/static directories: "
+            + ", ".join(unexpected_static_roots)
+        )
+    _validate_observed_build_ids(boundary, files, expected_build_id)
+
+
+def _validate_next_manifest_file_pair(
+    files: tuple[StaticUIFile, ...],
+    expected_build_id: str,
+) -> None:
+    expected_paths = {
+        f"_next/static/{expected_build_id}/{name}" for name in _NEXT_MANIFEST_NAMES
+    }
+    candidates = [
+        file.path
+        for file in files
+        if PurePosixPath(file.path).name.casefold()
+        in _NEXT_MANIFEST_NAMES_CASEFOLDED
+    ]
+    if len(candidates) != 2 or set(candidates) != expected_paths:
+        raise StaticUIReleaseError(
+            "Static UI export must contain exactly one source-derived Next "
+            "build-manifest pair and no legacy, generic, or case-variant copies."
+        )
+
+
+def _validate_observed_build_ids(
+    boundary: _ReleaseBoundary,
+    files: tuple[StaticUIFile, ...],
+    expected_build_id: str,
+) -> None:
     observed: set[bytes] = set()
     export = boundary.frontend / "out"
-    for file in _export_files(boundary):
+    for file in files:
         observed.update(_BUILD_ID_PATTERN.findall(file.path.encode("utf-8")))
         observed.update(
             _BUILD_ID_PATTERN.findall(

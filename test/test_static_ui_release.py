@@ -51,16 +51,51 @@ def _export(
     build_id = build_id or _expected_build_id(frontend)
     build_directory = frontend / "out" / "_next" / "static" / build_id
     build_directory.mkdir(parents=True)
-    (build_directory / "_buildManifest.js").write_text(f"build={build_id}\n")
-    (build_directory / "_ssgManifest.js").write_text(f"ssg={build_id}\n")
+    (build_directory / "_buildManifest.js").write_text(
+        f"self.__BUILD_MANIFEST={{buildId:{build_id!r}}};\n"
+    )
+    (build_directory / "_ssgManifest.js").write_text(
+        "self.__SSG_MANIFEST=new Set([]);\n"
+    )
+    chunks = frontend / "out" / "_next" / "static" / "chunks"
+    chunks.mkdir()
+    (chunks / "release.js").write_text("self.__CAREERPILOT_RELEASE=true;\n")
     (frontend / "out" / "index.html").write_text(
-        f"<title>CareerPilot</title><meta content='{build_id}'>\n"
+        f"<title>CareerPilot</title><meta content='{build_id}'>"
+        '<script src="/_next/static/chunks/release.js"></script>'
+        f'<script src="/_next/static/{build_id}/_buildManifest.js"></script>'
+        f'<script src="/_next/static/{build_id}/_ssgManifest.js"></script>\n'
     )
     (frontend / "out" / "_next" / "app.js").write_text("release bundle\n")
     if attest:
         (frontend / "out" / BUILD_ID_ATTESTATION_NAME).write_text(build_id)
     (frontend / "out" / ".DS_Store").write_bytes(b"junk")
     return build_id
+
+
+def _write_manifest_references(
+    frontend: Path,
+    build_id: str,
+    build_reference: str | None,
+    ssg_reference: str | None,
+    *,
+    extra: str = "",
+    include_representative: bool = True,
+) -> None:
+    references = "".join(
+        f'<script src="{reference}"></script>'
+        for reference in (build_reference, ssg_reference)
+        if reference is not None
+    )
+    representative = (
+        '<script src="/_next/static/chunks/release.js"></script>'
+        if include_representative
+        else ""
+    )
+    (frontend / "out" / "index.html").write_text(
+        f"<title>CareerPilot</title><meta content='{build_id}'>"
+        f"{representative}{references}{extra}\n"
+    )
 
 
 def _copy_project(repository: Path, project: Path, *, frontend: bool = True) -> None:
@@ -124,6 +159,7 @@ def test_manifest_is_deterministic_and_ignores_only_generated_build_inputs(
     assert {file.path for file in first.files} == {
         BUILD_ID_ATTESTATION_NAME,
         "_next/app.js",
+        "_next/static/chunks/release.js",
         f"_next/static/{first.build_id}/_buildManifest.js",
         f"_next/static/{first.build_id}/_ssgManifest.js",
         "index.html",
@@ -204,7 +240,278 @@ def test_export_requires_exact_build_id_artifacts(
     build_id = _export(frontend)
     (frontend / "out" / "_next" / "static" / build_id / required_name).unlink()
 
-    with pytest.raises(StaticUIReleaseError, match="regular file"):
+    with pytest.raises(StaticUIReleaseError, match="exactly one source-derived"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+
+def test_generic_manifest_pair_cannot_hide_behind_inert_expected_id(
+    tmp_path: Path,
+) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    generic = frontend / "out" / "_next" / "static" / "GENERIC-BUILD-MARKER"
+    generic.mkdir()
+    (generic / "_buildManifest.js").write_text("self.__BUILD_MANIFEST={};")
+    (generic / "_ssgManifest.js").write_text("self.__SSG_MANIFEST=new Set([]);")
+    _write_manifest_references(
+        frontend,
+        build_id,
+        "/_next/static/GENERIC-BUILD-MARKER/_buildManifest.js",
+        "/_next/static/GENERIC-BUILD-MARKER/_ssgManifest.js",
+    )
+    attestation = frontend / "out" / BUILD_ID_ATTESTATION_NAME
+    before = attestation.read_bytes()
+
+    with pytest.raises(StaticUIReleaseError, match="exactly one source-derived"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert attestation.read_bytes() == before
+    assert not (frontend / "out" / MANIFEST_NAME).exists()
+
+
+def test_build_rejects_generic_manifest_pair_before_writing_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frontend = _frontend(tmp_path)
+    npm = tmp_path / "npm"
+    npm.write_text("fake\n")
+
+    def fake_build(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        build_id = env["CAREERPILOT_BUILD_ID"]
+        (frontend / ".next").mkdir()
+        (frontend / ".next" / "BUILD_ID").write_text(build_id)
+        _export(frontend, attest=False)
+        generic = frontend / "out" / "_next" / "static" / "GENERIC-BUILD-MARKER"
+        generic.mkdir()
+        (generic / "_buildManifest.js").write_text("self.__BUILD_MANIFEST={};")
+        (generic / "_ssgManifest.js").write_text("self.__SSG_MANIFEST=new Set([]);")
+        _write_manifest_references(
+            frontend,
+            build_id,
+            "/_next/static/GENERIC-BUILD-MARKER/_buildManifest.js",
+            "/_next/static/GENERIC-BUILD-MARKER/_ssgManifest.js",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: str(npm))
+    monkeypatch.setattr(subprocess, "run", fake_build)
+
+    with pytest.raises(StaticUIReleaseError, match="exactly one source-derived"):
+        build_static_ui(frontend, project_root=tmp_path)
+
+    assert not (frontend / "out" / BUILD_ID_ATTESTATION_NAME).exists()
+    assert not (frontend / "out" / MANIFEST_NAME).exists()
+
+
+@pytest.mark.parametrize(
+    "extra_path",
+    [
+        Path("legacy/_buildManifest.js"),
+        Path("legacy/_ssgManifest.js"),
+        Path("legacy/_BuildManifest.js"),
+        Path("_next/static/GENERIC/_buildManifest.js"),
+    ],
+)
+def test_export_rejects_extra_legacy_or_case_variant_manifests(
+    tmp_path: Path,
+    extra_path: Path,
+) -> None:
+    frontend = _frontend(tmp_path)
+    _export(frontend)
+    extra = frontend / "out" / extra_path
+    extra.parent.mkdir(parents=True, exist_ok=True)
+    extra.write_text("legacy manifest must not be packaged")
+    before = (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes()
+
+    with pytest.raises(StaticUIReleaseError, match="exactly one source-derived"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes() == before
+
+
+def test_index_rejects_missing_and_duplicate_manifest_references(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    build_reference = f"/_next/static/{build_id}/_buildManifest.js"
+    ssg_reference = f"/_next/static/{build_id}/_ssgManifest.js"
+    before = (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes()
+
+    _write_manifest_references(frontend, build_id, build_reference, None)
+    with pytest.raises(StaticUIReleaseError, match="exactly one source-derived"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    _write_manifest_references(
+        frontend,
+        build_id,
+        build_reference,
+        ssg_reference,
+        extra=f'<script src="{build_reference}"></script>',
+    )
+    with pytest.raises(StaticUIReleaseError, match="exactly one source-derived"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "bad_reference",
+    [
+        "https://example.invalid/_next/static/{build_id}/_buildManifest.js",
+        "../_next/static/{build_id}/_buildManifest.js",
+        "/_next/static/legacy-build/_buildManifest.js",
+        "/_next/static/{build_id}/%5fbuildManifest.js",
+    ],
+)
+def test_index_rejects_external_traversal_stale_and_malformed_references(
+    tmp_path: Path,
+    bad_reference: str,
+) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    before = (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes()
+    _write_manifest_references(
+        frontend,
+        build_id,
+        bad_reference.format(build_id=build_id),
+        f"/_next/static/{build_id}/_ssgManifest.js",
+    )
+
+    with pytest.raises(
+        StaticUIReleaseError,
+        match="asset reference|manifest reference|manifest pair",
+    ):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes() == before
+
+
+def test_index_accepts_safe_relative_references_and_queries(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    _write_manifest_references(
+        frontend,
+        build_id,
+        f"./_next/static/{build_id}/_buildManifest.js?release=1",
+        f"_next/static/{build_id}/_ssgManifest.js?v=1",
+    )
+
+    release = write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert verify_static_ui(frontend, project_root=tmp_path) == release
+
+
+@pytest.mark.parametrize("variant", ["base", "inert-type", "template"])
+def test_index_manifest_references_must_be_directly_executable(
+    tmp_path: Path,
+    variant: str,
+) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    build_reference = f"/_next/static/{build_id}/_buildManifest.js"
+    ssg_reference = f"/_next/static/{build_id}/_ssgManifest.js"
+    if variant == "base":
+        markup = (
+            '<base href="https://example.invalid/">'
+            f'<script src="{build_reference}"></script>'
+            f'<script src="{ssg_reference}"></script>'
+        )
+    elif variant == "inert-type":
+        markup = (
+            f'<script type="application/json" src="{build_reference}"></script>'
+            f'<script src="{ssg_reference}"></script>'
+        )
+    else:
+        markup = (
+            f'<template><script src="{build_reference}"></script></template>'
+            f'<script src="{ssg_reference}"></script>'
+        )
+    (frontend / "out" / "index.html").write_text(
+        f"<title>CareerPilot</title><meta content='{build_id}'>{markup}"
+    )
+    before = (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes()
+
+    with pytest.raises(StaticUIReleaseError, match="executable|base URL"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes() == before
+
+
+@pytest.mark.parametrize("reference_generic_chunk", [False, True])
+def test_export_rejects_unknown_first_level_static_directory(
+    tmp_path: Path,
+    reference_generic_chunk: bool,
+) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    generic = frontend / "out" / "_next" / "static" / "GENERIC-BUILD-MARKER"
+    generic.mkdir()
+    (generic / "chunk.js").write_text("self.__STALE_GENERIC_CHUNK=true;")
+    if reference_generic_chunk:
+        index = frontend / "out" / "index.html"
+        index.write_text(
+            index.read_text()
+            + '<script src="/_next/static/GENERIC-BUILD-MARKER/chunk.js"></script>'
+        )
+    before = (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes()
+
+    with pytest.raises(StaticUIReleaseError, match="unknown first-level"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert (frontend / "out" / BUILD_ID_ATTESTATION_NAME).read_bytes() == before
+
+
+def test_index_rejects_missing_generic_chunk_reference(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    index = frontend / "out" / "index.html"
+    index.write_text(
+        index.read_text()
+        + '<script src="/_next/static/GENERIC-BUILD-MARKER/missing.js"></script>'
+    )
+
+    with pytest.raises(StaticUIReleaseError, match="outside the manifested export"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "representative",
+    [
+        None,
+        "../_next/static/chunks/release.js",
+        "https://example.invalid/_next/static/chunks/release.js",
+        "http://[::1",
+        "/_next/static/chunks/%72elease.js",
+        "\\_next\\static\\chunks\\release.js",
+    ],
+)
+def test_index_requires_containment_safe_representative_asset(
+    tmp_path: Path,
+    representative: str | None,
+) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    extra = (
+        f'<script src="{representative}"></script>'
+        if representative is not None
+        else ""
+    )
+    _write_manifest_references(
+        frontend,
+        build_id,
+        f"/_next/static/{build_id}/_buildManifest.js",
+        f"/_next/static/{build_id}/_ssgManifest.js",
+        extra=extra,
+        include_representative=False,
+    )
+
+    with pytest.raises(StaticUIReleaseError, match="asset reference|non-manifest"):
         write_static_ui_manifest(frontend, project_root=tmp_path)
 
 
@@ -320,10 +627,20 @@ def test_build_scrubs_inherited_environment_before_fake_export(
         (frontend / ".next" / "BUILD_ID").write_text(build_id)
         build_directory = frontend / "out" / "_next" / "static" / build_id
         build_directory.mkdir(parents=True)
-        (build_directory / "_buildManifest.js").write_text(build_id)
-        (build_directory / "_ssgManifest.js").write_text(build_id)
+        (build_directory / "_buildManifest.js").write_text(
+            f"self.__BUILD_MANIFEST={{buildId:{build_id!r}}};"
+        )
+        (build_directory / "_ssgManifest.js").write_text(
+            "self.__SSG_MANIFEST=new Set([]);"
+        )
+        chunks = frontend / "out" / "_next" / "static" / "chunks"
+        chunks.mkdir()
+        (chunks / "release.js").write_text("self.__CAREERPILOT_RELEASE=true;")
         (frontend / "out" / "index.html").write_text(
-            f"<title>CareerPilot</title>{build_id}{leaked}\n"
+            "<html><body><title>CareerPilot</title>"
+            f"{build_id}{leaked}"
+            '<script src="/_next/static/chunks/release.js"></script>'
+            "</body></html>\n"
         )
         (frontend / "out" / "_next" / "app.js").write_text(leaked)
         return subprocess.CompletedProcess(command, 0)
@@ -393,9 +710,11 @@ def test_windows_cmd_launcher_runs_with_minimal_scrubbed_environment(
         "Path('.next/BUILD_ID').write_text(build_id)\n"
         "build_dir = Path('out/_next/static') / build_id\n"
         "build_dir.mkdir(parents=True)\n"
-        "(build_dir / '_buildManifest.js').write_text(build_id)\n"
-        "(build_dir / '_ssgManifest.js').write_text(build_id)\n"
-        "Path('out/index.html').write_text('<title>CareerPilot</title>' + build_id + 'clean\\n')\n"
+        "(build_dir / '_buildManifest.js').write_text('self.__BUILD_MANIFEST=' + repr(build_id))\n"
+        "(build_dir / '_ssgManifest.js').write_text('self.__SSG_MANIFEST=new Set([])')\n"
+        "Path('out/_next/static/chunks').mkdir()\n"
+        "Path('out/_next/static/chunks/release.js').write_text('self.__CAREERPILOT_RELEASE=true')\n"
+        "Path('out/index.html').write_text('<html><body><title>CareerPilot</title>' + build_id + 'clean<script src=\"/_next/static/chunks/release.js\"></script></body></html>\\n')\n"
         "Path('out/_next/app.js').write_text('clean\\n')\n"
     )
     fake_npm = tmp_path / "npm.cmd"

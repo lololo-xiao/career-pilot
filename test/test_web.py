@@ -45,12 +45,27 @@ def _verified_source(repository: Path, marker: str = "fresh source UI") -> Path:
     frontend = repository / "frontend"
     fingerprint = frontend_source_fingerprint(frontend, project_root=repository)
     build_id = f"careerpilot-{fingerprint}"
-    expected = _build(frontend / "out", f"CareerPilot {build_id} {marker}")
+    expected = _build(
+        frontend / "out",
+        f"CareerPilot {build_id} {marker}"
+        '<script src="/_next/static/chunks/release.js"></script>'
+        f'<script src="/_next/static/{build_id}/_buildManifest.js"></script>'
+        f'<script src="/_next/static/{build_id}/_ssgManifest.js"></script>',
+    )
     (expected / BUILD_ID_ATTESTATION_NAME).write_text(build_id, encoding="utf-8")
     build_directory = expected / "_next" / "static" / build_id
     build_directory.mkdir(parents=True)
-    (build_directory / "_buildManifest.js").write_text(build_id, encoding="utf-8")
-    (build_directory / "_ssgManifest.js").write_text(build_id, encoding="utf-8")
+    (build_directory / "_buildManifest.js").write_text(
+        f"self.__BUILD_MANIFEST={{buildId:{build_id!r}}};", encoding="utf-8"
+    )
+    (build_directory / "_ssgManifest.js").write_text(
+        "self.__SSG_MANIFEST=new Set([]);", encoding="utf-8"
+    )
+    chunks = expected / "_next" / "static" / "chunks"
+    chunks.mkdir()
+    (chunks / "release.js").write_text(
+        "self.__CAREERPILOT_RELEASE=true;", encoding="utf-8"
+    )
     write_static_ui_manifest(frontend, project_root=repository)
     return expected
 
