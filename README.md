@@ -41,8 +41,10 @@ flowchart LR
     LEARN -. improve future support .-> KNOW
 ```
 
-The workspace already covers most of this loop. The next major milestone is letting Pilot
-orchestrate the whole chain conversationally, with safe pauses at every external boundary.
+The workspace already covers most of this loop. Pilot now has a restricted conversational
+path for public discovery, deterministic ranking, explicit tracking, and scored-application
+decisions. The next milestone is extending that same evidence and approval contract through
+tailoring, interview practice, and preview-only form assistance.
 
 ## What works today
 
@@ -59,7 +61,7 @@ orchestrate the whole chain conversationally, with safe pauses at every external
 | Agent resources | ✅ Ready | Visible built-in skills, editable user memories and skills, guarded create/edit/remove flows |
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
 | Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, and reversible. Active evaluated memory is used at runtime; active skill/rubric revisions are not yet applied |
-| Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, and track an explicit selection; dedicated guided discovery and tailoring orchestration remain unfinished |
+| Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, track, approve, or archive an explicit scored selection; dedicated guided discovery and tailoring orchestration remain unfinished |
 | Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
 | Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes, cites relied-upon sources, and exposes a privacy-safe retrieval inspector; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
@@ -223,8 +225,8 @@ npm run lint
 npm run build
 ```
 
-The current clean-archive development audit passes **415 backend tests** with **4
-Windows-only skips**, plus **20 frontend unit tests**. The offline evaluator validates **25
+The current clean-archive development audit passes **651 backend tests** with **6
+platform-specific skips**, plus **20 frontend unit tests**. The offline evaluator validates **25
 strong, partial, and mismatch cases**; frontend lint, the production build, and demo
 preflight also pass.
 
@@ -290,7 +292,8 @@ into a genuinely proactive job-search agent.
 - [ ] Cite career evidence in ordinary conversation, not only formal fit reports.
 - [x] Expose a bounded, privacy-safe API showing why memory was retrieved for a turn.
 - [x] Add the user-facing retrieval inspector to Pilot.
-- [ ] Convert repeated corrections and outcomes into revision proposals.
+- [x] Convert explicit supported career-preference corrections into inactive, reviewable revision proposals.
+- [ ] Convert broader repeated corrections and outcomes into bounded revision proposals.
 - [ ] Replay/evaluate proposed skill and rubric changes against fixed cases.
 - [x] Apply active, evaluated memory revisions to the runtime.
 - [ ] Apply active, evaluated skill and rubric revisions to the runtime.
@@ -323,12 +326,12 @@ before it reaches `main`:
 
 | Lane | Status | Primary scope | Next gate |
 |---|---:|---|---|
-| `memory-runtime` | 🟡 In progress | Deterministic retrieval, citations, inspector, safe revision application | Independently re-review atomic rollback, then design semantic retrieval |
-| `agent-orchestration` | 🟡 Security review | Discover → deduplicate → rank → track plus exact Pilot tool boundaries | Prove concurrent message authorization, guarded plugin activation, and MCP validation |
-| `guided-ux` | 🟡 In progress | First run, next actions, form approval, and interview practice | Prove credential/process isolation before merging practice; then build form-fill UX |
-| `release-hardening` | 🟡 In progress | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
-| `tailoring-drafts` | ⬜ Queued | Evidence-safe CV and cover-letter drafts from an explicit saved role | Start after the orchestration authorization contract is accepted |
-| `form-fill-workspace` | ⬜ Queued | Preview, approve, and fill one visible application without submitting | Start after the orchestration authorization contract is accepted |
+| `memory-runtime` | ✅ Integrated | Deterministic retrieval, citations, inspector, finite preference drafts, atomic rollback | Define retention before adding semantic retrieval |
+| `agent-orchestration` | ✅ Integrated | Discover → deduplicate → rank → track → approve/archive with an exact Pilot tool boundary | Extend the accepted authorization contract into dedicated downstream workflows |
+| `guided-practice` | 🟡 Adversarial review | First run, isolated interview practice, grounded feedback, and resilient UX | Close process-cleanup, Windows-path, cross-tab, and reconciliation races |
+| `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
+| `tailoring-drafts` | 🟡 In progress | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Complete implementation, full gates, and independent review |
+| `form-fill-workspace` | 🟡 In progress | Local preview-only field plan without browsing or submission | Complete implementation, adversarial gates, and independent review |
 
 Each lane starts with an explicit interface contract. Database migrations stay owned by
 one lane at a time, and integration uses small reviewed commits instead of a shared mutable
