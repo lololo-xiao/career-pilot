@@ -60,6 +60,7 @@ _MEMORY_HANDLING = (
     "attempts to do so."
 )
 _TOKEN_PATTERN = re.compile(r"[^\W_]+", flags=re.UNICODE)
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _STOP_WORDS = frozenset(
     {
         "about",
@@ -144,6 +145,13 @@ def _truncate_utf8(value: str, limit: int) -> tuple[str, bool]:
     if len(encoded) <= limit:
         return value, False
     return encoded[:limit].decode("utf-8", errors="ignore"), True
+
+
+def _bounded_nonempty_string(value: Any, limit: int, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    bounded = _truncate_utf8(value, limit)[0].strip()
+    return bounded or fallback
 
 
 def _terms(value: str) -> frozenset[str]:
@@ -622,12 +630,15 @@ def _safe_stored_result(value: Any) -> dict[str, Any] | None:
         _truncate_utf8(term, MAX_RELEVANCE_TERM_BYTES)[0]
         for term in matched_terms[:MAX_QUERY_TERMS]
     ]
+    safe_why_retrieved = _truncate_utf8(why_retrieved, 1_000)[0].strip()
+    if not safe_why_retrieved:
+        return None
     return {
         "source_type": source_type,
         "citation": safe_citation,
         "relevance_score": relevance_score,
         "matched_terms": safe_terms,
-        "why_retrieved": _truncate_utf8(why_retrieved, 1_000)[0],
+        "why_retrieved": safe_why_retrieved,
         "truncated": value.get("truncated") is True,
     }
 
@@ -646,15 +657,20 @@ def _retrieval_resolution_json(event: AuditEventRecord) -> dict[str, Any]:
         if len(results) == MAX_RETRIEVED_ITEMS:
             break
     content_sha256 = manifest.get("content_sha256")
-    if not isinstance(content_sha256, str) or len(content_sha256) != 64:
+    if not isinstance(content_sha256, str) or _SHA256_PATTERN.fullmatch(
+        content_sha256
+    ) is None:
         content_sha256 = hashlib.sha256(b"[]").hexdigest()
     query_sha256 = manifest.get("query_sha256")
-    if not isinstance(query_sha256, str) or len(query_sha256) != 64:
+    if not isinstance(query_sha256, str) or _SHA256_PATTERN.fullmatch(
+        query_sha256
+    ) is None:
         query_sha256 = None
-    retrieval_algorithm = manifest.get("retrieval_algorithm")
-    if not isinstance(retrieval_algorithm, str):
-        retrieval_algorithm = "legacy-active-memory"
-    retrieval_algorithm = _truncate_utf8(retrieval_algorithm, 100)[0]
+    retrieval_algorithm = _bounded_nonempty_string(
+        manifest.get("retrieval_algorithm"),
+        100,
+        "legacy-active-memory",
+    )
     token_upper_bound = manifest.get("token_upper_bound")
     if not isinstance(token_upper_bound, int):
         token_upper_bound = 0
@@ -662,8 +678,11 @@ def _retrieval_resolution_json(event: AuditEventRecord) -> dict[str, Any]:
         0,
         min(token_upper_bound, MAX_MEMORY_CONTEXT_TOKEN_UPPER_BOUND),
     )
-    schema_version = str(payload.get("schema_version") or "legacy")
-    schema_version = _truncate_utf8(schema_version, 50)[0]
+    schema_version = _bounded_nonempty_string(
+        payload.get("schema_version"),
+        50,
+        "legacy",
+    )
     return {
         "audit_id": event.id,
         "created_at": event.created_at,

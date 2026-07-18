@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -147,6 +148,66 @@ def test_memory_retrieval_history_is_empty_for_a_new_session(session_client) -> 
         "offset": 0,
         "has_more": False,
     }
+
+
+def test_memory_retrieval_history_sanitizes_corrupt_legacy_payloads(
+    session_client,
+) -> None:
+    client, paths, _, _ = session_client
+    session_id = client.post("/companion/sessions", json={}).json()["id"]
+    plaintext_query_value = "plaintext-query-value".ljust(64, "x")
+    plaintext_content_value = "PLAINTEXT-CONTENT-VALUE".ljust(64, "A")
+    with account_session(paths) as session:
+        event = AuditEventRecord(
+            event_type="memory_context.resolved",
+            actor="legacy-runtime",
+            subject_type="conversation_session",
+            subject_id=session_id,
+            payload={
+                "schema_version": "   ",
+                "manifest": {
+                    "query_sha256": plaintext_query_value,
+                    "content_sha256": plaintext_content_value,
+                    "retrieval_algorithm": "\t\n",
+                    "token_upper_bound": "not-an-integer",
+                },
+                "results": [
+                    {
+                        "source_type": "memory_revision",
+                        "citation": {
+                            "source_type": "memory_revision",
+                            "revision_id": "revision-corrupt",
+                            "name": "corrupt-memory",
+                            "version": 1,
+                            "source_session": "legacy-session",
+                        },
+                        "relevance_score": 1,
+                        "matched_terms": ["python"],
+                        "why_retrieved": "   ",
+                        "truncated": False,
+                    }
+                ],
+            },
+        )
+        session.add(event)
+        session.flush()
+
+    response = client.get(
+        f"/companion/sessions/{session_id}/memory-retrievals",
+    )
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["audit_id"] == event.id
+    assert item["schema_version"] == "legacy"
+    assert item["retrieval_algorithm"] == "legacy-active-memory"
+    assert item["query_sha256"] is None
+    assert item["content_sha256"] == hashlib.sha256(b"[]").hexdigest()
+    assert item["included_item_count"] == 0
+    assert item["results"] == []
+    serialized = json.dumps(response.json(), sort_keys=True)
+    assert plaintext_query_value not in serialized
+    assert plaintext_content_value not in serialized
 
 
 def test_memory_retrieval_history_is_bounded_ordered_and_account_scoped(
