@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -73,6 +74,12 @@ def build_static_ui(
 
     frontend = _validated_frontend_root(frontend, project_root=project_root)
     source_before = frontend_source_fingerprint(frontend, project_root=project_root)
+    npm_launcher = shutil.which(npm_executable)
+    if npm_launcher is None:
+        raise StaticUIReleaseError(
+            f"npm executable was not found in the parent environment: {npm_executable}"
+        )
+    npm_launcher = os.path.abspath(npm_launcher)
     environment = {
         name: value
         for name, value in os.environ.items()
@@ -81,7 +88,7 @@ def build_static_ui(
     environment.update(_effective_build_contract(source_before))
     try:
         subprocess.run(
-            [npm_executable, "run", "build"],
+            [npm_launcher, "run", "build"],
             cwd=frontend,
             env=environment,
             check=True,

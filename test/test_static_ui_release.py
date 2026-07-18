@@ -158,7 +158,25 @@ def test_build_scrubs_inherited_environment_before_fake_export(
     monkeypatch.setenv("NEXT_PUBLIC_RELEASE_SENTINEL", sentinel)
     monkeypatch.setenv("NODE_OPTIONS", f"--require={sentinel}")
     monkeypatch.setenv("OPENAI_API_KEY", sentinel)
+    monkeypatch.setenv("HOME", sentinel)
+    monkeypatch.setenv("USERPROFILE", sentinel)
+    monkeypatch.setenv("APPDATA", sentinel)
+    monkeypatch.setenv("LOCALAPPDATA", sentinel)
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setenv("TEMP", r"C:\Temp")
+    fake_npm = tmp_path / "node" / "npm.cmd"
+    fake_npm.parent.mkdir()
+    resolved_with_parent_environment = False
     captured: dict[str, str] = {}
+
+    def fake_which(executable: str) -> str:
+        nonlocal resolved_with_parent_environment
+        assert executable == "npm"
+        assert os.environ["USERPROFILE"] == sentinel
+        resolved_with_parent_environment = True
+        return str(fake_npm)
 
     def fake_build(
         command: list[str],
@@ -167,7 +185,7 @@ def test_build_scrubs_inherited_environment_before_fake_export(
         env: dict[str, str],
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        assert command == ["npm", "run", "build"]
+        assert command == [str(fake_npm.absolute()), "run", "build"]
         assert cwd == frontend
         assert check is True
         captured.update(env)
@@ -179,13 +197,23 @@ def test_build_scrubs_inherited_environment_before_fake_export(
         (frontend / "out" / "_next" / "app.js").write_text(leaked)
         return subprocess.CompletedProcess(command, 0)
 
+    monkeypatch.setattr(shutil, "which", fake_which)
     monkeypatch.setattr(subprocess, "run", fake_build)
     release = build_static_ui(frontend, project_root=tmp_path)
 
+    assert resolved_with_parent_environment
     inherited_names = {name.upper() for name in captured}
     assert "NEXT_PUBLIC_RELEASE_SENTINEL" not in inherited_names
     assert "NODE_OPTIONS" not in inherited_names
     assert "OPENAI_API_KEY" not in inherited_names
+    assert "HOME" not in inherited_names
+    assert "USERPROFILE" not in inherited_names
+    assert "APPDATA" not in inherited_names
+    assert "LOCALAPPDATA" not in inherited_names
+    assert captured["COMSPEC"] == r"C:\Windows\System32\cmd.exe"
+    assert captured["PATHEXT"] == ".COM;.EXE;.BAT;.CMD"
+    assert captured["SYSTEMROOT"] == r"C:\Windows"
+    assert captured["TEMP"] == r"C:\Temp"
     assert all(captured[name] == value for name, value in BUILD_CONTRACT.items())
     expected_contract = {
         **BUILD_CONTRACT,
@@ -200,6 +228,56 @@ def test_build_scrubs_inherited_environment_before_fake_export(
         for path in release.export.rglob("*")
         if path.is_file()
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="exercises the Windows .cmd launcher")
+def test_windows_cmd_launcher_runs_with_minimal_scrubbed_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frontend = _frontend(tmp_path)
+    sentinel = "windows-parent-secret-must-not-leak"
+    for name in (
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "NEXT_PUBLIC_RELEASE_SENTINEL",
+    ):
+        monkeypatch.setenv(name, sentinel)
+
+    fake_build = tmp_path / "fake_npm_build.py"
+    fake_build.write_text(
+        "from pathlib import Path\n"
+        "import os\n"
+        "import sys\n"
+        "assert sys.argv[1:] == ['run', 'build']\n"
+        "for name in ('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', "
+        "'NEXT_PUBLIC_RELEASE_SENTINEL'):\n"
+        "    assert name not in os.environ\n"
+        "for name in ('COMSPEC', 'PATH', 'PATHEXT', 'SYSTEMROOT', 'TEMP'):\n"
+        "    assert os.environ.get(name)\n"
+        "Path('out/_next').mkdir(parents=True)\n"
+        "Path('out/index.html').write_text('<title>CareerPilot</title>clean\\n')\n"
+        "Path('out/_next/app.js').write_text('clean\\n')\n"
+    )
+    fake_npm = tmp_path / "npm.cmd"
+    fake_npm.write_text(
+        "@echo off\r\n"
+        + subprocess.list2cmdline([sys.executable, str(fake_build)])
+        + " %*\r\n"
+    )
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setenv("TEMP", str(tmp_path))
+
+    release = build_static_ui(
+        frontend,
+        project_root=tmp_path,
+    )
+
+    assert sentinel not in release.manifest.read_text()
+    assert "clean" in (release.export / "_next" / "app.js").read_text()
 
 
 @pytest.mark.parametrize("operation", ["build", "write", "verify"])
