@@ -100,7 +100,7 @@ def test_provider_sync_is_explicit_and_keeps_secrets_out_of_yaml(tmp_path) -> No
     assert config["platform_toolsets"]["api_server"] == list(
         PILOT_API_SERVER_TOOLSETS
     )
-    assert config["terminal"]["cwd"] == str(paths.workspace)
+    assert "terminal" not in config
     assert config["approvals"] == {"mode": "manual", "cron_mode": "deny"}
     assert environment == {"OPENAI_API_KEY": "sk-test-career-companion-key"}
     assert "sk-test" not in (profile / "config.yaml").read_text()
@@ -214,7 +214,6 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         assert first.model == "gpt-5.4"
         assert supervisors[0].started_with == {
             "OPENAI_API_KEY": "sk-test-career-companion-key",
-            "BRAVE_SEARCH_API_KEY": "brave-test-search-key",
         }
         assert supervisors[0].api_base_url.endswith("/api/internal/hermes/v1")
         assert await manager.prepare(_account(), store) is first  # type: ignore[arg-type]
@@ -247,9 +246,7 @@ def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
         )
         assert identity_changed.supervisor.stop_count == 1
         assert second.provider == "codex"
-        assert supervisors[2].started_with == {
-            "BRAVE_SEARCH_API_KEY": "brave-test-search-key"
-        }
+        assert supervisors[2].started_with == {}
 
         refreshed = {
             "version": 1,
@@ -535,14 +532,13 @@ def test_streamed_companion_chat_proxies_structured_hermes_events(
     )
     assert "latest_user_message" in captured["payload"]["input"]
     assert "untrusted reference data" in captured["payload"]["instructions"]
-    assert "use the enabled career, web, file, terminal, or code tools" in captured[
-        "payload"
-    ]["instructions"]
+    assert "no general web" in captured["payload"]["instructions"]
+    assert "localhost-HTTP" in captured["payload"]["instructions"]
     assert "public network" in captured["payload"]["instructions"]
     assert "latest_user_message" in captured["payload"]["instructions"]
     assert "local" in captured["payload"]["instructions"]
     assert "career_application_decide" in captured["payload"]["instructions"]
-    assert "affirmative, unconditional" in captured["payload"]["instructions"]
+    assert "whole-message directive" in captured["payload"]["instructions"]
     assert len(captured["payload"]["session_id"]) == 36
     assert not captured["session_key"].endswith(captured["payload"]["session_id"])
     assert "Do not generate artifacts" in captured["payload"]["instructions"]

@@ -10,17 +10,20 @@ description: Discover and normalize public jobs through approved sources without
 - Make each public feed read visible as a public network tool action. Discovery
   returns candidates without storing them; add only the roles the user selects.
 - Require the latest user message to explicitly identify every role selected for
-  tracking. Deduplication, deterministic ranking, and application tracking are
-  local writes; report the saved job, tier/score reasons, application status, and
-  next safe action without advancing the application.
+  tracking. Accept only a whole-message directive: optional `please`, exactly one
+  `track`, exactly one saved company-and-title or exact canonical URL, and optional
+  terminal punctuation. Copy the whole message exactly into the tool call.
+  Deduplication, deterministic ranking, and application tracking are local writes;
+  report the saved job, tier/score reasons, application status, and next safe action
+  without advancing the application.
 - Selection is not approval. For a scored application, use
   `career_application_decide` only when the latest user message contains one
-  affirmative, unconditional approve-or-archive instruction naming the exact
-  saved application, with no hedge, revocation, or second decision. Copy the
-  exact decision phrase into the tool call; the server binds it to the current
-  persisted user message. If company and title are duplicated, include
-  the exact application ID or case-sensitive canonical URL. Report its local-write
-  audit summary and next safe action.
+  whole-message directive: optional `please`, exactly one `approve` or `archive`,
+  exactly one saved company-and-title, exact application ID, or exact canonical URL,
+  and optional terminal punctuation. Copy the whole message exactly; the server
+  derives the action and identity from the persisted message. If normalized company
+  and title are duplicated, use the exact application ID or case-sensitive canonical
+  URL. Report its local-write audit summary and next safe action.
 - Never infer a decision from history, negated, conditional, hedged, or revoked
   language, a question, or Pilot's own suggestion. Do not use
   `career_application_status` to bypass the

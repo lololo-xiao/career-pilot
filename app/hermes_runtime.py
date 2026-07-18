@@ -79,14 +79,6 @@ _ACCOUNT_TO_HERMES_PROVIDER: dict[ProviderMethod, str] = {
 # existing account-scoped profiles receive capability and safety-policy migrations.
 PILOT_API_SERVER_TOOLSETS = (
     "career-web",
-    "web",
-    "terminal",
-    "file",
-    "code_execution",
-    "todo",
-    "session_search",
-    "skills",
-    "clarify",
 )
 PILOT_DISABLED_TOOLSETS = (
     "delegation",
@@ -94,6 +86,12 @@ PILOT_DISABLED_TOOLSETS = (
     "browser",
     "memory",
     "cronjob",
+    "web",
+    "terminal",
+    "file",
+    "code_execution",
+    "skills",
+    "session_search",
 )
 
 
@@ -322,12 +320,9 @@ def synchronize_hermes_provider(
         raw_config["platform_toolsets"] = platform_toolsets
     platform_toolsets["api_server"] = list(PILOT_API_SERVER_TOOLSETS)
 
-    terminal_config = raw_config.get("terminal")
-    if not isinstance(terminal_config, dict):
-        terminal_config = {}
-        raw_config["terminal"] = terminal_config
-    paths.workspace.mkdir(parents=True, exist_ok=True)
-    terminal_config["cwd"] = str(paths.workspace)
+    # Remove stale terminal configuration from previously installed profiles. Pilot's
+    # Hermes process holds the bridge credential and must not expose arbitrary local I/O.
+    raw_config.pop("terminal", None)
 
     approvals_config = raw_config.get("approvals")
     if not isinstance(approvals_config, dict):
@@ -526,20 +521,6 @@ class HermesRuntimeManager:
                 reasoning_effort=reasoning_effort,
                 token_limit=token_limit,
             )
-            provider_environment = dict(provider_environment)
-            web_search_credential = store.load_service_credential(
-                account.user_id,
-                "brave_search",
-            )
-            if web_search_credential is not None:
-                try:
-                    provider_environment["BRAVE_SEARCH_API_KEY"] = (
-                        web_search_credential.decode("utf-8")
-                    )
-                except UnicodeDecodeError as exc:
-                    raise HermesProviderConfigurationError(
-                        "The stored web search credential is invalid"
-                    ) from exc
             supervisor = self._supervisor_factory(
                 paths,
                 config,

@@ -13,13 +13,55 @@ TOOLSET = "career-web"
 _RUN_MESSAGE = ContextVar("career_companion_run_message", default="")
 
 _BLOCKED_HERMES_TOOLS = {
+    "apply_patch",
+    "bash",
+    "browser",
+    "career_application_submit",
+    "career_approval_decide",
+    "career_approval_request",
+    "career_artifact_approve",
+    "career_artifact_generate",
+    "career_browser_fill",
+    "career_message_send",
+    "code_execution",
     "cronjob",
+    "curl",
     "delegate_task",
+    "edit_file",
+    "execute_code",
+    "fetch_url",
+    "file",
+    "http_request",
+    "list_directory",
     "memory",
+    "patch_file",
+    "python",
+    "python_repl",
+    "requests",
+    "read_file",
     "read_terminal",
     "send_message",
+    "shell",
     "skill_manage",
+    "terminal",
+    "urlopen",
+    "web",
+    "web_fetch",
+    "web_search",
+    "wget",
+    "write_file",
 }
+_BLOCKED_HERMES_TOOL_PREFIXES = (
+    "browser_",
+    "code_",
+    "execute_",
+    "file_",
+    "http_",
+    "localhost_",
+    "shell_",
+    "terminal_",
+    "web_",
+)
 
 
 @dataclass(frozen=True)
@@ -177,10 +219,6 @@ def _policy(_: dict[str, Any]) -> Any:
     return _client().request("GET", "/policy")
 
 
-def _browser_fill(args: dict[str, Any]) -> Any:
-    return _client().request("POST", "/browser/fill", json_body=args)
-
-
 _STATUS_ENUM = [
     "followed_up",
     "interview",
@@ -321,7 +359,7 @@ TOOLS = (
             "After the latest user message explicitly selects a saved job, run its "
             "deterministic local priority score and idempotently track one application. "
             "This performs local writes only: no network read, messaging, tailoring, "
-            "form filling, or submission. Copy the selection phrase exactly; the "
+            "form filling, or submission. Copy the whole latest directive exactly; the "
             "server binds the tool to the current persisted user message."
         ),
         {
@@ -331,7 +369,7 @@ TOOLS = (
                 "selection_reference": {
                     "type": "string",
                     "description": (
-                        "Exact user-written phrase identifying the selected job."
+                        "The exact whole latest user message containing the directive."
                     ),
                 },
             },
@@ -367,8 +405,8 @@ TOOLS = (
         "career_application_decide",
         (
             "Record one explicit approve-or-archive decision for a scored tracked "
-            "application. This is an idempotent local write only. Copy its affirmative, "
-            "unconditional decision phrase exactly; the server binds the tool to the "
+            "application. This is an idempotent local write only. Copy the whole narrow "
+            "decision directive exactly; the server binds the tool to the "
             "current persisted user message. The phrase must identify the saved "
             "application. This does not "
             "generate artifacts, fill forms, send messages, or submit applications."
@@ -381,8 +419,7 @@ TOOLS = (
                 "decision_reference": {
                     "type": "string",
                     "description": (
-                        "Exact user-written phrase stating the decision and identifying "
-                        "the saved company and role."
+                        "The exact whole latest user message containing the decision."
                     ),
                 },
             },
@@ -439,26 +476,6 @@ TOOLS = (
         {"type": "object", "properties": {}, "additionalProperties": False},
         _policy,
     ),
-    ToolDefinition(
-        "career_browser_fill",
-        (
-            "Fill an approved non-LinkedIn form and stop before submission. "
-            "Requires an exact, unconsumed approval record."
-        ),
-        {
-            "type": "object",
-            "properties": {
-                "application_id": {"type": "string"},
-                "url": {"type": "string"},
-                "fields": {"type": "object", "additionalProperties": {"type": "string"}},
-                "files": {"type": "object", "additionalProperties": {"type": "string"}},
-                "headless": {"type": "boolean"},
-            },
-            "required": ["application_id", "url"],
-            "additionalProperties": False,
-        },
-        _browser_fill,
-    ),
 )
 
 
@@ -482,7 +499,13 @@ def _json_handler(function: Callable[[dict[str, Any]], Any]) -> Callable[..., st
 
 def _guard_tool_call(tool_name: str, args: dict[str, Any], **kwargs: Any) -> dict[str, str] | None:
     del kwargs
-    if tool_name in _BLOCKED_HERMES_TOOLS:
+    normalized_tool_name = "".join(
+        character if character.isalnum() else "_"
+        for character in tool_name.casefold()
+    ).strip("_")
+    if normalized_tool_name in _BLOCKED_HERMES_TOOLS or normalized_tool_name.startswith(
+        _BLOCKED_HERMES_TOOL_PREFIXES
+    ):
         return {
             "action": "block",
             "message": f"{tool_name} is outside Pilot's local task boundary",

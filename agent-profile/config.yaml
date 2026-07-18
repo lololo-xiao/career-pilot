@@ -9,6 +9,12 @@ agent:
     - browser
     - memory
     - cronjob
+    - web
+    - terminal
+    - file
+    - code_execution
+    - skills
+    - session_search
 plugins:
   enabled:
     - career-companion
@@ -16,14 +22,6 @@ plugins:
 platform_toolsets:
   api_server:
     - career-web
-    - web
-    - terminal
-    - file
-    - code_execution
-    - todo
-    - session_search
-    - skills
-    - clarify
 approvals:
   mode: manual
   cron_mode: deny

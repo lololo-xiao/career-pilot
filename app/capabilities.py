@@ -76,34 +76,34 @@ def build_capability_settings(
             id="local-workspace",
             name="Local workspace tools",
             description=(
-                "Work with files and run code inside CareerPilot's device-local workspace."
+                "Direct file, terminal, and code tools are unavailable to Pilot."
             ),
-            state="enabled",
-            state_label="Ready",
-            tools=["read_file", "write_file", "patch", "terminal", "execute_code"],
-            note="Access stays inside the local CareerPilot workspace.",
+            state="disabled",
+            state_label="Off",
+            tools=[],
+            note="Local changes require a dedicated guarded career workflow.",
         ),
         CapabilityGroupResponse(
             id="web-search",
             name="Web search",
-            description="Find current public pages and job links on the web.",
-            state="enabled" if web_search_configured else "setup_required",
-            state_label="Ready" if web_search_configured else "Needs setup",
-            tools=["web_search"],
+            description="General-purpose web access is unavailable to Pilot.",
+            state="disabled",
+            state_label="Off",
+            tools=[],
             note=(
-                "Brave Search is connected. LinkedIn search is separately opt-in."
+                "A saved Brave key is inactive; public job discovery uses the guarded career tool."
                 if web_search_configured
-                else "Connect a Brave Search key below. LinkedIn search is separately opt-in."
+                else "Public job discovery uses the guarded Greenhouse or Lever career tool."
             ),
         ),
         CapabilityGroupResponse(
             id="browser-assistance",
             name="Application browser assistance",
-            description="Fill approved application fields for review without submitting them.",
-            state="limited",
-            state_label="Approval required",
-            tools=["career_browser_fill"],
-            note="General browser automation and final submission are off.",
+            description="Application form filling is not available to Pilot.",
+            state="disabled",
+            state_label="Off",
+            tools=[],
+            note="A dedicated preview, approval, and fill workflow must be added first.",
         ),
         CapabilityGroupResponse(
             id="autonomous-actions",

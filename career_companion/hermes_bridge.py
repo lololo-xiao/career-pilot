@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import secrets
+import unicodedata
 from collections.abc import Generator
 from typing import Annotated, Any, Literal
 
@@ -40,7 +41,6 @@ from career_companion.services.applications import (
     ensure_application,
     transition_application,
 )
-from career_companion.services.browser import BrowserAssistant
 from career_companion.services.conversation_sessions import (
     agent_profile_json,
     ensure_agent_profile,
@@ -58,47 +58,12 @@ router = APIRouter(
 
 _ACCOUNT_KEY_PATTERN = re.compile(r"[a-f0-9]{64}")
 _TRACKED_SELECTION_NOTE = "Deterministic priority recorded after explicit user selection"
-_APPROVE_PATTERN = re.compile(r"\bapprov(?:e|ed|ing)\b", re.IGNORECASE)
-_ARCHIVE_PATTERN = re.compile(
-    r"\b(?:archiv(?:e|ed|ing)|withdraw(?:n|ing)?)\b",
+_DIRECTIVE_PATTERN = re.compile(
+    r"\A(?:(?:please)(?:,\s+|\s+))?"
+    r"(?P<action>track|approve|archive)\s+"
+    r"(?P<identity>\S(?:.*\S)?)\Z",
     re.IGNORECASE,
 )
-_UNCERTAIN_DECISION_PATTERN = re.compile(
-    r"\b(?:maybe|perhaps|possibly|unsure|uncertain|consider|might|may|could)\b",
-    re.IGNORECASE,
-)
-_CONDITIONAL_DECISION_PATTERN = re.compile(
-    r"\b(?:if|unless|until|after|before|once|when|pending|provided|assuming)\b"
-    r"|\bsubject\s+to\b|\bonly\s+(?:if|after|when|once)\b",
-    re.IGNORECASE,
-)
-_REVOKED_DECISION_PATTERN = re.compile(
-    r"\bactually\s*,?\s*no\b|\bnever\s+mind\b|\bcancel(?:\s+that)?\b|"
-    r"\brevoke(?:\s+that)?\b|\bscratch\s+that\b|\binstead\b|"
-    r"\bbut\b[^.]{0,120}\b(?:no|not|cancel|revoke)\b",
-    re.IGNORECASE,
-)
-_NEGATED_DECISION_PATTERN = re.compile(
-    r"\b(?:do\s+not|don['’]?t|cannot|can['’]?t|will\s+not|won['’]?t|"
-    r"never|not|no|without|refuse|decline|reject|avoid|against)\b"
-    r"(?:\W+\w+){0,4}\W+"
-    r"(?:approv(?:e|ed|ing)|archiv(?:e|ed|ing)|withdraw(?:n|ing)?)\b",
-    re.IGNORECASE,
-)
-_DECISION_REFERENCE_FILLER = {
-    "application",
-    "at",
-    "for",
-    "job",
-    "my",
-    "opportunity",
-    "please",
-    "role",
-    "saved",
-    "the",
-    "this",
-    "tracked",
-}
 _PILOT_GATED_APPLICATION_STATUSES = {
     ApplicationStatus.SCORED,
     ApplicationStatus.APPROVED,
@@ -112,14 +77,6 @@ _PILOT_GATED_APPLICATION_STATUSES = {
 class ApplicationTransition(BaseModel):
     status: ApplicationStatus
     note: str = ""
-
-
-class FormFillPayload(BaseModel):
-    application_id: str
-    url: str
-    fields: dict[str, str] = Field(default_factory=dict)
-    files: dict[str, str] = Field(default_factory=dict)
-    headless: bool = False
 
 
 class BoundToolPayload(BaseModel):
@@ -346,12 +303,12 @@ def track_selected_job(
     if job is None:
         raise HTTPException(404, "Job not found")
     current_request = run_message.content
-    selection_reference = payload.selection_reference.strip()
-    if not selection_reference or selection_reference not in current_request:
-        raise HTTPException(
-            409,
-            "Selection reference must be copied from the latest user message",
-        )
+    _validate_explicit_tracking_directive(
+        session,
+        job,
+        current_request,
+        payload.selection_reference,
+    )
 
     ranked_job = score_job(session, job.id)
     application, application_created = ensure_application(session, ranked_job.id)
@@ -372,7 +329,7 @@ def track_selected_job(
         "selection": {
             "source_session": run_message.session_id,
             "run_message_id": run_message.id,
-            "reference": selection_reference,
+            "reference": current_request,
         },
         "queued_job": {
             "id": ranked_job.id,
@@ -411,12 +368,7 @@ def decide_tracked_application(
     if job is None:
         raise HTTPException(409, "The application is not linked to a saved job")
     current_request = run_message.content
-    decision_reference = payload.decision_reference.strip()
-    if not decision_reference or decision_reference not in current_request:
-        raise HTTPException(
-            409,
-            "Decision reference must be copied from the latest user message",
-        )
+    decision_reference = payload.decision_reference
     tracked_event = session.scalar(
         select(StatusEventRecord).where(
             StatusEventRecord.application_id == application.id,
@@ -598,23 +550,6 @@ def policy_status(session: SessionDep, paths: PathsDep) -> dict[str, Any]:
     }
 
 
-@router.post("/browser/fill")
-async def fill_form(
-    payload: FormFillPayload,
-    session: SessionDep,
-    paths: PathsDep,
-) -> dict[str, Any]:
-    browser = BrowserAssistant(paths)
-    try:
-        return await browser.fill(session, payload.model_dump())
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except (ValueError, FileNotFoundError, RuntimeError) as exc:
-        raise HTTPException(409, str(exc)) from exc
-    finally:
-        await browser.close()
-
-
 def _tracking_next_safe_action(application_status: str) -> str:
     if application_status == ApplicationStatus.SCORED.value:
         return "Ask the user whether to approve or archive this opportunity"
@@ -632,54 +567,20 @@ def _validate_explicit_application_decision(
     current_request: str,
     decision_reference: str,
 ) -> None:
-    approve_matches = list(_APPROVE_PATTERN.finditer(current_request))
-    archive_matches = list(_ARCHIVE_PATTERN.finditer(current_request))
-    expected_pattern = _APPROVE_PATTERN if decision == "approve" else _ARCHIVE_PATTERN
-    other_pattern = _ARCHIVE_PATTERN if decision == "approve" else _APPROVE_PATTERN
-    if (
-        len(list(expected_pattern.finditer(decision_reference))) != 1
-        or other_pattern.search(decision_reference) is not None
-    ):
+    if decision_reference != current_request:
         raise HTTPException(
             409,
-            "Decision reference must explicitly state the requested decision",
+            "Decision reference must exactly equal the latest user message",
         )
-    if (len(approve_matches), len(archive_matches)) != (
-        (1, 0) if decision == "approve" else (0, 1)
+    action, identities = _parse_bound_directive(current_request)
+    if action != decision:
+        raise HTTPException(409, "Decision action does not match the user directive")
+    references_named_job = _matches_named_job_identity(identities, job)
+    references_url = bool(job.canonical_url and job.canonical_url in identities)
+    references_application = application.id in identities
+    if _has_duplicate_job_identity(session, job) and not (
+        references_url or references_application
     ):
-        raise HTTPException(
-            409,
-            "The latest user message must contain exactly one decision clause",
-        )
-    if (
-        "?" in current_request
-        or _UNCERTAIN_DECISION_PATTERN.search(current_request) is not None
-        or _CONDITIONAL_DECISION_PATTERN.search(current_request) is not None
-        or _REVOKED_DECISION_PATTERN.search(current_request) is not None
-        or _NEGATED_DECISION_PATTERN.search(current_request) is not None
-    ):
-        raise HTTPException(
-            409,
-            "The latest user message must contain an affirmative, unconditional decision",
-        )
-
-    reference_identity = _decision_reference_identity(decision_reference)
-    references_named_job = reference_identity in {
-        _decision_reference_identity(f"{job.company} {job.title}"),
-        _decision_reference_identity(f"{job.title} {job.company}"),
-    }
-    references_url = bool(
-        job.canonical_url and job.canonical_url in decision_reference
-    )
-    references_application = application.id in decision_reference
-    duplicate_job = session.scalar(
-        select(JobRecord.id).where(
-            JobRecord.company == job.company,
-            JobRecord.title == job.title,
-            JobRecord.id != job.id,
-        )
-    )
-    if duplicate_job is not None and not (references_url or references_application):
         raise HTTPException(
             409,
             "Company and title are ambiguous; copy the exact application ID or URL",
@@ -700,11 +601,75 @@ def _decision_next_safe_action(application_status: str) -> str:
     return "No further action; the opportunity is archived locally"
 
 
-def _decision_reference_identity(value: str) -> tuple[str, ...]:
-    without_actions = _APPROVE_PATTERN.sub(" ", value)
-    without_actions = _ARCHIVE_PATTERN.sub(" ", without_actions)
-    return tuple(
-        token
-        for token in re.findall(r"\w+", without_actions.casefold())
-        if token not in _DECISION_REFERENCE_FILLER
+def _validate_explicit_tracking_directive(
+    session: Session,
+    job: JobRecord,
+    current_request: str,
+    selection_reference: str,
+) -> None:
+    if selection_reference != current_request:
+        raise HTTPException(
+            409,
+            "Selection reference must exactly equal the latest user message",
+        )
+    action, identities = _parse_bound_directive(current_request)
+    if action != "track":
+        raise HTTPException(409, "The latest user message is not a tracking directive")
+    references_named_job = _matches_named_job_identity(identities, job)
+    references_url = bool(job.canonical_url and job.canonical_url in identities)
+    if _has_duplicate_job_identity(session, job) and not references_url:
+        raise HTTPException(
+            409,
+            "Company and title are ambiguous; copy the exact canonical URL",
+        )
+    if not (references_named_job or references_url):
+        raise HTTPException(
+            409,
+            "Tracking directive does not identify this saved job exactly",
+        )
+
+
+def _parse_bound_directive(message: str) -> tuple[str, tuple[str, ...]]:
+    match = _DIRECTIVE_PATTERN.fullmatch(message)
+    if match is None:
+        raise HTTPException(
+            409,
+            "The latest user message is not one narrow whole-message directive",
+        )
+    identity = match.group("identity")
+    identities = [identity]
+    if identity.endswith((".", "!")):
+        without_punctuation = identity[:-1].rstrip()
+        if without_punctuation:
+            identities.append(without_punctuation)
+    return match.group("action").casefold(), tuple(identities)
+
+
+def _matches_named_job_identity(
+    identities: tuple[str, ...],
+    job: JobRecord,
+) -> bool:
+    named_identities = {
+        _normalize_job_identity(f"{job.company} {job.title}"),
+        _normalize_job_identity(f"{job.title} {job.company}"),
+    }
+    return any(
+        _normalize_job_identity(identity) in named_identities for identity in identities
     )
+
+
+def _has_duplicate_job_identity(session: Session, job: JobRecord) -> bool:
+    company = _normalize_job_identity(job.company)
+    title = _normalize_job_identity(job.title)
+    return any(
+        _normalize_job_identity(other.company) == company
+        and _normalize_job_identity(other.title) == title
+        for other in session.scalars(
+            select(JobRecord).where(JobRecord.id != job.id)
+        ).all()
+    )
+
+
+def _normalize_job_identity(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return " ".join(normalized.split()).casefold()

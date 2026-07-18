@@ -130,7 +130,7 @@ def _tracked_application(
     tracked = client.post(
         f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
         headers=headers | {"X-Career-Run-Message": run_message_id},
-        json={"selection_reference": "Bridge GmbH ML Engineer"},
+        json={"selection_reference": user_request},
     )
     assert tracked.status_code == 200
     return job_id, tracked.json()["application"]["id"], session_id
@@ -166,14 +166,21 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
         "career_application_status",
         "career_revision_propose",
         "career_policy_status",
-        "career_browser_fill",
     }
     assert {entry["toolset"] for entry in context.tools.values()} == {"career-web"}
     assert set(context.hooks) == {"pre_tool_call"}
     guard = context.hooks["pre_tool_call"]
-    assert guard("terminal", {}) is None
-    assert guard("write_file", {}) is None
-    assert guard("execute_code", {}) is None
+    assert guard("terminal", {})["action"] == "block"
+    assert guard("write_file", {})["action"] == "block"
+    assert guard("execute_code", {})["action"] == "block"
+    assert guard("web_search", {})["action"] == "block"
+    assert guard("browser.open", {})["action"] == "block"
+    assert guard("http_request", {})["action"] == "block"
+    assert guard("curl", {})["action"] == "block"
+    assert guard("urlopen", {})["action"] == "block"
+    assert guard("career_browser_fill", {})["action"] == "block"
+    assert guard("career_artifact_generate", {})["action"] == "block"
+    assert guard("career_application_submit", {})["action"] == "block"
     assert guard("memory", {})["action"] == "block"
     assert guard("send_message", {})["action"] == "block"
     assert guard("career_job_queue", {}) is None
@@ -253,6 +260,46 @@ def test_profile_plugin_registers_only_the_restricted_career_surface() -> None:
     ]
     assert revision_parameters["required"] == ["kind", "name", "content", "diff"]
     assert "source_session" not in revision_parameters["properties"]
+
+
+def test_forbidden_platform_tools_cannot_make_originless_mutations(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    plugin = _load_profile_plugin()
+    context = FakePluginContext()
+    plugin.register(context)
+    guard = context.hooks["pre_tool_call"]
+    attempted_handlers: list[str] = []
+
+    def public_mutation() -> None:
+        attempted_handlers.append("public")
+        client.post("/api/v1/jobs", json=_job_payload())
+
+    def internal_mutation() -> None:
+        attempted_handlers.append("internal")
+        client.post(
+            "/api/internal/hermes/v1/jobs",
+            headers=headers,
+            json=_job_payload(),
+        )
+
+    def dispatch(tool_name: str, handler) -> dict[str, str] | None:
+        decision = guard(tool_name, {})
+        if decision is None or decision.get("action") != "block":
+            handler()
+        return decision
+
+    assert dispatch("terminal", public_mutation)["action"] == "block"
+    assert dispatch("http.request", internal_mutation)["action"] == "block"
+    assert attempted_handlers == []
+    assert client.get("/api/v1/jobs").json() == []
+    assert client.get("/api/internal/hermes/v1/jobs", headers=headers).json() == []
+    assert client.post(
+        "/api/internal/hermes/v1/browser/fill",
+        headers=headers,
+        json={"application_id": "x", "url": "https://example.test"},
+    ).status_code == 404
 
 
 def test_profile_plugin_dispatches_explicit_public_discovery(monkeypatch) -> None:
@@ -354,7 +401,7 @@ def test_profile_plugin_dispatches_selected_job_tracking(monkeypatch) -> None:
     plugin.register(context)
     args = {
         "job_id": "job/1",
-        "selection_reference": "ML Engineer",
+        "selection_reference": "Track Bridge GmbH ML Engineer.",
     }
     run_message_id = "00000000-0000-0000-0000-000000000001"
     result = json.loads(
@@ -396,7 +443,7 @@ def test_profile_plugin_dispatches_explicit_application_decision(monkeypatch) ->
     args = {
         "application_id": "application/1",
         "decision": "approve",
-        "decision_reference": "Approve Bridge GmbH ML Engineer",
+        "decision_reference": "Approve Bridge GmbH ML Engineer.",
     }
     result = json.loads(
         context.tools["career_application_decide"]["handler"](args)
@@ -552,14 +599,6 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
     assert config["plugins"]["enabled"] == ["career-companion"]
     assert config["platform_toolsets"]["api_server"] == [
         "career-web",
-        "web",
-        "terminal",
-        "file",
-        "code_execution",
-        "todo",
-        "session_search",
-        "skills",
-        "clarify",
     ]
     assert config["agent"]["disabled_toolsets"] == [
         "delegation",
@@ -567,10 +606,29 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
         "browser",
         "memory",
         "cronjob",
+        "web",
+        "terminal",
+        "file",
+        "code_execution",
+        "skills",
+        "session_search",
     ]
-    assert {"memory", "cronjob"}.isdisjoint(
+    assert {
+        "memory",
+        "cronjob",
+        "web",
+        "terminal",
+        "file",
+        "code_execution",
+        "skills",
+        "session_search",
+    }.isdisjoint(
         config["platform_toolsets"]["api_server"]
     )
+    for server in config["mcp_servers"].values():
+        assert server["tools"]["include"]
+        assert server["tools"]["prompts"] is False
+        assert server["tools"]["resources"] is False
     assert manifest["kind"] == "standalone"
     assert set(manifest["provides_tools"]) == {
         tool.name for tool in _load_profile_plugin().TOOLS
@@ -714,7 +772,7 @@ def test_internal_bridge_ranks_and_tracks_selected_job_idempotently(
         "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
     ).json()["id"]
     paths = CompanionPaths.discover().scoped_to("account-a")
-    user_request = "Save and track the ML Engineer role."
+    user_request = "Track Bridge GmbH ML Engineer."
     with account_session(paths) as session:
         conversation = create_conversation_session(session, paths)
         run_message = append_message(
@@ -723,7 +781,7 @@ def test_internal_bridge_ranks_and_tracks_selected_job_idempotently(
         session_id = conversation.id
         run_message_id = run_message.id
 
-    payload = {"selection_reference": "ML Engineer"}
+    payload = {"selection_reference": user_request}
     run_headers = headers | {"X-Career-Run-Message": run_message_id}
     first = client.post(
         f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
@@ -745,7 +803,7 @@ def test_internal_bridge_ranks_and_tracks_selected_job_idempotently(
     assert first.json()["selection"] == {
         "source_session": session_id,
         "run_message_id": run_message_id,
-        "reference": "ML Engineer",
+        "reference": user_request,
     }
     assert first.json()["queued_job"] == {
         "id": job_id,
@@ -803,18 +861,18 @@ def test_internal_bridge_rejects_stale_or_invented_job_selection(
     stale = client.post(
         f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
         headers=headers | {"X-Career-Run-Message": selected_message.id},
-        json={"selection_reference": "ML Engineer"},
+        json={"selection_reference": selected_request},
     )
     invented = client.post(
         f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
         headers=headers | {"X-Career-Run-Message": latest_message.id},
-        json={"selection_reference": "ML Engineer"},
+        json={"selection_reference": selected_request},
     )
 
     assert stale.status_code == 409
     assert "no longer the latest" in stale.json()["detail"]
     assert invented.status_code == 409
-    assert "copied from" in invented.json()["detail"]
+    assert "exactly equal" in invented.json()["detail"]
     assert client.get(
         "/api/internal/hermes/v1/applications", headers=headers
     ).json() == []
@@ -852,11 +910,11 @@ def test_current_run_cannot_track_from_another_same_account_session(
     replay = client.post(
         f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
         headers=headers | {"X-Career-Run-Message": current_message.id},
-        json={"selection_reference": "Bridge GmbH ML Engineer"},
+        json={"selection_reference": "Track Bridge GmbH ML Engineer."},
     )
 
     assert replay.status_code == 409
-    assert "copied from" in replay.json()["detail"]
+    assert "exactly equal" in replay.json()["detail"]
     assert client.get(
         "/api/internal/hermes/v1/applications", headers=headers
     ).json() == []
@@ -866,16 +924,117 @@ def test_current_run_cannot_track_from_another_same_account_session(
 
 
 @pytest.mark.parametrize(
+    "directive",
+    [
+        "Do not track Bridge GmbH ML Engineer.",
+        "I would track Bridge GmbH ML Engineer.",
+        "The recruiter tracked Bridge GmbH ML Engineer.",
+        "Track Bridge GmbH ML Engineer and Other Labs Data Engineer.",
+        "Track Bridge GmbH ML Engineer. Wait, no.",
+    ],
+)
+def test_tracking_requires_one_narrow_whole_message_directive(
+    bridge_client,
+    directive: str,
+) -> None:
+    client, headers = bridge_client
+    job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
+    ).json()["id"]
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        run_message = append_message(
+            session,
+            conversation,
+            role="user",
+            content=directive,
+        )
+
+    rejected = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers | {"X-Career-Run-Message": run_message.id},
+        json={"selection_reference": directive},
+    )
+
+    assert rejected.status_code == 409
+    assert client.get(
+        "/api/internal/hermes/v1/applications", headers=headers
+    ).json() == []
+    saved_job = client.get("/api/internal/hermes/v1/jobs", headers=headers).json()[0]
+    assert saved_job["score"] is None
+    assert saved_job["tier"] is None
+
+
+def test_tracking_duplicate_identity_requires_exact_canonical_url(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
+    ).json()["id"]
+    duplicate_payload = _job_payload()
+    duplicate_payload["spec"] = duplicate_payload["spec"] | {
+        "company": "BRIDGE GMBH",
+        "title": "ml engineer",
+    }
+    duplicate_payload["canonical_url"] = "https://jobs.example.test/ml-engineer-copy"
+    assert client.post(
+        "/api/internal/hermes/v1/jobs",
+        headers=headers,
+        json=duplicate_payload,
+    ).status_code == 200
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        named = append_message(
+            session,
+            conversation,
+            role="user",
+            content="Track Bridge GmbH ML Engineer.",
+        )
+        session_id = conversation.id
+        named_id = named.id
+        named_content = named.content
+    ambiguous = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers | {"X-Career-Run-Message": named_id},
+        json={"selection_reference": named_content},
+    )
+    assert ambiguous.status_code == 409
+    assert "ambiguous" in ambiguous.json()["detail"]
+
+    suffix_directive = "Track https://jobs.example.test/ml-engineer-evil."
+    suffix_id = _append_user_message(session_id, suffix_directive)
+    suffix = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers | {"X-Career-Run-Message": suffix_id},
+        json={"selection_reference": suffix_directive},
+    )
+    assert suffix.status_code == 409
+
+    exact_directive = "Please track https://jobs.example.test/ml-engineer."
+    exact_id = _append_user_message(session_id, exact_directive)
+    accepted = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers | {"X-Career-Run-Message": exact_id},
+        json={"selection_reference": exact_directive},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["application"]["status"] == "scored"
+
+
+@pytest.mark.parametrize(
     ("decision", "reference", "expected_status"),
     [
         (
             "approve",
-            "Approve Bridge GmbH ML Engineer",
+            "Approve Bridge GmbH ML Engineer.",
             "approved",
         ),
         (
             "archive",
-            "Archive Bridge GmbH ML Engineer",
+            "Archive Bridge GmbH ML Engineer.",
             "withdrawn",
         ),
     ],
@@ -888,7 +1047,7 @@ def test_internal_bridge_records_scored_decision_idempotently(
 ) -> None:
     client, headers = bridge_client
     job_id, application_id, session_id = _tracked_application(client, headers)
-    user_request = f"{reference}."
+    user_request = reference
     run_message_id = _append_user_message(session_id, user_request)
     payload = {
         "decision": decision,
@@ -992,7 +1151,7 @@ def test_internal_bridge_rejects_stale_invented_negated_and_ambiguous_decisions(
         headers=headers | {"X-Career-Run-Message": stale_message_id},
         json={
             "decision": "approve",
-            "decision_reference": "Approve Bridge GmbH ML Engineer",
+            "decision_reference": decision_request,
         },
     )
     invented = client.post(
@@ -1000,47 +1159,60 @@ def test_internal_bridge_rejects_stale_invented_negated_and_ambiguous_decisions(
         headers=headers | {"X-Career-Run-Message": latest_message_id},
         json={
             "decision": "approve",
-            "decision_reference": "Approve Bridge GmbH ML Engineer",
+            "decision_reference": decision_request,
         },
     )
     assert stale.status_code == 409
     assert invented.status_code == 409
 
-    for user_request, decision, reference in (
+    for user_request, decision in (
         (
             "Do not approve Bridge GmbH ML Engineer.",
             "approve",
-            "Do not approve Bridge GmbH ML Engineer",
         ),
         (
             "Approve or archive Bridge GmbH ML Engineer.",
             "approve",
-            "Approve or archive Bridge GmbH ML Engineer",
         ),
         (
             "Maybe archive Bridge GmbH ML Engineer.",
             "archive",
-            "Maybe archive Bridge GmbH ML Engineer",
         ),
         (
             "Approve Bridge GmbH ML Engineer only after I confirm.",
             "approve",
-            "Approve Bridge GmbH ML Engineer only after I confirm",
         ),
         (
             "I might approve Bridge GmbH ML Engineer.",
             "approve",
-            "I might approve Bridge GmbH ML Engineer",
         ),
         (
             "Approve Bridge GmbH ML Engineer. Actually, no.",
             "approve",
-            "Approve Bridge GmbH ML Engineer. Actually, no",
         ),
         (
             "Approve Bridge GmbH ML Engineer, but approve Other Labs instead.",
             "approve",
-            "Approve Bridge GmbH ML Engineer, but approve Other Labs instead",
+        ),
+        (
+            "Approve Bridge GmbH ML Engineer and Other Labs Data Engineer.",
+            "approve",
+        ),
+        (
+            "I would approve Bridge GmbH ML Engineer.",
+            "approve",
+        ),
+        (
+            "Approve Bridge GmbH ML Engineer. Wait, no.",
+            "approve",
+        ),
+        (
+            "The recruiter approved Bridge GmbH ML Engineer.",
+            "approve",
+        ),
+        (
+            "Approve Bridge GmbH ML Engineer.",
+            "archive",
         ),
     ):
         run_message_id = _append_user_message(session_id, user_request)
@@ -1049,7 +1221,7 @@ def test_internal_bridge_rejects_stale_invented_negated_and_ambiguous_decisions(
             headers=headers | {"X-Career-Run-Message": run_message_id},
             json={
                 "decision": decision,
-                "decision_reference": reference,
+                "decision_reference": user_request,
             },
         )
         assert response.status_code == 409
@@ -1089,12 +1261,12 @@ def test_current_run_cannot_decide_from_another_same_account_session(
         headers=headers | {"X-Career-Run-Message": current_message.id},
         json={
             "decision": "approve",
-            "decision_reference": "Approve Bridge GmbH ML Engineer",
+            "decision_reference": "Approve Bridge GmbH ML Engineer.",
         },
     )
 
     assert replay.status_code == 409
-    assert "copied from" in replay.json()["detail"]
+    assert "exactly equal" in replay.json()["detail"]
     saved = client.get("/api/v1/applications").json()[0]
     assert saved["status"] == "scored"
     assert len(saved["status_events"]) == 1
@@ -1119,7 +1291,7 @@ def test_internal_bridge_rejects_wrong_application_and_invalid_state_decisions(
     other_tracking = client.post(
         f"/api/internal/hermes/v1/jobs/{other_job_id}/track-selected",
         headers=headers | {"X-Career-Run-Message": other_selection_id},
-        json={"selection_reference": "Other Labs Data Engineer"},
+        json={"selection_reference": other_selection},
     )
     assert other_tracking.status_code == 200
     other_application_id = other_tracking.json()["application"]["id"]
@@ -1132,7 +1304,7 @@ def test_internal_bridge_rejects_wrong_application_and_invalid_state_decisions(
         headers=decision_headers,
         json={
             "decision": "approve",
-            "decision_reference": "Approve Other Labs Data Engineer",
+            "decision_reference": wrong_request,
         },
     )
     assert wrong_application.status_code == 409
@@ -1143,7 +1315,7 @@ def test_internal_bridge_rejects_wrong_application_and_invalid_state_decisions(
         headers=decision_headers,
         json={
             "decision": "approve",
-            "decision_reference": "Approve Other Labs Data Engineer",
+            "decision_reference": wrong_request,
         },
     )
     assert valid.status_code == 200
@@ -1154,7 +1326,7 @@ def test_internal_bridge_rejects_wrong_application_and_invalid_state_decisions(
         headers=headers | {"X-Career-Run-Message": invalid_message_id},
         json={
             "decision": "archive",
-            "decision_reference": "Archive Other Labs Data Engineer",
+            "decision_reference": invalid_request,
         },
     )
     assert invalid_state.status_code == 409
@@ -1178,6 +1350,10 @@ def test_duplicate_job_identity_requires_exact_id_or_case_sensitive_url(
     client, headers = bridge_client
     _, application_id, session_id = _tracked_application(client, headers)
     duplicate_payload = _job_payload()
+    duplicate_payload["spec"] = duplicate_payload["spec"] | {
+        "company": "  bridge   GMBH ",
+        "title": "ml engineer",
+    }
     duplicate_payload["canonical_url"] = (
         "https://jobs.example.test/ml-engineer-duplicate"
     )
@@ -1198,7 +1374,7 @@ def test_duplicate_job_identity_requires_exact_id_or_case_sensitive_url(
         headers=headers | {"X-Career-Run-Message": named_message_id},
         json={
             "decision": "approve",
-            "decision_reference": "Approve Bridge GmbH ML Engineer",
+            "decision_reference": "Approve Bridge GmbH ML Engineer.",
         },
     )
     assert ambiguous.status_code == 409
@@ -1214,11 +1390,27 @@ def test_duplicate_job_identity_requires_exact_id_or_case_sensitive_url(
         headers=headers | {"X-Career-Run-Message": wrong_case_message_id},
         json={
             "decision": "approve",
-            "decision_reference": f"Approve {wrong_case_url}",
+            "decision_reference": f"Approve {wrong_case_url}.",
         },
     )
     assert wrong_case.status_code == 409
     assert "ambiguous" in wrong_case.json()["detail"]
+
+    suffix_url = "https://jobs.example.test/ml-engineer-evil"
+    suffix_message_id = _append_user_message(
+        session_id,
+        f"Approve {suffix_url}.",
+    )
+    suffix_attack = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers | {"X-Career-Run-Message": suffix_message_id},
+        json={
+            "decision": "approve",
+            "decision_reference": f"Approve {suffix_url}.",
+        },
+    )
+    assert suffix_attack.status_code == 409
+    assert "ambiguous" in suffix_attack.json()["detail"]
 
     exact_url = "https://jobs.example.test/ml-engineer"
     exact_message_id = _append_user_message(
@@ -1230,13 +1422,44 @@ def test_duplicate_job_identity_requires_exact_id_or_case_sensitive_url(
         headers=headers | {"X-Career-Run-Message": exact_message_id},
         json={
             "decision": "approve",
-            "decision_reference": f"Approve {exact_url}",
+            "decision_reference": f"Approve {exact_url}.",
         },
     )
     assert accepted.status_code == 200
     assert accepted.json()["application"]["status"] == "approved"
     saved = client.get("/api/v1/applications").json()[0]
     assert len(saved["status_events"]) == 2
+
+
+def test_duplicate_job_identity_accepts_exact_application_id(bridge_client) -> None:
+    client, headers = bridge_client
+    _, application_id, session_id = _tracked_application(client, headers)
+    duplicate_payload = _job_payload()
+    duplicate_payload["spec"] = duplicate_payload["spec"] | {
+        "company": "BRIDGE GMBH",
+        "title": "ML ENGINEER",
+    }
+    duplicate_payload["canonical_url"] = "https://jobs.example.test/ml-engineer-copy"
+    duplicate = client.post(
+        "/api/internal/hermes/v1/jobs",
+        headers=headers,
+        json=duplicate_payload,
+    )
+    assert duplicate.status_code == 200
+    directive = f"Please approve {application_id}."
+    run_message_id = _append_user_message(session_id, directive)
+
+    accepted = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers | {"X-Career-Run-Message": run_message_id},
+        json={
+            "decision": "approve",
+            "decision_reference": directive,
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["application"]["status"] == "approved"
 
 
 def test_internal_bridge_decision_requires_selected_job_tracking(bridge_client) -> None:
@@ -1268,7 +1491,7 @@ def test_internal_bridge_decision_requires_selected_job_tracking(bridge_client) 
         headers=headers | {"X-Career-Run-Message": run_message.id},
         json={
             "decision": "approve",
-            "decision_reference": "Approve Bridge GmbH ML Engineer",
+            "decision_reference": user_request,
         },
     )
 

@@ -60,9 +60,10 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
     assert before.status_code == 200
     payload = before.json()
     assert payload["web_search"]["configured"] is False
-    assert {group["id"]: group["state"] for group in payload["groups"]}[
-        "web-search"
-    ] == "setup_required"
+    group_states = {group["id"]: group["state"] for group in payload["groups"]}
+    assert group_states["local-workspace"] == "disabled"
+    assert group_states["web-search"] == "disabled"
+    assert group_states["browser-assistance"] == "disabled"
     career_tools = next(
         group["tools"] for group in payload["groups"] if group["id"] == "career-workspace"
     )
@@ -85,6 +86,9 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
 
     assert connected.status_code == 200
     assert connected.json()["web_search"]["configured"] is True
+    assert {group["id"]: group["state"] for group in connected.json()["groups"]}[
+        "web-search"
+    ] == "disabled"
     assert search_key not in connected.text
     assert search_key.encode() not in store.path.read_bytes()
     assert client.get("/local/session").json()["user"]["active_provider"] is None
