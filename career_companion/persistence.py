@@ -7,7 +7,11 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from career_companion.database import Base, build_engine
+from career_companion.database import (
+    Base,
+    build_engine,
+    ensure_application_job_claims,
+)
 from career_companion.paths import CompanionPaths
 from career_companion.services.model_routes import ensure_default_routes
 
@@ -28,6 +32,7 @@ def session_factory_for(paths: CompanionPaths) -> sessionmaker[Session]:
             return factory
         engine = build_engine(paths)
         Base.metadata.create_all(engine)
+        ensure_application_job_claims(engine)
         factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
         with factory() as session:
             ensure_default_routes(session)

@@ -5,19 +5,30 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import DatabaseError
+from sqlalchemy.orm import sessionmaker
 
 from career_companion.database import (
+    ApplicationJobClaimRecord,
     ApplicationRecord,
+    ArtifactRecord,
+    AuditEventRecord,
+    Base,
     CandidateProfileRecord,
+    ConversationSessionRecord,
     JobRecord,
     RevisionRecord,
     SourceDocumentRecord,
     StatusEventRecord,
     UsageRunRecord,
+    build_engine,
+    ensure_application_job_claims,
 )
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import clear_factory_cache, session_factory_for
+from career_companion.hermes_bridge import get_bound_run_message
 from career_companion.schemas import (
     ApplicationStatus,
     CandidateProfile,
@@ -30,6 +41,7 @@ from career_companion.schemas import (
     ProjectAnalysis,
 )
 from career_companion.services.applications import (
+    ApplicationPersistenceError,
     create_application,
     decide_scored_application,
     ensure_application,
@@ -43,6 +55,11 @@ from career_companion.services.approvals import (
 )
 from career_companion.services.browser import validate_form_payload
 from career_companion.services.model_routes import record_usage, upsert_route
+from career_companion.services.conversation_sessions import (
+    append_message,
+    create_conversation_session,
+    reserve_conversation_write,
+)
 from career_companion.services.profile import _candidate_from_text, save_profile
 from career_companion.services.revisions import (
     create_revision,
@@ -165,6 +182,387 @@ def test_ensure_application_is_idempotent_for_one_saved_job(session) -> None:
     ).all() == [first]
 
 
+def test_ensure_application_rejects_missing_job_without_partial_state(session) -> None:
+    with pytest.raises(LookupError, match="Job not found"):
+        ensure_application(session, "00000000-0000-0000-0000-000000000099")
+    assert session.scalars(select(ApplicationRecord)).all() == []
+    assert session.scalars(select(ApplicationJobClaimRecord)).all() == []
+
+
+def test_ensure_application_retries_bounded_uuid_collision(
+    session,
+    monkeypatch,
+) -> None:
+    occupied_job = _job(session)
+    target_job = JobRecord(
+        company="Target GmbH",
+        title="Engineer",
+        canonical_url="https://example.test/jobs/target-engineer",
+        fingerprint="b" * 64,
+        normalized_spec={
+            "title": "Engineer",
+            "company": "Target GmbH",
+            "description": "Build reliable systems.",
+        },
+    )
+    session.add(target_job)
+    session.flush()
+    occupied_id = "00000000-0000-0000-0000-000000000071"
+    successful_id = "00000000-0000-0000-0000-000000000072"
+    session.add(ApplicationRecord(id=occupied_id, job_id=occupied_job.id))
+    session.flush()
+    generated = iter([occupied_id, successful_id])
+    monkeypatch.setattr(
+        "career_companion.services.applications._new_application_id",
+        lambda: next(generated),
+    )
+
+    application, created = ensure_application(session, target_job.id)
+
+    assert created is True
+    assert application.id == successful_id
+    assert session.get(ApplicationRecord, occupied_id).job_id == occupied_job.id
+
+
+@pytest.mark.parametrize(
+    "table", ["applications", "application_job_claims", "audit_events"]
+)
+def test_ensure_application_insert_fault_leaves_no_orphan_or_audit(
+    session,
+    table,
+) -> None:
+    job = _job(session)
+    session.commit()
+    trigger = f"interrupt_{table}"
+    with session.bind.begin() as connection:
+        connection.exec_driver_sql(
+            f"""
+            CREATE TRIGGER {trigger}
+            BEFORE INSERT ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'reservation interrupted');
+            END
+            """
+        )
+    try:
+        with pytest.raises(ApplicationPersistenceError, match="could not be completed"):
+            ensure_application(session, job.id)
+        assert session.scalars(
+            select(ApplicationRecord).where(ApplicationRecord.job_id == job.id)
+        ).all() == []
+        assert session.get(ApplicationJobClaimRecord, job.id) is None
+        assert session.scalars(
+            select(AuditEventRecord).where(
+                AuditEventRecord.event_type == "application.created"
+            )
+        ).all() == []
+    finally:
+        session.rollback()
+        with session.bind.begin() as connection:
+            connection.exec_driver_sql(f"DROP TRIGGER {trigger}")
+
+    application, created = ensure_application(session, job.id)
+    assert created is True
+    assert application.job_id == job.id
+    assert session.get(ApplicationJobClaimRecord, job.id).application_id == application.id
+
+
+@pytest.mark.parametrize("attempt", range(3))
+def test_parallel_application_tracking_uses_one_cross_engine_reservation(
+    paths,
+    session,
+    attempt,
+) -> None:
+    job = _job(session)
+    job.raw_payload = {"concurrency_attempt": attempt}
+    session.commit()
+    barrier = threading.Barrier(2)
+
+    def track() -> tuple[str, bool]:
+        engine = build_engine(paths)
+        worker_factory = sessionmaker(
+            bind=engine,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        try:
+            with worker_factory() as worker_session:
+                barrier.wait()
+                application, created = ensure_application(worker_session, job.id)
+                if application.status == ApplicationStatus.DISCOVERED.value:
+                    transition_application(
+                        worker_session,
+                        application.id,
+                        ApplicationStatus.SCORED,
+                        note="Explicit selected-job tracking",
+                    )
+                worker_session.commit()
+                return application.id, created
+        finally:
+            engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [future.result() for future in [executor.submit(track) for _ in range(2)]]
+
+    application_ids = {application_id for application_id, _ in results}
+    assert len(application_ids) == 1
+    assert sorted(created for _, created in results) == [False, True]
+    session.expire_all()
+    applications = session.scalars(
+        select(ApplicationRecord).where(ApplicationRecord.job_id == job.id)
+    ).all()
+    assert len(applications) == 1
+    assert applications[0].id in application_ids
+    assert applications[0].status == ApplicationStatus.SCORED.value
+    assert len(
+        session.scalars(
+            select(StatusEventRecord).where(
+                StatusEventRecord.application_id == applications[0].id
+            )
+        ).all()
+    ) == 1
+    application_audits = session.scalars(
+        select(AuditEventRecord).where(
+            AuditEventRecord.subject_type == "application",
+            AuditEventRecord.subject_id == applications[0].id,
+        )
+    ).all()
+    assert [event.event_type for event in application_audits].count(
+        "application.created"
+    ) == 1
+    assert [event.event_type for event in application_audits].count(
+        "application.status_changed"
+    ) == 1
+
+
+def test_parallel_conversation_appends_have_unique_authoritative_order(
+    paths,
+    session,
+) -> None:
+    conversation = create_conversation_session(session, paths)
+    conversation_id = conversation.id
+    session.commit()
+    barrier = threading.Barrier(2)
+
+    def append(content: str) -> tuple[str, int]:
+        engine = build_engine(paths)
+        factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        try:
+            with factory() as worker:
+                barrier.wait()
+                reserve_conversation_write(worker)
+                current = worker.get(ConversationSessionRecord, conversation_id)
+                message = append_message(worker, current, role="user", content=content)
+                worker.commit()
+                return message.id, message.position
+        finally:
+            engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [
+            future.result()
+            for future in (
+                executor.submit(append, "Track Example GmbH AI Engineer."),
+                executor.submit(append, "Show the queue instead."),
+            )
+        ]
+
+    assert {position for _, position in results} == {2, 3}
+    latest_id = max(results, key=lambda result: result[1])[0]
+    stale_id = min(results, key=lambda result: result[1])[0]
+    factory = session_factory_for(paths)
+    with factory() as verification:
+        assert get_bound_run_message(verification, latest_id).id == latest_id
+    with factory() as verification:
+        with pytest.raises(HTTPException, match="no longer the latest"):
+            get_bound_run_message(verification, stale_id)
+
+
+def test_existing_database_backfills_claim_without_mutating_legacy_duplicates(
+    tmp_path,
+) -> None:
+    clear_factory_cache()
+    paths = CompanionPaths.at_root(tmp_path / "legacy").scoped_to("account-a")
+    engine = build_engine(paths)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE application_job_claims")
+    legacy_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with legacy_factory() as legacy_session:
+        job = JobRecord(
+            id="00000000-0000-0000-0000-000000000001",
+            company="Legacy GmbH",
+            title="Engineer",
+            canonical_url="https://jobs.example.test/legacy",
+            fingerprint="b" * 64,
+            normalized_spec={},
+        )
+        canonical = ApplicationRecord(
+            id="00000000-0000-0000-0000-000000000002",
+            job_id=job.id,
+            status="withdrawn",
+            next_action="No action needed",
+            created_at=datetime(2025, 1, 1, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+        duplicate = ApplicationRecord(
+            id="00000000-0000-0000-0000-000000000003",
+            job_id=job.id,
+            status="scored",
+            next_action="Approve or archive this opportunity",
+            created_at=datetime(2025, 1, 2, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 2, tzinfo=UTC),
+        )
+        legacy_session.add_all([job, canonical, duplicate])
+        legacy_session.flush()
+        legacy_session.add_all(
+            [
+                ArtifactRecord(
+                    application_id=canonical.id,
+                    kind="resume",
+                    version=1,
+                    path="canonical.pdf",
+                    sha256="d" * 64,
+                ),
+                ArtifactRecord(
+                    application_id=duplicate.id,
+                    kind="resume",
+                    version=1,
+                    path="legacy.pdf",
+                    sha256="c" * 64,
+                ),
+                StatusEventRecord(
+                    application_id=canonical.id,
+                    from_status="discovered",
+                    to_status="withdrawn",
+                    note="canonical history",
+                ),
+                StatusEventRecord(
+                    application_id=duplicate.id,
+                    from_status="discovered",
+                    to_status="scored",
+                    note="duplicate history",
+                ),
+                AuditEventRecord(
+                    event_type="application.created",
+                    subject_type="application",
+                    subject_id=canonical.id,
+                    payload={"job_id": job.id, "source": "canonical"},
+                ),
+                AuditEventRecord(
+                    event_type="application.created",
+                    subject_type="application",
+                    subject_id=duplicate.id,
+                    payload={"job_id": job.id, "source": "duplicate"},
+                ),
+            ]
+        )
+        legacy_session.commit()
+    engine.dispose()
+
+    migrated_factory = session_factory_for(paths)
+    with migrated_factory() as repaired_session:
+        applications = repaired_session.scalars(select(ApplicationRecord)).all()
+        assert {application.id for application in applications} == {
+            canonical.id,
+            duplicate.id,
+        }
+        assert {application.status for application in applications} == {
+            "scored",
+            "withdrawn",
+        }
+        assert {
+            (artifact.application_id, artifact.version, artifact.path)
+            for artifact in repaired_session.scalars(select(ArtifactRecord))
+        } == {
+            (canonical.id, 1, "canonical.pdf"),
+            (duplicate.id, 1, "legacy.pdf"),
+        }
+        assert {
+            (event.application_id, event.note)
+            for event in repaired_session.scalars(select(StatusEventRecord))
+        } == {
+            (canonical.id, "canonical history"),
+            (duplicate.id, "duplicate history"),
+        }
+        assert {
+            event.subject_id
+            for event in repaired_session.scalars(select(AuditEventRecord))
+        } == {canonical.id, duplicate.id}
+        claim = repaired_session.get(ApplicationJobClaimRecord, job.id)
+        assert claim is not None
+        assert claim.application_id == canonical.id
+        returned, created = ensure_application(repaired_session, job.id)
+        assert returned.id == canonical.id
+        assert created is False
+        assert create_application(repaired_session, job.id).id == canonical.id
+        repaired_session.commit()
+
+    clear_factory_cache()
+    restarted_factory = session_factory_for(paths)
+    with restarted_factory() as restarted_session:
+        assert len(restarted_session.scalars(select(ApplicationRecord)).all()) == 2
+        assert (
+            restarted_session.get(ApplicationJobClaimRecord, job.id).application_id
+            == canonical.id
+        )
+    clear_factory_cache()
+
+
+def test_application_claim_backfill_rolls_back_atomically_and_restarts(tmp_path) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "interrupted").scoped_to("account-a")
+    engine = build_engine(paths)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with factory() as session:
+        for index in range(2):
+            job = JobRecord(
+                id=f"00000000-0000-0000-0000-00000000001{index}",
+                company="Legacy GmbH",
+                title=f"Engineer {index}",
+                canonical_url=f"https://jobs.example.test/legacy-{index}",
+                fingerprint=str(index) * 64,
+                normalized_spec={},
+            )
+            session.add(job)
+            session.flush()
+            session.add(
+                ApplicationRecord(
+                    id=f"00000000-0000-0000-0000-00000000002{index}",
+                    job_id=job.id,
+                )
+            )
+        session.commit()
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TRIGGER interrupt_claim_backfill
+            BEFORE INSERT ON application_job_claims
+            WHEN NEW.job_id = '00000000-0000-0000-0000-000000000011'
+            BEGIN
+                SELECT RAISE(ABORT, 'interrupted claim backfill');
+            END
+            """
+        )
+
+    with pytest.raises(DatabaseError, match="interrupted claim backfill"):
+        ensure_application_job_claims(engine)
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM application_job_claims"
+        ).scalar_one() == 0
+    with engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER interrupt_claim_backfill")
+    ensure_application_job_claims(engine)
+    ensure_application_job_claims(engine)
+    with engine.connect() as connection:
+        assert connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM application_job_claims"
+        ).scalar_one() == 2
+    engine.dispose()
+    clear_factory_cache()
+
+
 @pytest.mark.parametrize(
     ("target", "decision_reference"),
     [
@@ -254,6 +652,7 @@ def test_parallel_identical_scored_decisions_create_one_event(paths, session) ->
     application = create_application(session, _job(session).id)
     transition_application(session, application.id, ApplicationStatus.SCORED)
     session.commit()
+    application_id = application.id
     barrier = threading.Barrier(2)
     factory = session_factory_for(paths)
 
@@ -262,7 +661,7 @@ def test_parallel_identical_scored_decisions_create_one_event(paths, session) ->
             barrier.wait()
             return decide_scored_application(
                 worker_session,
-                application.id,
+                application_id,
                 ApplicationStatus.APPROVED,
                 source_session="00000000-0000-0000-0000-000000000001",
                 run_message_id="00000000-0000-0000-0000-000000000002",
@@ -278,7 +677,7 @@ def test_parallel_identical_scored_decisions_create_one_event(paths, session) ->
     with factory() as verification_session:
         decision_events = verification_session.scalars(
             select(StatusEventRecord).where(
-                StatusEventRecord.application_id == application.id,
+                StatusEventRecord.application_id == application_id,
                 StatusEventRecord.from_status == "scored",
                 StatusEventRecord.to_status == "approved",
             )
@@ -525,13 +924,58 @@ def test_immutable_revision_names_are_prefix_protected(session) -> None:
     with pytest.raises(PermissionError, match="immutable"):
         create_revision(
             session,
-            kind="memory",
+            kind="skill",
             name="verified-fact:work-authorization",
             content={"value": "changed"},
             diff="unsafe",
             author="agent",
             source_session="hostile-jd",
         )
+
+
+def test_generic_revision_service_rejects_memory_before_mutation(session) -> None:
+    with pytest.raises(PermissionError, match="skills and rubrics"):
+        create_revision(
+            session,
+            kind="memory",
+            name="arbitrary-memory",
+            content={"value": "unsafe"},
+            diff="bypass",
+            author="agent",
+            source_session="session-1",
+        )
+    assert session.scalars(select(RevisionRecord)).all() == []
+    assert session.scalars(
+        select(AuditEventRecord).where(
+            AuditEventRecord.event_type.like("revision.%")
+        )
+    ).all() == []
+
+    legacy = RevisionRecord(
+        kind="memory",
+        name="legacy-memory",
+        version=1,
+        content={"value": "legacy"},
+        diff="legacy",
+        author="local-user",
+        source_session="legacy-session",
+    )
+    session.add(legacy)
+    session.flush()
+    with pytest.raises(PermissionError, match="skills and rubrics"):
+        evaluate_revision(
+            session,
+            legacy.id,
+            {
+                "quality_passed": True,
+                "security_passed": True,
+                "cost_passed": True,
+                "replay": _passing_replay(baseline=0.8, candidate=0.9),
+            },
+        )
+    with pytest.raises(PermissionError, match="skills and rubrics"):
+        rollback_revision(session, legacy.id)
+    assert legacy.status == "draft"
 
 
 def test_revision_evaluation_quarantines_failures_and_rollback_restores_previous(

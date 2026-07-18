@@ -1,7 +1,14 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 
 class StrictModel(BaseModel):
@@ -386,7 +393,26 @@ class MCPServerSettingsRequest(StrictModel):
     environment: dict[str, str] = Field(default_factory=dict)
     source_url: str | None = Field(default=None, max_length=2_048)
     warning: str | None = Field(default=None, max_length=1_000)
-    enabled: bool = False
+    enabled: StrictBool = False
+
+    @field_validator(
+        "args",
+        "tool_allowlist",
+        "forwarded_environment",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_lists(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError("MCP list settings must be exact lists")
+        return value
+
+    @field_validator("environment", mode="before")
+    @classmethod
+    def require_exact_environment_mapping(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            raise ValueError("MCP environment must be an exact mapping")
+        return value
 
     @field_validator("command")
     @classmethod
@@ -412,7 +438,8 @@ class MCPServerSettingsRequest(StrictModel):
     def protect_runtime_environment(cls, values: list[str]) -> list[str]:
         from career_companion.services.mcp_servers import MCP_RESERVED_ENVIRONMENT
 
-        reserved = sorted(set(values) & MCP_RESERVED_ENVIRONMENT)
+        reserved_names = {name.casefold() for name in MCP_RESERVED_ENVIRONMENT}
+        reserved = sorted(name for name in values if name.casefold() in reserved_names)
         if reserved:
             raise ValueError(
                 f"Reserved runtime variables cannot be forwarded: {', '.join(reserved)}"
@@ -440,22 +467,23 @@ class MCPServerSettingsRequest(StrictModel):
         import re
         from urllib.parse import urlsplit
 
-        blocked_tools = {
-            "apply_to_job",
-            "connect_with_person",
-            "create_post",
-            "send_message",
-            "submit_application",
-        }
-        prohibited = sorted(
-            tool for tool in self.tool_allowlist if tool.casefold() in blocked_tools
+        from career_companion.services.mcp_servers import (
+            validate_mcp_environment_references,
+            validate_mcp_tool_allowlist,
         )
-        if prohibited:
-            raise ValueError(
-                f"MCP tools that contact people, post, or apply are disabled: {', '.join(prohibited)}"
-            )
+
+        validate_mcp_tool_allowlist(self.tool_allowlist)
         if self.enabled and not self.tool_allowlist:
             raise ValueError("Enabled MCP servers require an explicit tool allowlist")
+        validate_mcp_environment_references(
+            {
+                "command": self.command,
+                "args": self.args,
+                "url": self.url,
+                "environment": self.environment,
+            },
+            self.forwarded_environment,
+        )
         if self.transport == "stdio":
             if not self.command:
                 raise ValueError("Stdio MCP servers require a command")

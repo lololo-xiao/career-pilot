@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 from collections.abc import Callable, Mapping
@@ -98,6 +99,8 @@ PILOT_DISABLED_TOOLSETS = (
     "file",
     "code_execution",
 )
+PILOT_PLUGIN_NAME = "career-companion"
+_PLUGIN_NAME = re.compile(r"[A-Za-z0-9_-]{1,120}\Z")
 
 
 def _credential_digest(credential: bytes) -> str:
@@ -114,6 +117,24 @@ def _credential_digest(credential: bytes) -> str:
                 separators=(",", ":"),
             ).encode("utf-8")
     return hashlib.sha256(digest_input).hexdigest()
+
+
+def _merge_mcp_environment_allowlist(
+    config: ProductConfig,
+    forwarded: list[str],
+) -> ProductConfig:
+    if not isinstance(forwarded, list) or any(
+        not isinstance(name, str) for name in forwarded
+    ):
+        raise ValueError("Forwarded MCP environment must be an exact string list")
+    return ProductConfig.model_validate(
+        config.model_dump(mode="python")
+        | {
+            "mcp_env_allowlist": list(
+                dict.fromkeys([*config.mcp_env_allowlist, *forwarded])
+            )
+        }
+    )
 
 
 def _validate_codex_credentials(credential: bytes) -> dict[str, object]:
@@ -275,6 +296,70 @@ def synchronize_hermes_profile_assets(
             ) from exc
         _atomic_write(profile / relative, data, mode=0o644)
 
+    config_path = profile / "config.yaml"
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        raw_config = {} if loaded is None else loaded
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise HermesProviderConfigurationError(
+            "The installed Hermes profile configuration could not be read"
+        ) from exc
+    if not isinstance(raw_config, dict):
+        raise HermesProviderConfigurationError(
+            "The installed Hermes profile configuration is invalid"
+        )
+    _enforce_pilot_plugin_boundary(raw_config)
+    _atomic_write(
+        config_path,
+        yaml.safe_dump(raw_config, sort_keys=False).encode("utf-8"),
+    )
+
+
+def _enforce_pilot_plugin_boundary(raw_config: dict[str, object]) -> None:
+    """Expose exactly the reviewed Career Companion user plugin."""
+
+    plugins = raw_config.get("plugins")
+    if plugins is None:
+        plugins = {}
+        raw_config["plugins"] = plugins
+    if not isinstance(plugins, dict):
+        raise HermesProviderConfigurationError(
+            "The installed Hermes plugins configuration is invalid"
+        )
+    observed: dict[str, tuple[str, str]] = {}
+    for field in ("enabled", "disabled"):
+        values = plugins.get(field, [])
+        if not isinstance(values, list) or len(values) > 64:
+            raise HermesProviderConfigurationError(
+                "Hermes plugin allowlists must be exact bounded lists"
+            )
+        for value in values:
+            if not isinstance(value, str) or _PLUGIN_NAME.fullmatch(value) is None:
+                raise HermesProviderConfigurationError(
+                    "Hermes plugin allowlists require exact bounded names"
+                )
+            normalized = value.casefold()
+            if normalized in observed:
+                previous_field, previous_value = observed[normalized]
+                exact_boundary_move = (
+                    normalized == PILOT_PLUGIN_NAME
+                    and value == PILOT_PLUGIN_NAME
+                    and previous_value == PILOT_PLUGIN_NAME
+                    and previous_field != field
+                )
+                if not exact_boundary_move:
+                    raise HermesProviderConfigurationError(
+                        "Hermes plugins collide after case normalization"
+                    )
+            else:
+                observed[normalized] = (field, value)
+            if normalized == PILOT_PLUGIN_NAME and value != PILOT_PLUGIN_NAME:
+                raise HermesProviderConfigurationError(
+                    "The Career Companion plugin name must match exactly"
+                )
+    plugins["enabled"] = [PILOT_PLUGIN_NAME]
+    plugins["disabled"] = []
+
 
 def synchronize_hermes_provider(
     paths: CompanionPaths,
@@ -294,7 +379,8 @@ def synchronize_hermes_provider(
         )
 
     try:
-        raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        raw_config = {} if loaded is None else loaded
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         raise HermesProviderConfigurationError(
             "The installed Hermes profile configuration could not be read"
@@ -303,6 +389,8 @@ def synchronize_hermes_provider(
         raise HermesProviderConfigurationError(
             "The installed Hermes profile configuration is invalid"
         )
+
+    _enforce_pilot_plugin_boundary(raw_config)
 
     model_config = raw_config.get("model")
     if not isinstance(model_config, dict):
@@ -335,7 +423,7 @@ def synchronize_hermes_provider(
     if not isinstance(tools_config, dict):
         tools_config = {}
         raw_config["tools"] = tools_config
-    tools_config["tool_search"] = {"enabled": "off"}
+    tools_config["tool_search"] = {"enabled": False}
 
     # Remove stale terminal configuration from previously installed profiles. Pilot's
     # Hermes process holds the bridge credential and must not expose arbitrary local I/O.
@@ -523,17 +611,9 @@ class HermesRuntimeManager:
                     "Pilot's editable agent or MCP settings could not be synchronized"
                 ) from exc
             if forwarded_mcp_environment:
-                config = config.model_copy(
-                    update={
-                        "mcp_env_allowlist": list(
-                            dict.fromkeys(
-                                [
-                                    *config.mcp_env_allowlist,
-                                    *forwarded_mcp_environment,
-                                ]
-                            )
-                        )
-                    }
+                config = _merge_mcp_environment_allowlist(
+                    config,
+                    forwarded_mcp_environment,
                 )
 
             provider_environment = synchronize_hermes_provider(
@@ -579,6 +659,34 @@ class HermesRuntimeManager:
             )
             self._active = prepared
             return prepared
+
+    async def reconfigure(
+        self,
+        account_id: str,
+        paths: CompanionPaths,
+        operation: Callable[[], None],
+    ) -> None:
+        """Serialize a stopped-runtime local configuration transaction.
+
+        The same lock used by ``prepare`` closes the stop/mutate/start race. The
+        operation owns its database transaction and profile write; if either fails,
+        no runtime is restarted and the next ``prepare`` re-renders DB state before
+        launch.
+        """
+
+        async with self._lock:
+            if self._active is not None and self._active.account_id == account_id:
+                try:
+                    await self._active.supervisor.stop()
+                except Exception as exc:
+                    raise HermesRuntimeUnavailable(
+                        "Pilot could not stop the active runtime for reconfiguration"
+                    ) from exc
+                else:
+                    self._active = None
+            config = self._config_loader(paths)
+            await self._ensure_profile(paths, config)
+            await asyncio.to_thread(operation)
 
     async def _ensure_profile(
         self,

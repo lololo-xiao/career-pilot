@@ -35,6 +35,7 @@ from career_companion.schemas import (
     Schedule,
 )
 from career_companion.services.applications import (
+    ApplicationPersistenceError,
     create_application,
     transition_application,
 )
@@ -82,7 +83,7 @@ class ApplicationTransitionRequest(BaseModel):
 
 
 class RevisionRequest(BaseModel):
-    kind: Literal["memory", "skill", "rubric"]
+    kind: Literal["skill", "rubric"]
     name: str
     content: dict[str, Any]
     diff: str
@@ -249,9 +250,12 @@ async def run_lever(company_slug: str, session: SessionDep) -> dict[str, int]:
 
 @router.post("/applications")
 def start_application(job_id: str, session: SessionDep) -> dict[str, Any]:
-    if not session.get(JobRecord, job_id):
-        raise HTTPException(404, "Job not found")
-    return _application_json(create_application(session, job_id))
+    try:
+        return _application_json(create_application(session, job_id))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ApplicationPersistenceError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/applications/import")
@@ -413,6 +417,8 @@ def evaluate_revision_endpoint(
         return _revision_json(evaluate_revision(session, revision_id, metrics))
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 @router.post("/revisions/{revision_id}/rollback")
@@ -421,6 +427,8 @@ def rollback_revision_endpoint(revision_id: str, session: SessionDep) -> dict[st
         return _revision_json(rollback_revision(session, revision_id))
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 @router.get("/schedules")
@@ -451,22 +459,11 @@ def list_mcp(session: SessionDep) -> list[dict[str, Any]]:
 
 @router.put("/mcp/{name}")
 def set_mcp(name: str, server: MCPServerConfig, session: SessionDep) -> dict[str, Any]:
-    if server.name != name:
-        raise HTTPException(400, "MCP server name does not match URL")
-    if server.enabled and not server.tool_allowlist:
-        raise HTTPException(400, "Enabled MCP servers require an explicit tool allowlist")
-    row = session.get(MCPServerRecord, name)
-    config_json = server.model_dump(mode="json", exclude={"name", "transport", "enabled"})
-    if row is None:
-        row = MCPServerRecord(
-            name=name, transport=server.transport, config=config_json, enabled=server.enabled
-        )
-        session.add(row)
-    else:
-        row.transport = server.transport
-        row.config = config_json
-        row.enabled = server.enabled
-    return {"name": row.name, "transport": row.transport, **row.config, "enabled": row.enabled}
+    del name, server, session
+    raise HTTPException(
+        403,
+        "MCP mutations are only available through the authenticated Settings workflow",
+    )
 
 
 @router.get("/audit")

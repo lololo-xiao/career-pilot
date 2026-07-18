@@ -37,6 +37,7 @@ from career_companion.persistence import account_session
 from career_companion.router import _application_json, _job_json, _revision_json
 from career_companion.schemas import ApplicationStatus, Job, JobSpec
 from career_companion.services.applications import (
+    ApplicationPersistenceError,
     decide_scored_application,
     ensure_application,
     transition_application,
@@ -178,16 +179,58 @@ def get_bound_run_message(
     message = session.get(ConversationMessageRecord, run_message_id)
     if message is None or message.role != "user":
         raise HTTPException(409, "Pilot run message binding is invalid")
-    conversation = message.conversation
-    if not conversation.messages or conversation.messages[-1].id != message.id:
+    latest_id = session.scalar(
+        select(ConversationMessageRecord.id)
+        .where(
+            ConversationMessageRecord.session_id == message.session_id,
+            ConversationMessageRecord.role == "user",
+        )
+        .order_by(
+            ConversationMessageRecord.position.desc(),
+            ConversationMessageRecord.id.desc(),
+        )
+        .limit(1)
+    )
+    if latest_id != message.id:
         raise HTTPException(
             409,
-            "Pilot run message is no longer the latest message in its conversation",
+            "Pilot run message is no longer the latest user message in its conversation",
         )
     return message
 
 
 RunMessageDep = Annotated[ConversationMessageRecord, Depends(get_bound_run_message)]
+
+
+def _rebind_latest_run_message_for_write(
+    session: Session,
+    run_message_id: str,
+) -> ConversationMessageRecord:
+    """Reserve SQLite writes and recheck authoritative message freshness."""
+
+    session.rollback()
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    message = session.get(ConversationMessageRecord, run_message_id)
+    if message is None or message.role != "user":
+        raise HTTPException(409, "Pilot run message binding is invalid")
+    latest_id = session.scalar(
+        select(ConversationMessageRecord.id)
+        .where(
+            ConversationMessageRecord.session_id == message.session_id,
+            ConversationMessageRecord.role == "user",
+        )
+        .order_by(
+            ConversationMessageRecord.position.desc(),
+            ConversationMessageRecord.id.desc(),
+        )
+        .limit(1)
+    )
+    if latest_id != message.id:
+        raise HTTPException(
+            409,
+            "Pilot run message is no longer the latest user message in its conversation",
+        )
+    return message
 
 
 @router.get("/profile")
@@ -217,6 +260,7 @@ def update_identity(
     paths: PathsDep,
     run_message: RunMessageDep,
 ) -> dict[str, Any]:
+    run_message = _rebind_latest_run_message_for_write(session, run_message.id)
     try:
         profile = update_agent_profile(
             session,
@@ -299,6 +343,7 @@ def track_selected_job(
     session: SessionDep,
     run_message: RunMessageDep,
 ) -> dict[str, Any]:
+    run_message = _rebind_latest_run_message_for_write(session, run_message.id)
     job = session.get(JobRecord, job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
@@ -311,7 +356,12 @@ def track_selected_job(
     )
 
     ranked_job = score_job(session, job.id)
-    application, application_created = ensure_application(session, ranked_job.id)
+    try:
+        application, application_created = ensure_application(session, ranked_job.id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ApplicationPersistenceError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if application.status == ApplicationStatus.DISCOVERED.value:
         application = transition_application(
             session,
@@ -361,6 +411,7 @@ def decide_tracked_application(
     session: SessionDep,
     run_message: RunMessageDep,
 ) -> dict[str, Any]:
+    run_message = _rebind_latest_run_message_for_write(session, run_message.id)
     application = session.get(ApplicationRecord, application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
@@ -495,6 +546,7 @@ def propose_revision(
     session: SessionDep,
     run_message: RunMessageDep,
 ) -> dict[str, Any]:
+    run_message = _rebind_latest_run_message_for_write(session, run_message.id)
     data = payload.model_dump()
     data["author"] = "career-agent"
     data["source_session"] = run_message.session_id

@@ -8,7 +8,7 @@ import secrets
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from career_companion.database import (
@@ -376,9 +376,22 @@ def append_message(
     normalized = content.strip()
     if not normalized or len(normalized) > 50_000:
         raise ValueError("Session messages must be between 1 and 50,000 characters")
-    position = max((message.position for message in conversation.messages), default=0) + 1
-    previous_user_messages = sum(
-        1 for item in conversation.messages if item.role == "user"
+    position = int(
+        session.scalar(
+            select(func.coalesce(func.max(ConversationMessageRecord.position), 0)).where(
+                ConversationMessageRecord.session_id == conversation.id
+            )
+        )
+        or 0
+    ) + 1
+    previous_user_messages = int(
+        session.scalar(
+            select(func.count(ConversationMessageRecord.id)).where(
+                ConversationMessageRecord.session_id == conversation.id,
+                ConversationMessageRecord.role == "user",
+            )
+        )
+        or 0
     )
     message = ConversationMessageRecord(
         conversation=conversation,
@@ -394,6 +407,16 @@ def append_message(
             conversation.title = _automatic_title(normalized)
     session.flush()
     return message
+
+
+def reserve_conversation_write(session: Session) -> None:
+    """Serialize message position allocation before any conversation read."""
+
+    if session.in_transaction():
+        raise RuntimeError(
+            "Conversation write reservation must be the session's first operation"
+        )
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def update_session_context(

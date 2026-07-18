@@ -47,6 +47,7 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
         import os
         from pathlib import Path
         import sys
+        import yaml
 
         plugin_directory = Path(sys.argv[1])
         module_name = "_career_companion_runtime_boundary_probe"
@@ -62,9 +63,62 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
 
         import hermes_cli.plugins as hermes_plugins
         import model_tools
+        from tools.mcp_tool import _interpolate_env_vars
         from tools.registry import registry
 
+        schema = {
+            "description": "runtime boundary sentinel",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        registry.register(
+            name="mcp__linkedin_search__search_jobs",
+            toolset="mcp-linkedin-search",
+            schema=schema,
+            handler=lambda args, **kwargs: json.dumps({"executed": "mcp"}),
+        )
+        hermes_plugins.discover_plugins(force=True)
+        loaded_manager = hermes_plugins.get_plugin_manager()
+        assert loaded_manager.has_hook("pre_tool_call")
+        enabled_external = {
+            key
+            for key, value in loaded_manager._plugins.items()
+            if value.enabled and value.manifest.source != "bundled"
+        }
+        assert enabled_external == {"career-companion"}
+
         assert importlib.metadata.version("hermes-agent") == "0.18.2"
+        interpolated = _interpolate_env_vars(
+            {
+                "command": "${CAREER_COMPANION_PLUGIN_TOKEN}",
+                "args": [
+                    "prefix-${API_SERVER_KEY}",
+                    {"nested": "${env: OPENAI_API_KEY }"},
+                ],
+                "cwd": "${HERMES_HOME}",
+                "url": "https://example.test/${CAREER_COMPANION_ACCOUNT_KEY}",
+                "headers": {"Authorization": "Bearer ${OPENAI_API_KEY}"},
+                "env": {"PROVIDER_TOKEN": "${OPENAI_API_KEY}"},
+                "unset": "${ABSENT_MCP_PROBE}",
+                "uppercase_prefix": "${ENV:OPENAI_API_KEY}",
+                "encoded": "%24%7BOPENAI_API_KEY%7D",
+                "${OPENAI_API_KEY}": "keys-are-not-interpolated",
+            }
+        )
+        assert interpolated["command"] == "probe-bridge-secret"
+        assert interpolated["args"] == [
+            "prefix-probe-api-secret",
+            {"nested": "probe-openai-secret"},
+        ]
+        assert interpolated["cwd"] == os.environ["HERMES_HOME"]
+        assert interpolated["url"].endswith("probe-account-key")
+        assert interpolated["headers"] == {
+            "Authorization": "Bearer probe-openai-secret"
+        }
+        assert interpolated["env"] == {"PROVIDER_TOKEN": "probe-openai-secret"}
+        assert interpolated["unset"] == "${ABSENT_MCP_PROBE}"
+        assert interpolated["uppercase_prefix"] == "${ENV:OPENAI_API_KEY}"
+        assert interpolated["encoded"] == "%24%7BOPENAI_API_KEY%7D"
+        assert interpolated["${OPENAI_API_KEY}"] == "keys-are-not-interpolated"
         actual_kwargs = {
             "task_id": "task-1",
             "session_id": "message-1",
@@ -85,7 +139,14 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
         registered_names = set(registry.get_all_tool_names())
         assert reported_hidden_names <= registered_names
         surfaced = model_tools.get_tool_definitions(
-            enabled_toolsets=["todo", "skills", "session_search", "clarify"],
+            enabled_toolsets=[
+                "todo",
+                "skills",
+                "session_search",
+                "clarify",
+                "career-web",
+                "mcp-linkedin-search",
+            ],
             disabled_toolsets=[
                 "browser",
                 "code_execution",
@@ -98,10 +159,6 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
         surfaced_names = {
             item["function"]["name"] for item in surfaced if "function" in item
         }
-        assert {"tool_call", "tool_describe", "tool_search"}.isdisjoint(
-            surfaced_names
-        )
-
         allowed_registered_helpers = {
             "clarify",
             "session_search",
@@ -109,10 +166,21 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
             "skills_list",
             "todo",
         }
+        expected_surface = (
+            allowed_registered_helpers
+            | {tool.name for tool in plugin.TOOLS}
+            | {"mcp__linkedin_search__search_jobs"}
+        )
+        assert surfaced_names == expected_surface, (
+            sorted(surfaced_names - expected_surface),
+            sorted(expected_surface - surfaced_names),
+        )
         assert allowed_registered_helpers <= registered_names
         for name in registered_names:
             directive = plugin._guard_tool_call(name, {}, **actual_kwargs)
-            if name in allowed_registered_helpers:
+            if name == "career_identity_update":
+                assert directive is not None and directive["action"] == "approve"
+            elif name in expected_surface:
                 assert directive is None, (name, directive)
             else:
                 assert directive is not None and directive["action"] == "block", name
@@ -150,10 +218,105 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
         assert traversal["success"] is False
         assert "traversal" in traversal["error"].lower()
 
-        manager = hermes_plugins.PluginManager()
-        manager._hooks["pre_tool_call"] = [plugin._guard_tool_call]
-        hermes_plugins._plugin_manager = manager
+        manager = loaded_manager
         executed = []
+
+        import hermes_cli.config as hermes_config
+
+        config_path = hermes_home / "config.yaml"
+        skill_dir = hermes_home / "skills" / "boundary-probe"
+        skill_dir.mkdir(parents=True)
+        inline_marker = hermes_home / "inline-shell-executed"
+        (skill_dir / "SKILL.md").write_text(
+            (
+                "---\\n"
+                "name: boundary-probe\\n"
+                "description: Runtime boundary probe.\\n"
+                "---\\n\\n"
+                f"!`touch {inline_marker}`\\n"
+            ),
+            encoding="utf-8",
+        )
+
+        def write_boundary_config(skills_value=...):
+            payload = {"tools": {"tool_search": {"enabled": False}}}
+            if skills_value is not ...:
+                payload["skills"] = skills_value
+            config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+            hermes_config._LOAD_CONFIG_CACHE.clear()
+            hermes_config._RAW_CONFIG_CACHE.clear()
+
+        # Confirm the pinned implementation treats a non-empty string as enabled.
+        write_boundary_config({"inline_shell": "true"})
+        direct_skill_view = json.loads(skill_view("boundary-probe"))
+        assert direct_skill_view["success"] is True
+        assert inline_marker.is_file()
+        inline_marker.unlink()
+
+        for safe_skills in (..., {}, {"inline_shell": False}):
+            write_boundary_config(safe_skills)
+            allowed_skill_view = model_tools.handle_function_call(
+                "skill_view",
+                {"name": "boundary-probe"},
+                enabled_toolsets=["skills"],
+                disabled_toolsets=["file", "terminal"],
+                **{
+                    key: value
+                    for key, value in actual_kwargs.items()
+                    if key != "middleware_trace"
+                },
+                tool_request_middleware_trace=[],
+            )
+            assert json.loads(allowed_skill_view)["success"] is True
+            assert not inline_marker.exists()
+
+        unsafe_inline_values = [
+            True,
+            "true",
+            "false",
+            "yes",
+            "",
+            1,
+            0,
+            None,
+            [],
+            [False],
+            {},
+            {"enabled": False},
+        ]
+        for inline_value in unsafe_inline_values:
+            write_boundary_config({"inline_shell": inline_value})
+            blocked_skill_view = model_tools.handle_function_call(
+                "skill_view",
+                {"name": "boundary-probe"},
+                enabled_toolsets=["skills"],
+                disabled_toolsets=["file", "terminal"],
+                **{
+                    key: value
+                    for key, value in actual_kwargs.items()
+                    if key != "middleware_trace"
+                },
+                tool_request_middleware_trace=[],
+            )
+            assert "skill_view is unavailable" in blocked_skill_view
+            assert not inline_marker.exists()
+
+        for malformed_skills in (None, [], "disabled", 0, False, True):
+            write_boundary_config(malformed_skills)
+            blocked_skill_view = model_tools.handle_function_call(
+                "skill_view",
+                {"name": "boundary-probe"},
+                enabled_toolsets=["skills"],
+                disabled_toolsets=["file", "terminal"],
+                **{
+                    key: value
+                    for key, value in actual_kwargs.items()
+                    if key != "middleware_trace"
+                },
+                tool_request_middleware_trace=[],
+            )
+            assert "skill_view is unavailable" in blocked_skill_view
+            assert not inline_marker.exists()
 
         def hidden_handler(args, **kwargs):
             executed.append(("hidden", args, kwargs))
@@ -163,10 +326,6 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
             executed.append(("career", args, kwargs))
             return json.dumps({"executed": "career"})
 
-        schema = {
-            "description": "runtime boundary sentinel",
-            "parameters": {"type": "object", "properties": {}},
-        }
         registry.register(
             name="reviewer_hidden_probe",
             toolset="todo",
@@ -199,8 +358,46 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
             **{key: value for key, value in actual_kwargs.items() if key != "middleware_trace"},
             tool_request_middleware_trace=[],
         )
-        assert "outside Pilot's local task boundary" in nested_blocked
+        assert "tool_call is disabled in CareerPilot" in nested_blocked
         assert executed == []
+
+        for allowed_wrapped_name in (
+            "career_job_queue",
+            "career_application_decide",
+            "skills_list",
+            "mcp__linkedin_search__search_jobs",
+        ):
+            wrapped = model_tools.handle_function_call(
+                "tool_call",
+                {"name": allowed_wrapped_name, "arguments": {}},
+                enabled_toolsets=[
+                    "career-web",
+                    "skills",
+                    "mcp-linkedin-search",
+                ],
+                disabled_toolsets=["file", "terminal", "web"],
+                **{
+                    key: value
+                    for key, value in actual_kwargs.items()
+                    if key != "middleware_trace"
+                },
+                tool_request_middleware_trace=[],
+            )
+            assert "tool_call is disabled in CareerPilot" in wrapped
+
+        from tools import tool_search as tool_search_module
+        for target in (
+            "career_job_queue",
+            "career_application_decide",
+            "skills_list",
+            "mcp__linkedin_search__search_jobs",
+            "search_files",
+        ):
+            underlying, arguments, error = tool_search_module.resolve_underlying_call(
+                {"name": target, "arguments": {}}
+            )
+            assert underlying is None and arguments is None
+            assert error == "tool_call is disabled in CareerPilot"
 
         for hidden_name in reported_hidden_names:
             nested = model_tools.handle_function_call(
@@ -222,10 +419,7 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
                 tool_request_middleware_trace=[],
             )
             nested_error = json.loads(nested)["error"]
-            assert (
-                "not available in this session" in nested_error
-                or "is not a deferrable tool" in nested_error
-            ), (hidden_name, nested)
+            assert "tool_call is disabled in CareerPilot" in nested_error
             assert executed == []
 
         reproduced = model_tools.handle_function_call(
@@ -255,13 +449,20 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
     environment = dict(os.environ)
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()
+    shutil.copytree(
+        PLUGIN_DIRECTORY,
+        hermes_home / "plugins" / "career-companion",
+    )
     (hermes_home / "config.yaml").write_text(
-        (
-            "skills:\n"
+            (
+                "plugins:\n"
+                "  enabled: [career-companion]\n"
+                "  disabled: []\n"
+                "skills:\n"
             "  inline_shell: false\n"
             "tools:\n"
             "  tool_search:\n"
-            "    enabled: 'off'\n"
+            "    enabled: false\n"
         ),
         encoding="utf-8",
     )
@@ -270,7 +471,12 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
             "CAREER_COMPANION_ALLOWED_MCP_TOOLS": json.dumps(
                 ["mcp__linkedin_search__search_jobs"]
             ),
+            "API_SERVER_KEY": "probe-api-secret",
+            "CAREER_COMPANION_ACCOUNT_KEY": "probe-account-key",
+            "CAREER_COMPANION_PLUGIN_TOKEN": "probe-bridge-secret",
+            "CAREER_COMPANION_GUARD_NONCE": "g" * 48,
             "HERMES_HOME": str(hermes_home),
+            "OPENAI_API_KEY": "probe-openai-secret",
         }
     )
 
@@ -288,3 +494,51 @@ def test_pinned_hermes_registry_dispatch_is_closed_by_exact_tool_name(tmp_path) 
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result["ok"] is True
     assert result["registered"] >= 60
+
+
+def test_pinned_profile_override_writes_guard_proof_to_installed_profile(
+    tmp_path,
+) -> None:
+    pinned_python = _pinned_hermes_python()
+    hermes_executable = pinned_python.with_name("hermes")
+    if not hermes_executable.is_file():
+        pytest.skip("Pinned Hermes executable is unavailable")
+    base_home = tmp_path / "hermes"
+    profile = base_home / "profiles" / "career-companion"
+    shutil.copytree(PLUGIN_DIRECTORY, profile / "plugins" / "career-companion")
+    (profile / "config.yaml").write_text(
+        (
+            "plugins:\n"
+            "  enabled: [career-companion]\n"
+            "  disabled: []\n"
+            "skills:\n"
+            "  inline_shell: false\n"
+            "tools:\n"
+            "  tool_search:\n"
+            "    enabled: false\n"
+        ),
+        encoding="utf-8",
+    )
+    nonce = "n" * 48
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "CAREER_COMPANION_ALLOWED_MCP_TOOLS": "[]",
+            "CAREER_COMPANION_GUARD_NONCE": nonce,
+            "HERMES_HOME": str(base_home),
+        }
+    )
+
+    completed = subprocess.run(
+        [str(hermes_executable), "-p", "career-companion", "tools", "list"],
+        cwd=REPOSITORY_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not (base_home / ".career-companion-guard").exists()
+    assert (profile / ".career-companion-guard").read_text(encoding="utf-8") == nonce

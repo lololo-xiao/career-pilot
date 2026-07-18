@@ -40,7 +40,7 @@ security:
   allow_lazy_installs: false
 tools:
   tool_search:
-    enabled: "off"
+    enabled: false
 mcp_servers:
   google-sheets:
     enabled: false

@@ -79,6 +79,27 @@ def test_jobs_are_deduplicated_and_isolated_by_account(client) -> None:
     assert client.get("/api/v1/jobs").json() == []
 
 
+def test_generic_revision_api_rejects_memory_before_any_mutation(client) -> None:
+    response = client.post(
+        "/api/v1/revisions",
+        json={
+            "kind": "memory",
+            "name": "arbitrary-memory",
+            "content": {"value": "unsafe"},
+            "diff": "bypass",
+            "author": "agent",
+            "source_session": "session-1",
+        },
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/v1/revisions").json() == []
+    assert not any(
+        event["event_type"].startswith("revision.")
+        for event in client.get("/api/v1/audit").json()
+    )
+
+
 def test_job_metadata_round_trips_for_queue_filters(client) -> None:
     payload = _job_payload()
     payload["spec"].update(
@@ -200,6 +221,10 @@ def test_application_state_api_requires_confirmed_submission(client) -> None:
     started = client.post("/api/v1/applications", params={"job_id": job_id})
     assert started.status_code == 200
     application_id = started.json()["id"]
+    repeated = client.post("/api/v1/applications", params={"job_id": job_id})
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == application_id
+    assert len(client.get("/api/v1/applications").json()) == 1
 
     for status_name in ("scored", "approved", "tailoring", "ready"):
         response = client.post(

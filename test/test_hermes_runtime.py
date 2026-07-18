@@ -21,6 +21,7 @@ from app.hermes_runtime import (
     HermesRuntimeUnavailable,
     PILOT_API_SERVER_TOOLSETS,
     PILOT_DISABLED_TOOLSETS,
+    _merge_mcp_environment_allowlist,
     installed_profile_directory,
     synchronize_hermes_profile_assets,
     synchronize_hermes_provider,
@@ -33,7 +34,7 @@ from app.main import (
     require_current_account,
     require_provider_account,
 )
-from career_companion.config import ProductConfig
+from career_companion.config import ProductConfig, load_config
 from career_companion.database import ModelRouteRecord
 from career_companion.hermes import HermesSupervisor
 from career_companion.paths import CompanionPaths
@@ -103,7 +104,11 @@ def test_provider_sync_is_explicit_and_keeps_secrets_out_of_yaml(tmp_path) -> No
     assert "terminal" not in config
     assert config["approvals"] == {"mode": "manual", "cron_mode": "deny"}
     assert config["skills"]["inline_shell"] is False
-    assert config["tools"]["tool_search"] == {"enabled": "off"}
+    assert config["tools"]["tool_search"] == {"enabled": False}
+    assert config["plugins"] == {
+        "enabled": ["career-companion"],
+        "disabled": [],
+    }
     assert environment == {"OPENAI_API_KEY": "sk-test-career-companion-key"}
     assert "sk-test" not in (profile / "config.yaml").read_text()
     assert not auth_path.exists()
@@ -163,6 +168,158 @@ def test_profile_assets_refresh_without_overwriting_user_data(tmp_path) -> None:
         "UPDATED = True\n"
     )
     assert user_memory.read_text() == "keep me"
+
+
+def test_provider_sync_replaces_malformed_runtime_boundary_containers(tmp_path) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "account")
+    profile = _install_profile(paths)
+    (profile / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {},
+                "agent": ["terminal"],
+                "platform_toolsets": "all",
+                "skills": ["inline_shell", True],
+                "tools": ["tool_search"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    synchronize_hermes_provider(
+        paths,
+        _account().provider_connection,  # type: ignore[arg-type]
+        model="gpt-5.4",
+        reasoning_effort="high",
+        token_limit=16_000,
+    )
+
+    config = yaml.safe_load((profile / "config.yaml").read_text())
+    assert config["agent"]["disabled_toolsets"] == list(PILOT_DISABLED_TOOLSETS)
+    assert config["platform_toolsets"]["api_server"] == list(
+        PILOT_API_SERVER_TOOLSETS
+    )
+    assert config["skills"]["inline_shell"] is False
+    assert config["tools"]["tool_search"] == {"enabled": False}
+
+
+@pytest.mark.parametrize(
+    "plugins",
+    [
+        None,
+        {},
+        {"enabled": [], "disabled": []},
+        {"enabled": [], "disabled": ["career-companion"]},
+        {
+            "enabled": ["career-companion", "unreviewed-plugin"],
+            "disabled": ["career-companion"],
+        },
+    ],
+)
+def test_provider_sync_reasserts_exact_career_plugin_boundary(
+    tmp_path,
+    plugins,
+) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "account")
+    profile = _install_profile(paths)
+    config_path = profile / "config.yaml"
+    payload = {"model": {}}
+    if plugins is not None:
+        payload["plugins"] = plugins
+    config_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    synchronize_hermes_provider(
+        paths,
+        _account().provider_connection,  # type: ignore[arg-type]
+        model="gpt-5.4",
+        reasoning_effort="low",
+        token_limit=4_000,
+    )
+
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["plugins"] == {
+        "enabled": ["career-companion"],
+        "disabled": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "plugins",
+    [
+        [],
+        "career-companion",
+        {"enabled": "career-companion"},
+        {"disabled": None},
+        {"enabled": ["Career-Companion"]},
+        {"enabled": ["career-companion", "career-companion"]},
+        {"disabled": [1]},
+    ],
+)
+def test_provider_sync_rejects_malformed_or_colliding_plugin_boundary(
+    tmp_path,
+    plugins,
+) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "account")
+    profile = _install_profile(paths)
+    config_path = profile / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"model": {}, "plugins": plugins}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HermesProviderConfigurationError, match="plugin"):
+        synchronize_hermes_provider(
+            paths,
+            _account().provider_connection,  # type: ignore[arg-type]
+            model="gpt-5.4",
+            reasoning_effort="low",
+            token_limit=4_000,
+        )
+
+
+@pytest.mark.parametrize("raw", ["false\n", "0\n", "[]\n", "''\n"])
+def test_profile_synchronization_rejects_every_falsy_non_mapping_root(
+    tmp_path,
+    raw,
+) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "account")
+    profile = _install_profile(paths)
+    (profile / "config.yaml").write_text(raw, encoding="utf-8")
+
+    with pytest.raises(HermesProviderConfigurationError, match="invalid"):
+        synchronize_hermes_provider(
+            paths,
+            _account().provider_connection,  # type: ignore[arg-type]
+            model="gpt-5.4",
+            reasoning_effort="low",
+            token_limit=4_000,
+        )
+
+
+def test_merged_mcp_environment_allowlist_has_one_global_cap() -> None:
+    base = ProductConfig(
+        mcp_env_allowlist=[f"BASE_MCP_{index}" for index in range(128)]
+    )
+    with pytest.raises(ValueError):
+        _merge_mcp_environment_allowlist(
+            base,
+            [f"SERVER_MCP_{index}" for index in range(128)],
+        )
+    merged = _merge_mcp_environment_allowlist(
+        base,
+        ["BASE_MCP_0", "BASE_MCP_1"],
+    )
+    assert len(merged.mcp_env_allowlist) == 128
+    with pytest.raises(ValueError, match="exact string list"):
+        _merge_mcp_environment_allowlist(base, "BASE_MCP_0")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("raw", ["false\n", "0\n", "[]\n", "''\n"])
+def test_product_config_rejects_every_falsy_non_mapping_root(tmp_path, raw) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "account")
+    paths.create()
+    paths.config.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="exact mapping"):
+        load_config(paths)
 
 
 def test_runtime_manager_restarts_on_provider_change_and_refreshes_codex(
@@ -392,6 +549,11 @@ def test_supervisor_readiness_requires_authenticated_hermes_capabilities(
             return FakeResponse()
 
     monkeypatch.setattr("career_companion.hermes.httpx.AsyncClient", FakeClient)
+    supervisor.guard_proof_path.parent.mkdir(parents=True, exist_ok=True)
+    supervisor.guard_proof_path.write_text(
+        supervisor._guard_nonce,
+        encoding="utf-8",
+    )
 
     result = asyncio.run(supervisor.health())
 

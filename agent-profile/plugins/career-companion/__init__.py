@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+from importlib import metadata
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -14,6 +16,9 @@ from .client import HermesBridgeClient
 TOOLSET = "career-web"
 _RUN_MESSAGE = ContextVar("career_companion_run_message", default="")
 _ALLOWED_MCP_TOOLS_ENV = "CAREER_COMPANION_ALLOWED_MCP_TOOLS"
+_GUARD_NONCE_ENV = "CAREER_COMPANION_GUARD_NONCE"
+_GUARD_PROOF = ".career-companion-guard"
+_PINNED_HERMES_VERSION = "0.18.2"
 _EXACT_MCP_TOOL_NAME = re.compile(r"mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+\Z")
 _SAFE_HERMES_HELPERS = frozenset(
     {
@@ -46,6 +51,22 @@ def _client() -> HermesBridgeClient:
     client = HermesBridgeClient()
     client.run_message = _RUN_MESSAGE.get()
     return client
+
+
+def _installed_hermes_version() -> str:
+    return metadata.version("hermes-agent")
+
+
+def _assert_pinned_hermes_version() -> None:
+    try:
+        installed = _installed_hermes_version()
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError("Pinned hermes-agent runtime is unavailable") from exc
+    if installed != _PINNED_HERMES_VERSION:
+        raise RuntimeError(
+            "CareerPilot requires hermes-agent "
+            f"{_PINNED_HERMES_VERSION}; found {installed}"
+        )
 
 
 def _profile(_: dict[str, Any]) -> Any:
@@ -475,6 +496,8 @@ def _configured_mcp_tools() -> frozenset[str]:
         for name in raw
     ):
         return frozenset()
+    if len({name.casefold() for name in raw}) != len(raw):
+        return frozenset()
     return frozenset(raw)
 
 
@@ -485,17 +508,125 @@ _ALLOWED_HERMES_TOOLS = (
 )
 
 
+def _filter_tool_definitions(definitions: Any) -> list[dict[str, Any]]:
+    if not isinstance(definitions, list):
+        return []
+    filtered: list[dict[str, Any]] = []
+    for definition in definitions:
+        if not isinstance(definition, dict):
+            continue
+        function = definition.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if name in _ALLOWED_HERMES_TOOLS:
+            filtered.append(definition)
+    return filtered
+
+
+def _install_model_tool_surface_filter() -> None:
+    """Filter schemas exactly; the dispatch hook remains the execution boundary."""
+
+    try:
+        import model_tools
+    except ImportError:
+        return
+
+    original = getattr(model_tools, "get_tool_definitions")
+    unfiltered = getattr(original, "_career_pilot_unfiltered", original)
+
+    def filtered(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return _filter_tool_definitions(unfiltered(*args, **kwargs))
+
+    filtered._career_pilot_exact_surface = True  # type: ignore[attr-defined]
+    filtered._career_pilot_unfiltered = unfiltered  # type: ignore[attr-defined]
+    model_tools.get_tool_definitions = filtered
+    filtered_get_definitions = model_tools.get_tool_definitions
+    run_agent = sys.modules.get("run_agent")
+    if run_agent is not None:
+        run_agent.get_tool_definitions = filtered_get_definitions
+
+    original_dispatch = getattr(model_tools, "handle_function_call")
+    unguarded_dispatch = getattr(
+        original_dispatch,
+        "_career_pilot_unfiltered",
+        original_dispatch,
+    )
+
+    def guarded_dispatch(function_name: str, *args: Any, **kwargs: Any) -> str:
+        if function_name in {"tool_call", "tool_describe", "tool_search"}:
+            return json.dumps(
+                {"error": f"{function_name} is disabled in CareerPilot"},
+                ensure_ascii=False,
+            )
+        return unguarded_dispatch(function_name, *args, **kwargs)
+
+    guarded_dispatch._career_pilot_exact_surface = True  # type: ignore[attr-defined]
+    guarded_dispatch._career_pilot_unfiltered = unguarded_dispatch  # type: ignore[attr-defined]
+    model_tools.handle_function_call = guarded_dispatch
+    if run_agent is not None:
+        run_agent.handle_function_call = guarded_dispatch
+    try:
+        from tools import tool_search as tool_search_module
+    except ImportError:
+        return
+
+    def reject_deferred_call(_: Any) -> tuple[None, None, str]:
+        return None, None, "tool_call is disabled in CareerPilot"
+
+    tool_search_module.resolve_underlying_call = reject_deferred_call
+
+
+def _write_runtime_guard_proof() -> None:
+    nonce = os.environ.get(_GUARD_NONCE_ENV, "")
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    if (
+        re.fullmatch(r"[A-Za-z0-9_-]{32,128}", nonce) is None
+        or not hermes_home
+    ):
+        raise RuntimeError("Career Companion runtime guard context is unavailable")
+    root = os.path.realpath(hermes_home)
+    proof = os.path.join(root, _GUARD_PROOF)
+    if os.path.islink(proof):
+        raise RuntimeError("Career Companion runtime guard proof path is unsafe")
+    temporary = f"{proof}.{os.getpid()}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(nonce)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, proof)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _skill_view_config_is_safe(config: Any) -> bool:
+    """Match Hermes truthiness by accepting only absent or exact false."""
+
+    if not isinstance(config, dict):
+        return False
+    if "skills" not in config:
+        return True
+    skills = config["skills"]
+    if not isinstance(skills, dict):
+        return False
+    if "inline_shell" not in skills:
+        return True
+    return skills["inline_shell"] is False
+
+
 def _skill_view_is_safe() -> bool:
     """Allow skill reads only while Hermes inline-shell expansion is disabled."""
 
     try:
         from hermes_cli.config import load_config
 
-        config = load_config() or {}
+        config = load_config()
     except Exception:
         return False
-    skills = config.get("skills") if isinstance(config, dict) else None
-    return not (isinstance(skills, dict) and skills.get("inline_shell") is True)
+    return _skill_view_config_is_safe(config)
 
 
 def _guard_tool_call(
@@ -545,6 +676,7 @@ def _guard_tool_call(
 
 
 def register(ctx: Any) -> None:
+    _assert_pinned_hermes_version()
     for tool in TOOLS:
         ctx.register_tool(
             name=tool.name,
@@ -553,4 +685,6 @@ def register(ctx: Any) -> None:
             handler=_json_handler(tool.handler),
             description=tool.description,
         )
+    _install_model_tool_surface_filter()
     ctx.register_hook("pre_tool_call", _guard_tool_call)
+    _write_runtime_guard_proof()

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StrictBool, model_validator
 
 
 class ClaimStatus(StrEnum):
@@ -199,10 +199,6 @@ class RevisionBase(BaseModel):
     created_at: datetime | None = None
 
 
-class MemoryRevision(RevisionBase):
-    kind: Literal["memory"] = "memory"
-
-
 class SkillRevision(RevisionBase):
     kind: Literal["skill"] = "skill"
 
@@ -261,11 +257,38 @@ class Schedule(BaseModel):
 
 
 class MCPServerConfig(BaseModel):
-    name: str
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str = Field(min_length=1, max_length=80)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1_000)
     transport: Literal["stdio", "http"]
-    command: str | None = None
-    args: list[str] = Field(default_factory=list)
-    url: HttpUrl | None = None
-    tool_allowlist: list[str] = Field(default_factory=list)
-    forwarded_environment: list[str] = Field(default_factory=list)
-    enabled: bool = False
+    command: str | None = Field(default=None, min_length=1, max_length=512)
+    args: list[Annotated[str, Field(max_length=1_024)]] = Field(
+        default_factory=list,
+        max_length=64,
+    )
+    url: str | None = Field(default=None, min_length=1, max_length=2_048)
+    tool_allowlist: list[Annotated[str, Field(min_length=1, max_length=160)]] = Field(
+        default_factory=list,
+        max_length=128,
+    )
+    forwarded_environment: list[
+        Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+    ] = Field(default_factory=list, max_length=64)
+    environment: dict[str, str] = Field(default_factory=dict)
+    enabled: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_runtime_boundary(self) -> "MCPServerConfig":
+        from career_companion.services.mcp_servers import (
+            _configured_mcp_tool_names_from_servers,
+            _validate_mcp_server_runtime_config,
+        )
+
+        payload = self.model_dump(mode="python")
+        if payload["display_name"] is None:
+            payload["display_name"] = self.name.replace("-", " ").title()
+        _validate_mcp_server_runtime_config(payload)
+        _configured_mcp_tool_names_from_servers([payload])
+        return self

@@ -7,7 +7,7 @@ from career_companion.database import RevisionRecord
 from career_companion.services.audit import record_audit
 from career_companion.services.replay import evaluate_replay_metrics
 
-ALLOWED_REVISION_KINDS = {"memory", "skill", "rubric"}
+ALLOWED_REVISION_KINDS = {"skill", "rubric"}
 REVISION_EVALUATION_GATES = (
     "quality_passed",
     "security_passed",
@@ -42,7 +42,9 @@ def create_revision(
     source_session: str,
 ) -> RevisionRecord:
     if kind not in ALLOWED_REVISION_KINDS:
-        raise PermissionError("Only memory, user-owned skills, and rubrics may evolve")
+        raise PermissionError(
+            "Generic revisions may only propose user-owned skills and rubrics"
+        )
     normalized_name = name.casefold().strip()
     if any(
         normalized_name == target
@@ -81,6 +83,10 @@ def evaluate_revision(session: Session, revision_id: str, metrics: dict) -> Revi
     revision = session.get(RevisionRecord, revision_id)
     if not revision:
         raise LookupError("Revision not found")
+    if revision.kind not in ALLOWED_REVISION_KINDS:
+        raise PermissionError(
+            "Generic revision evaluation is limited to skills and rubrics"
+        )
     required = set(REVISION_EVALUATION_GATES)
     if not required.issubset(metrics):
         raise ValueError("Evaluation must include quality, security, and cost results")
@@ -119,6 +125,8 @@ def rollback_revision(session: Session, revision_id: str) -> RevisionRecord:
     revision = session.get(RevisionRecord, revision_id)
     if not revision:
         raise LookupError("Revision not found")
+    if revision.kind not in ALLOWED_REVISION_KINDS:
+        raise PermissionError("Generic revision rollback is limited to skills and rubrics")
     was_active = revision.status == "active"
     revision.status = "rolled_back"
     previous = session.scalar(

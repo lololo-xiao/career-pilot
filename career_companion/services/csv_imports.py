@@ -6,12 +6,15 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from career_companion.database import ApplicationRecord, JobRecord
+from career_companion.database import JobRecord
 from career_companion.schemas import ApplicationStatus, Job, JobSpec
-from career_companion.services.applications import create_application, transition_application
+from career_companion.services.applications import (
+    ApplicationPersistenceError,
+    ensure_application,
+    transition_application,
+)
 from career_companion.services.jobs import add_job
 
 MAX_CSV_ROWS = 1_000
@@ -101,12 +104,10 @@ def import_applications_csv(session: Session, csv_text: str) -> CsvImportResult:
             elif _enrich_job(job_record, job.spec):
                 result.updated_jobs += 1
 
-            application = session.scalar(
-                select(ApplicationRecord).where(ApplicationRecord.job_id == job_record.id)
+            application, application_created = ensure_application(
+                session,
+                job_record.id,
             )
-            application_created = application is None
-            if application is None:
-                application = create_application(session, job_record.id)
 
             if application.status != target.value:
                 application = transition_application(
@@ -127,7 +128,7 @@ def import_applications_csv(session: Session, csv_text: str) -> CsvImportResult:
                 result.created_applications += 1
             else:
                 result.updated_applications += 1
-        except (ValueError, TypeError) as exc:
+        except (ApplicationPersistenceError, LookupError, ValueError, TypeError) as exc:
             result.errors.append(f"Row {row_number}: {exc}")
     return result
 

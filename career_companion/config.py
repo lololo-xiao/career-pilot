@@ -6,7 +6,7 @@ from contextlib import suppress
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
 from career_companion.paths import CompanionPaths
 
@@ -15,16 +15,23 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1024, le=65535)
     allowed_origins: list[str] = Field(
-        default_factory=lambda: ["http://127.0.0.1:8787", "http://localhost:8787"]
+        default_factory=lambda: ["http://127.0.0.1:8787", "http://localhost:8787"],
+        max_length=64,
     )
-    allow_remote: bool = False
+    allow_remote: StrictBool = False
 
-    @field_validator("host")
+    @field_validator("allowed_origins", mode="before")
     @classmethod
-    def enforce_loopback(cls, value: str) -> str:
-        if value not in {"127.0.0.1", "localhost", "::1"}:
-            raise ValueError("Remote binding requires the explicit advanced override")
+    def require_exact_origin_list(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError("Allowed origins must be an exact list")
         return value
+
+    @model_validator(mode="after")
+    def enforce_loopback(self) -> "ServerConfig":
+        if not self.allow_remote and self.host not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("Remote binding requires the explicit advanced override")
+        return self
 
 
 class ProductConfig(BaseModel):
@@ -39,20 +46,23 @@ class ProductConfig(BaseModel):
     hermes_api_port: int = 8788
     hermes_startup_timeout_seconds: float = Field(default=15.0, ge=1, le=60)
     daily_api_budget_usd: float = Field(default=2.0, ge=0)
-    adjacent_claims_allowed: bool = True
+    adjacent_claims_allowed: StrictBool = True
     claim_posture: str = "aggressive-but-defensible"
-    mcp_env_allowlist: list[str] = Field(default_factory=list)
+    mcp_env_allowlist: list[str] = Field(default_factory=list, max_length=128)
 
-    @field_validator("mcp_env_allowlist")
+    @field_validator("mcp_env_allowlist", mode="before")
     @classmethod
-    def validate_mcp_env_names(cls, values: list[str]) -> list[str]:
+    def validate_mcp_env_names(cls, values: object) -> list[str]:
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) for value in values
+        ):
+            raise ValueError("MCP environment allowlist must be an exact string list")
         result: list[str] = []
         for value in values:
-            name = value.strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
                 raise ValueError(f"Invalid environment variable name: {value}")
-            if name not in result:
-                result.append(name)
+            if value not in result:
+                result.append(value)
         return result
 
 
@@ -60,13 +70,11 @@ def load_config(paths: CompanionPaths | None = None) -> ProductConfig:
     paths = paths or CompanionPaths.discover()
     if not paths.config.exists():
         return ProductConfig()
-    data = yaml.safe_load(paths.config.read_text(encoding="utf-8")) or {}
-    config = ProductConfig.model_validate(data)
-    if config.server.allow_remote:
-        # The advanced override deliberately bypasses the normal validator.
-        raw_host = data.get("server", {}).get("host", config.server.host)
-        object.__setattr__(config.server, "host", str(raw_host))
-    return config
+    loaded = yaml.safe_load(paths.config.read_text(encoding="utf-8"))
+    data = {} if loaded is None else loaded
+    if not isinstance(data, dict):
+        raise ValueError("Product configuration must be an exact mapping")
+    return ProductConfig.model_validate(data)
 
 
 def save_config(config: ProductConfig, paths: CompanionPaths | None = None) -> None:

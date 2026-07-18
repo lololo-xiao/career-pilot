@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from career_companion.database import ApplicationRecord, StatusEventRecord
+from career_companion.database import (
+    ApplicationJobClaimRecord,
+    ApplicationRecord,
+    JobRecord,
+    StatusEventRecord,
+)
 from career_companion.schemas import ApplicationStatus
 from career_companion.services.audit import record_audit
 
@@ -94,6 +102,16 @@ NEXT_ACTIONS = {
     "withdrawn": "No action needed",
 }
 
+_APPLICATION_ID_ATTEMPTS = 3
+
+
+def _new_application_id() -> str:
+    return str(uuid.uuid4())
+
+
+class ApplicationPersistenceError(RuntimeError):
+    """A local application reservation could not be completed safely."""
+
 
 @dataclass(frozen=True)
 class ScoredApplicationDecisionResult:
@@ -105,16 +123,9 @@ class ScoredApplicationDecisionResult:
 
 
 def create_application(session: Session, job_id: str) -> ApplicationRecord:
-    application = ApplicationRecord(job_id=job_id)
-    session.add(application)
-    session.flush()
-    record_audit(
-        session,
-        "application.created",
-        subject_type="application",
-        subject_id=application.id,
-        payload={"job_id": job_id},
-    )
+    """Return the canonical application, creating its durable claim if needed."""
+
+    application, _ = ensure_application(session, job_id)
     return application
 
 
@@ -122,16 +133,73 @@ def ensure_application(
     session: Session,
     job_id: str,
 ) -> tuple[ApplicationRecord, bool]:
-    """Idempotently return one existing application for a job or create it."""
+    """Atomically return the one canonical application for a saved job."""
 
-    existing = session.scalar(
-        select(ApplicationRecord)
-        .where(ApplicationRecord.job_id == job_id)
-        .order_by(ApplicationRecord.created_at.asc(), ApplicationRecord.id.asc())
-    )
-    if existing is not None:
-        return existing, False
-    return create_application(session, job_id), True
+    if session.get(JobRecord, job_id) is None:
+        raise LookupError("Job not found")
+    created = False
+    for _ in range(_APPLICATION_ID_ATTEMPTS):
+        candidate_id = _new_application_id()
+        collision = False
+        try:
+            with session.begin_nested():
+                inserted = session.execute(
+                    sqlite_insert(ApplicationRecord)
+                    .values(id=candidate_id, job_id=job_id)
+                    .on_conflict_do_nothing(index_elements=[ApplicationRecord.id])
+                )
+                if inserted.rowcount != 1:
+                    collision = True
+                else:
+                    claimed = session.execute(
+                        sqlite_insert(ApplicationJobClaimRecord)
+                        .values(job_id=job_id, application_id=candidate_id)
+                        .on_conflict_do_nothing(
+                            index_elements=[ApplicationJobClaimRecord.job_id]
+                        )
+                    )
+                    created = claimed.rowcount == 1
+                    if created:
+                        record_audit(
+                            session,
+                            "application.created",
+                            subject_type="application",
+                            subject_id=candidate_id,
+                            payload={"job_id": job_id},
+                        )
+                    else:
+                        session.execute(
+                            delete(ApplicationRecord).where(
+                                ApplicationRecord.id == candidate_id
+                            )
+                        )
+        except SQLAlchemyError as exc:
+            raise ApplicationPersistenceError(
+                "The local application reservation could not be completed"
+            ) from exc
+        if collision:
+            continue
+        break
+    else:
+        raise ApplicationPersistenceError(
+            "The local application reservation could not allocate an identifier"
+        )
+
+    claim = session.get(ApplicationJobClaimRecord, job_id)
+    if claim is None:
+        raise ApplicationPersistenceError(
+            "The canonical application reservation is unavailable"
+        )
+    application = session.get(ApplicationRecord, claim.application_id)
+    if application is None:
+        raise ApplicationPersistenceError(
+            "The canonical application reservation is invalid"
+        )
+    if application.job_id != job_id:
+        raise ApplicationPersistenceError(
+            "The canonical application reservation does not match the saved job"
+        )
+    return application, created
 
 
 def decide_scored_application(
@@ -177,8 +245,6 @@ def decide_scored_application(
         f"decision_reference_sha256={reference_hash}; "
         f"fingerprint={fingerprint}"
     )
-    # End validation-only reads so the compare-and-set starts a fresh transaction.
-    session.rollback()
     try:
         updated = session.execute(
             update(ApplicationRecord)
@@ -264,6 +330,16 @@ def transition_application(
         raise LookupError("Application not found")
     current = application.status
     if target.value == current:
+        prior_events = session.scalars(
+            select(StatusEventRecord).where(
+                StatusEventRecord.application_id == application.id,
+                StatusEventRecord.to_status == target.value,
+            )
+        ).all()
+        if prior_events and not any(event.note == note for event in prior_events):
+            raise ValueError(
+                "Application already reached the requested status with a different reference"
+            )
         return application
     if not manual_override and target.value not in ALLOWED_TRANSITIONS.get(current, set()):
         raise ValueError(f"Invalid application transition: {current} -> {target.value}")
@@ -273,17 +349,46 @@ def transition_application(
         and not confirmed_by_user
     ):
         raise PermissionError("Submission can only be recorded after explicit user confirmation")
-    event = StatusEventRecord(
-        application_id=application.id,
-        from_status=current,
-        to_status=target.value,
-        note=note,
-    )
-    session.add(event)
-    application.status = target.value
+    values: dict[str, object] = {
+        "status": target.value,
+        "next_action": NEXT_ACTIONS[target.value],
+    }
     if target.value in APPLICATION_STARTED_STATUSES and application.submitted_at is None:
-        application.submitted_at = datetime.now(UTC)
-    application.next_action = NEXT_ACTIONS[target.value]
+        values["submitted_at"] = datetime.now(UTC)
+    updated = session.execute(
+        update(ApplicationRecord)
+        .where(
+            ApplicationRecord.id == application.id,
+            ApplicationRecord.status == current,
+        )
+        .values(**values)
+    )
+    if updated.rowcount != 1:
+        session.expire_all()
+        concurrent = session.get(ApplicationRecord, application_id)
+        if concurrent is None:
+            raise LookupError("Application not found")
+        existing_event = session.scalar(
+            select(StatusEventRecord).where(
+                StatusEventRecord.application_id == application_id,
+                StatusEventRecord.from_status == current,
+                StatusEventRecord.to_status == target.value,
+                StatusEventRecord.note == note,
+            )
+        )
+        if concurrent.status == target.value and existing_event is not None:
+            return concurrent
+        raise ValueError(
+            f"Application status changed concurrently: {current} -> {concurrent.status}"
+        )
+    session.add(
+        StatusEventRecord(
+            application_id=application.id,
+            from_status=current,
+            to_status=target.value,
+            note=note,
+        )
+    )
     record_audit(
         session,
         "application.status_changed",
@@ -296,4 +401,5 @@ def transition_application(
             "manual_override": manual_override,
         },
     )
+    session.expire(application)
     return application

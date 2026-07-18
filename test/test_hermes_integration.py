@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -25,8 +26,17 @@ from career_companion.services.conversation_sessions import (
     append_message,
     create_conversation_session,
 )
+import career_companion.hermes_bridge as hermes_bridge_module
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _runtime_guard_environment(tmp_path, monkeypatch) -> None:
+    hermes_home = tmp_path / "hermes-guard"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CAREER_COMPANION_GUARD_NONCE", "g" * 48)
 PLUGIN_DIRECTORY = REPOSITORY_ROOT / "agent-profile" / "plugins" / "career-companion"
 
 
@@ -58,6 +68,7 @@ def _load_profile_plugin() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    module._installed_hermes_version = lambda: "0.18.2"
     return module
 
 
@@ -335,6 +346,22 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
     assert guard("skill_view", {}, **runtime_kwargs)["action"] == "block"
 
 
+def test_profile_plugin_rejects_unpinned_hermes_before_registering_guard(
+    monkeypatch,
+) -> None:
+    plugin = _load_profile_plugin()
+    monkeypatch.setattr(plugin, "_installed_hermes_version", lambda: "0.19.0")
+    context = FakePluginContext()
+    proof = Path(os.environ["HERMES_HOME"]) / ".career-companion-guard"
+
+    with pytest.raises(RuntimeError, match="requires hermes-agent 0.18.2"):
+        plugin.register(context)
+
+    assert context.tools == {}
+    assert context.hooks == {}
+    assert not proof.exists()
+
+
 def test_profile_plugin_fails_closed_on_invalid_mcp_boundary(monkeypatch) -> None:
     monkeypatch.setenv(
         "CAREER_COMPANION_ALLOWED_MCP_TOOLS",
@@ -348,6 +375,44 @@ def test_profile_plugin_fails_closed_on_invalid_mcp_boundary(monkeypatch) -> Non
     ] == "block"
     assert plugin._guard_tool_call("terminal", {})["action"] == "block"
     assert plugin._guard_tool_call("career_job_queue", {}) is None
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({}, True),
+        ({"skills": {}}, True),
+        ({"skills": {"inline_shell": False}}, True),
+        ({"skills": {"inline_shell": True}}, False),
+        ({"skills": {"inline_shell": "true"}}, False),
+        ({"skills": {"inline_shell": "false"}}, False),
+        ({"skills": {"inline_shell": "yes"}}, False),
+        ({"skills": {"inline_shell": ""}}, False),
+        ({"skills": {"inline_shell": 1}}, False),
+        ({"skills": {"inline_shell": 0}}, False),
+        ({"skills": {"inline_shell": None}}, False),
+        ({"skills": {"inline_shell": []}}, False),
+        ({"skills": {"inline_shell": [False]}}, False),
+        ({"skills": {"inline_shell": {}}}, False),
+        ({"skills": {"inline_shell": {"enabled": False}}}, False),
+        ({"skills": None}, False),
+        ({"skills": []}, False),
+        ({"skills": "disabled"}, False),
+        ({"skills": 0}, False),
+        ({"skills": False}, False),
+        (None, False),
+        ([], False),
+        ("config", False),
+        (0, False),
+    ],
+)
+def test_skill_view_boundary_accepts_only_absent_or_exact_false(
+    config,
+    expected,
+) -> None:
+    plugin = _load_profile_plugin()
+
+    assert plugin._skill_view_config_is_safe(config) is expected
 
 
 def test_profile_revision_tool_rejects_generic_memory_proposals(monkeypatch) -> None:
@@ -709,10 +774,47 @@ def test_hermes_supervisor_forwards_only_explicit_environment(
     )
     with pytest.raises(ValueError, match="reserved"):
         reserved_mcp_boundary.environment()
+    case_variant_reserved = HermesSupervisor(
+        paths, ProductConfig(mcp_env_allowlist=["openai_api_key"])
+    )
+    with pytest.raises(ValueError, match="reserved"):
+        case_variant_reserved.environment()
+    guard_nonce_reserved = HermesSupervisor(
+        paths,
+        ProductConfig(mcp_env_allowlist=["career_companion_guard_nonce"]),
+    )
+    with pytest.raises(ValueError, match="reserved"):
+        guard_nonce_reserved.environment()
     with pytest.raises(ValueError, match="account-scoped"):
         HermesSupervisor(base, config).environment()
     with pytest.raises(ValueError, match="exact registry names"):
         HermesSupervisor(paths, config, allowed_mcp_tool_names=["search_jobs"])
+    with pytest.raises(ValueError, match="exact list"):
+        HermesSupervisor(
+            paths,
+            config,
+            allowed_mcp_tool_names=("mcp__server__search",),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["SAFE_MCP_ARG", ("SAFE_MCP_ARG",), {"SAFE_MCP_ARG"}, {}, None, 1, True],
+)
+def test_product_mcp_forwarding_requires_an_exact_string_list(value) -> None:
+    with pytest.raises(ValueError):
+        ProductConfig.model_validate({"mcp_env_allowlist": value})
+
+
+def test_product_mcp_forwarding_list_is_bounded() -> None:
+    with pytest.raises(ValueError):
+        ProductConfig(mcp_env_allowlist=[f"SAFE_MCP_{index}" for index in range(129)])
+
+
+@pytest.mark.parametrize("value", ["true", "false", "yes", 1, 0, None, [], {}])
+def test_remote_binding_switch_requires_an_exact_boolean(value) -> None:
+    with pytest.raises(ValueError):
+        ProductConfig.model_validate({"server": {"allow_remote": value}})
 
 
 def test_profile_distribution_matches_pinned_hermes_contract() -> None:
@@ -763,7 +865,7 @@ def test_profile_distribution_matches_pinned_hermes_contract() -> None:
     )
     assert config["skills"]["write_approval"] is True
     assert config["skills"]["inline_shell"] is False
-    assert config["tools"]["tool_search"] == {"enabled": "off"}
+    assert config["tools"]["tool_search"] == {"enabled": False}
     for server in config["mcp_servers"].values():
         assert server["tools"]["include"]
         assert server["tools"]["prompts"] is False
@@ -1022,6 +1124,89 @@ def test_internal_bridge_rejects_stale_or_invented_job_selection(
     assert queued_job["tier"] is None
 
 
+def test_tracking_freshness_ignores_later_assistant_message(
+    bridge_client,
+) -> None:
+    client, headers = bridge_client
+    job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
+    ).json()["id"]
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    directive = "Track Bridge GmbH ML Engineer."
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        run_message = append_message(
+            session,
+            conversation,
+            role="user",
+            content=directive,
+        )
+        run_message_id = run_message.id
+        append_message(
+            session,
+            conversation,
+            role="assistant",
+            content="I will track that selected role locally.",
+        )
+
+    response = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers | {"X-Career-Run-Message": run_message_id},
+        json={"selection_reference": directive},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["application"]["status"] == "scored"
+
+
+def test_tracking_rechecks_latest_message_in_the_write_transaction(
+    bridge_client,
+    monkeypatch,
+) -> None:
+    client, headers = bridge_client
+    job_id = client.post(
+        "/api/internal/hermes/v1/jobs", headers=headers, json=_job_payload()
+    ).json()["id"]
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    directive = "Track Bridge GmbH ML Engineer."
+    with account_session(paths) as session:
+        conversation = create_conversation_session(session, paths)
+        message = append_message(session, conversation, role="user", content=directive)
+        conversation_id = conversation.id
+        message_id = message.id
+    original = hermes_bridge_module._rebind_latest_run_message_for_write
+
+    def append_between_initial_check_and_write(session, run_message_id):
+        with account_session(paths) as concurrent_session:
+            conversation = concurrent_session.get(
+                ConversationSessionRecord,
+                conversation_id,
+            )
+            append_message(
+                concurrent_session,
+                conversation,
+                role="user",
+                content="Show me more roles instead.",
+            )
+        return original(session, run_message_id)
+
+    monkeypatch.setattr(
+        hermes_bridge_module,
+        "_rebind_latest_run_message_for_write",
+        append_between_initial_check_and_write,
+    )
+    response = client.post(
+        f"/api/internal/hermes/v1/jobs/{job_id}/track-selected",
+        headers=headers | {"X-Career-Run-Message": message_id},
+        json={"selection_reference": directive},
+    )
+
+    assert response.status_code == 409
+    assert "no longer the latest" in response.json()["detail"]
+    assert client.get("/api/v1/applications").json() == []
+    assert client.get("/api/v1/jobs").json()[0]["score"] is None
+
+
 def test_current_run_cannot_track_from_another_same_account_session(
     bridge_client,
 ) -> None:
@@ -1272,6 +1457,49 @@ def test_internal_bridge_records_scored_decision_idempotently(
     audit_history = json.dumps(audit_payloads, sort_keys=True)
     assert user_request not in audit_history
     assert reference not in audit_history
+
+
+def test_decision_rechecks_latest_message_in_the_cas_transaction(
+    bridge_client,
+    monkeypatch,
+) -> None:
+    client, headers = bridge_client
+    _, application_id, session_id = _tracked_application(client, headers)
+    directive = "Approve Bridge GmbH ML Engineer."
+    message_id = _append_user_message(session_id, directive)
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    original = hermes_bridge_module._rebind_latest_run_message_for_write
+
+    def append_between_initial_check_and_write(session, run_message_id):
+        with account_session(paths) as concurrent_session:
+            conversation = concurrent_session.get(
+                ConversationSessionRecord,
+                session_id,
+            )
+            append_message(
+                concurrent_session,
+                conversation,
+                role="user",
+                content="Wait; show the queue instead.",
+            )
+        return original(session, run_message_id)
+
+    monkeypatch.setattr(
+        hermes_bridge_module,
+        "_rebind_latest_run_message_for_write",
+        append_between_initial_check_and_write,
+    )
+    response = client.post(
+        f"/api/internal/hermes/v1/applications/{application_id}/decide",
+        headers=headers | {"X-Career-Run-Message": message_id},
+        json={"decision": "approve", "decision_reference": directive},
+    )
+
+    assert response.status_code == 409
+    assert "no longer the latest" in response.json()["detail"]
+    saved = client.get("/api/v1/applications").json()[0]
+    assert saved["status"] == "scored"
+    assert len(saved["status_events"]) == 1
 
 
 def test_internal_bridge_rejects_stale_invented_negated_and_ambiguous_decisions(

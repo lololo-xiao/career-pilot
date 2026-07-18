@@ -93,6 +93,21 @@ class ApplicationRecord(Base, TimestampMixin):
     )
 
 
+class ApplicationJobClaimRecord(Base):
+    """Durable canonical application reservation for one saved job."""
+
+    __tablename__ = "application_job_claims"
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.id"),
+        unique=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+    )
+
+
 class ArtifactRecord(Base, TimestampMixin):
     __tablename__ = "artifacts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -212,7 +227,10 @@ class ConversationSessionRecord(Base, TimestampMixin):
     messages: Mapped[list[ConversationMessageRecord]] = relationship(
         back_populates="conversation",
         cascade="all, delete-orphan",
-        order_by="ConversationMessageRecord.position",
+        order_by=lambda: (
+            ConversationMessageRecord.position,
+            ConversationMessageRecord.id,
+        ),
     )
 
 
@@ -266,6 +284,68 @@ def build_engine(paths: CompanionPaths | None = None):
 def initialize_database(paths: CompanionPaths | None = None) -> None:
     engine = build_engine(paths)
     Base.metadata.create_all(engine)
+    ensure_application_job_claims(engine)
+
+
+def ensure_application_job_claims(engine) -> None:
+    """Losslessly backfill one deterministic canonical claim per saved job.
+
+    Legacy duplicate applications stay untouched and visible. Existing valid claims
+    remain stable; only an unclaimed legacy job selects its earliest application.
+    ``BEGIN IMMEDIATE`` makes the backfill atomic across processes; a failed run
+    rolls back every claim and can be restarted safely.
+    """
+
+    with engine.connect() as connection:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            connection.exec_driver_sql(
+                """
+                INSERT OR IGNORE INTO application_job_claims (
+                    job_id,
+                    application_id,
+                    created_at
+                )
+                SELECT canonical.job_id, canonical.id, CURRENT_TIMESTAMP
+                FROM applications AS canonical
+                WHERE canonical.id = (
+                    SELECT candidate.id
+                    FROM applications AS candidate
+                    WHERE candidate.job_id = canonical.job_id
+                    ORDER BY candidate.created_at ASC, candidate.id ASC
+                    LIMIT 1
+                )
+                ORDER BY canonical.job_id
+                """
+            )
+            invalid_claim = connection.exec_driver_sql(
+                """
+                SELECT claim.job_id, claim.application_id
+                FROM application_job_claims AS claim
+                LEFT JOIN applications AS application
+                  ON application.id = claim.application_id
+                WHERE application.id IS NULL OR application.job_id != claim.job_id
+                LIMIT 1
+                """
+            ).first()
+            if invalid_claim is not None:
+                raise RuntimeError("Application job claim integrity check failed")
+            missing_claim = connection.exec_driver_sql(
+                """
+                SELECT application.job_id
+                FROM applications AS application
+                LEFT JOIN application_job_claims AS claim
+                  ON claim.job_id = application.job_id
+                WHERE claim.job_id IS NULL
+                LIMIT 1
+                """
+            ).first()
+            if missing_claim is not None:
+                raise RuntimeError("Application job claim backfill was incomplete")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def session_factory(paths: CompanionPaths | None = None) -> sessionmaker[Session]:

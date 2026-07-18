@@ -2,6 +2,7 @@ import asyncio
 import codecs
 import json
 import re
+import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -140,6 +141,7 @@ from career_companion.services.conversation_sessions import (
     get_conversation_session,
     message_json,
     rename_conversation_session,
+    reserve_conversation_write,
     session_json,
     session_list_json,
     session_summary_json,
@@ -150,7 +152,7 @@ from career_companion.services.mcp_servers import (
     delete_mcp_server,
     ensure_default_mcp_servers,
     list_mcp_servers,
-    synchronize_mcp_profile_config,
+    synchronize_mcp_profile_config_from_session,
     upsert_mcp_server,
 )
 from career_companion.services.memory_context import (
@@ -743,6 +745,7 @@ def add_companion_session_message(
 ) -> ConversationMessageResponse:
     try:
         with account_session(paths) as session:
+            reserve_conversation_write(session)
             conversation = get_conversation_session(session, session_id)
             message = append_message(
                 session,
@@ -985,6 +988,33 @@ def read_mcp_settings(
     return _mcp_settings(paths)
 
 
+async def _apply_mcp_reconfiguration(
+    *,
+    account: AuthenticatedAccount,
+    paths: CompanionPaths,
+    runtime: HermesRuntimeManager,
+    mutate: Callable[..., None],
+) -> None:
+    distribution = profile_distribution_directory()
+    change_version = str(uuid.uuid4())
+
+    def mutate_and_synchronize() -> None:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, distribution)
+            mutate(session, change_version)
+            synchronize_mcp_profile_config_from_session(
+                session,
+                paths,
+                distribution,
+            )
+
+    await runtime.reconfigure(
+        account.user_id,
+        paths,
+        mutate_and_synchronize,
+    )
+
+
 @app.post("/settings/mcp", response_model=MCPSettingsResponse)
 async def create_mcp_setting(
     request: MCPServerSettingsRequest,
@@ -993,20 +1023,26 @@ async def create_mcp_setting(
     paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
 ) -> MCPSettingsResponse:
-    distribution = profile_distribution_directory()
     try:
-        with account_session(paths) as session:
-            ensure_default_mcp_servers(session, distribution)
+        def create(session, change_version: str) -> None:
             if session.get(MCPServerRecord, request.name) is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="An MCP server with that name already exists",
-                )
-            upsert_mcp_server(session, request.model_dump(mode="json"))
-        synchronize_mcp_profile_config(paths, distribution)
-    except ValueError as exc:
+                raise ValueError("An MCP server with that name already exists")
+            upsert_mcp_server(
+                session,
+                request.model_dump(mode="json"),
+                change_version=change_version,
+            )
+
+        await _apply_mcp_reconfiguration(
+            account=account,
+            paths=paths,
+            runtime=runtime,
+            mutate=create,
+        )
+    except HermesRuntimeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
     return _mcp_settings(paths)
 
@@ -1020,23 +1056,29 @@ async def update_mcp_setting(
     paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
 ) -> MCPSettingsResponse:
-    distribution = profile_distribution_directory()
     if name == "linkedin-search" and request.name != name:
         raise HTTPException(status_code=400, detail="The LinkedIn preset cannot be renamed")
     try:
-        with account_session(paths) as session:
-            ensure_default_mcp_servers(session, distribution)
+        def update_server(session, change_version: str) -> None:
             upsert_mcp_server(
                 session,
                 request.model_dump(mode="json"),
                 previous_name=name,
+                change_version=change_version,
             )
-        synchronize_mcp_profile_config(paths, distribution)
+
+        await _apply_mcp_reconfiguration(
+            account=account,
+            paths=paths,
+            runtime=runtime,
+            mutate=update_server,
+        )
+    except HermesRuntimeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
     return _mcp_settings(paths)
 
@@ -1049,17 +1091,22 @@ async def remove_mcp_setting(
     paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
     runtime: Annotated[HermesRuntimeManager, Depends(get_hermes_runtime_manager)],
 ) -> MCPSettingsResponse:
-    distribution = profile_distribution_directory()
     try:
-        with account_session(paths) as session:
-            ensure_default_mcp_servers(session, distribution)
-            delete_mcp_server(session, name)
-        synchronize_mcp_profile_config(paths, distribution)
+        def delete_server(session, change_version: str) -> None:
+            delete_mcp_server(session, name, change_version=change_version)
+
+        await _apply_mcp_reconfiguration(
+            account=account,
+            paths=paths,
+            runtime=runtime,
+            mutate=delete_server,
+        )
+    except HermesRuntimeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await runtime.invalidate(account.user_id)
     _prevent_auth_caching(response)
     return _mcp_settings(paths)
 
@@ -1335,6 +1382,7 @@ def create_companion_reply(
 ) -> CompanionChatResponse:
     try:
         with account_session(paths) as session:
+            reserve_conversation_write(session)
             conversation = (
                 get_conversation_session(session, request.session_id)
                 if request.session_id
@@ -1380,6 +1428,7 @@ def create_companion_reply(
             session_id = conversation.id
         reply = companion(effective_request)
         with account_session(paths) as session:
+            reserve_conversation_write(session)
             conversation = get_conversation_session(session, session_id)
             append_message(
                 session,
@@ -1410,6 +1459,7 @@ async def stream_companion_reply(
 ) -> StreamingResponse:
     try:
         with account_session(paths) as session:
+            reserve_conversation_write(session)
             conversation = (
                 get_conversation_session(session, request.session_id)
                 if request.session_id
@@ -1559,6 +1609,7 @@ async def stream_companion_reply(
             if completed and assistant_text.strip():
                 try:
                     with account_session(paths) as session:
+                        reserve_conversation_write(session)
                         conversation = get_conversation_session(session, session_id)
                         append_message(
                             session,

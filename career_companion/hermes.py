@@ -19,6 +19,8 @@ from career_companion.paths import CompanionPaths
 
 PROFILE_NAME = "career-companion"
 PILOT_ALLOWED_MCP_TOOLS_ENV = "CAREER_COMPANION_ALLOWED_MCP_TOOLS"
+PILOT_GUARD_NONCE_ENV = "CAREER_COMPANION_GUARD_NONCE"
+PILOT_GUARD_PROOF = ".career-companion-guard"
 _EXACT_MCP_TOOL_NAME = re.compile(r"mcp__[A-Za-z0-9_]+__[A-Za-z0-9_]+\Z")
 
 _SAFE_PARENT_ENV = {
@@ -63,6 +65,7 @@ _RESERVED_ENV = _RUNTIME_CREDENTIAL_ENV | {
     "CAREER_COMPANION_ACCOUNT_KEY",
     PILOT_ALLOWED_MCP_TOOLS_ENV,
     "CAREER_COMPANION_API_URL",
+    PILOT_GUARD_NONCE_ENV,
     "CAREER_COMPANION_PLUGIN_TOKEN",
     "HERMES_HOME",
     "HERMES_WRITE_SAFE_ROOT",
@@ -76,7 +79,7 @@ class HermesSupervisor:
         config: ProductConfig,
         *,
         api_base_url: str | None = None,
-        allowed_mcp_tool_names: tuple[str, ...] | list[str] = (),
+        allowed_mcp_tool_names: list[str] | None = None,
     ) -> None:
         self.paths = paths
         self.config = config
@@ -86,6 +89,12 @@ class HermesSupervisor:
         self.api_base_url = api_base_url or (
             f"http://127.0.0.1:{config.server.port}/api/internal/hermes/v1"
         )
+        if allowed_mcp_tool_names is None:
+            allowed_mcp_tool_names = []
+        if not isinstance(allowed_mcp_tool_names, list):
+            raise ValueError("Pilot MCP tools require an exact list")
+        if any(not isinstance(name, str) for name in allowed_mcp_tool_names):
+            raise ValueError("Pilot MCP tool registry names must be strings")
         allowed_mcp_tools = tuple(sorted(set(allowed_mcp_tool_names)))
         if len(allowed_mcp_tools) > 128 or any(
             len(name) > 400 or _EXACT_MCP_TOOL_NAME.fullmatch(name) is None
@@ -93,6 +102,7 @@ class HermesSupervisor:
         ):
             raise ValueError("Pilot MCP tools require bounded exact registry names")
         self.allowed_mcp_tool_names = allowed_mcp_tools
+        self._guard_nonce = secrets.token_urlsafe(36)
 
     @property
     def executable(self) -> str | None:
@@ -105,6 +115,12 @@ class HermesSupervisor:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.config.hermes_api_port}"
+
+    @property
+    def guard_proof_path(self) -> Path:
+        # ``hermes -p career-companion`` rewrites HERMES_HOME to this profile
+        # directory before plugin discovery.
+        return self.paths.hermes_profile / "profiles" / PROFILE_NAME / PILOT_GUARD_PROOF
 
     def bearer_secret(self) -> str:
         if self.api_key_path.exists():
@@ -136,8 +152,9 @@ class HermesSupervisor:
             raise ValueError("Hermes requires an account-scoped companion workspace")
 
         env = {key: value for key, value in os.environ.items() if key in _SAFE_PARENT_ENV}
+        reserved_environment = {key.casefold() for key in _RESERVED_ENV}
         for key in self.config.mcp_env_allowlist:
-            if key in _RESERVED_ENV:
+            if key.casefold() in reserved_environment:
                 raise ValueError(f"{key} is reserved and cannot be forwarded to Hermes")
             if value := os.environ.get(key):
                 env[key] = value
@@ -162,6 +179,7 @@ class HermesSupervisor:
                 ),
                 "CAREER_COMPANION_API_URL": self.api_base_url,
                 "CAREER_COMPANION_PLUGIN_TOKEN": self.bridge_secret(),
+                PILOT_GUARD_NONCE_ENV: self._guard_nonce,
                 "API_SERVER_ENABLED": "true",
                 "API_SERVER_HOST": "127.0.0.1",
                 "API_SERVER_PORT": str(self.config.hermes_api_port),
@@ -179,6 +197,10 @@ class HermesSupervisor:
         if not executable:
             raise RuntimeError("Hermes is not installed. Run career-companion doctor for details.")
         self.paths.logs.mkdir(parents=True, exist_ok=True)
+        guard_proof = self.guard_proof_path
+        if guard_proof.is_symlink():
+            raise RuntimeError("Pilot's runtime guard proof path is unsafe")
+        guard_proof.unlink(missing_ok=True)
         with (self.paths.logs / "hermes-gateway.log").open("ab") as log:
             self.process = await asyncio.create_subprocess_exec(
                 executable,
@@ -212,6 +234,25 @@ class HermesSupervisor:
             payload = response.json()
             if payload.get("object") != "hermes.api_server.capabilities":
                 raise ValueError("Unexpected Hermes capability response")
+            guard_proof = self.guard_proof_path
+            try:
+                guard_active = (
+                    guard_proof.is_file()
+                    and not guard_proof.is_symlink()
+                    and secrets.compare_digest(
+                        guard_proof.read_text(encoding="utf-8"),
+                        self._guard_nonce,
+                    )
+                )
+            except OSError:
+                guard_active = False
+            if not guard_active:
+                return {
+                    "available": False,
+                    "installed": bool(self.executable),
+                    "running": bool(self.process and self.process.returncode is None),
+                    "error": "Career Companion runtime guard is not active",
+                }
             return {"available": True, "status": payload}
         except (httpx.HTTPError, ValueError):
             return {
