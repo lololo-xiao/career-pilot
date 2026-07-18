@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -15,13 +16,22 @@ from app.main import (
     get_store,
     require_current_account,
 )
-from career_companion.database import AuditEventRecord, JobRecord, StatusEventRecord
+from career_companion.database import (
+    AuditEventRecord,
+    ConversationSessionRecord,
+    JobRecord,
+    StatusEventRecord,
+)
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
 from career_companion.schemas import ApplicationStatus
 from career_companion.services.applications import (
     create_application,
     transition_application,
+)
+from career_companion.services.memory_context import (
+    audit_memory_context_resolution,
+    build_active_memory_context,
 )
 from career_companion.services.revisions import create_revision, evaluate_revision
 
@@ -120,6 +130,128 @@ def test_sessions_restore_messages_context_and_active_selection(session_client) 
     assert client.get(f"/companion/sessions/{session_id}").status_code == 404
 
 
+def test_memory_retrieval_history_is_empty_for_a_new_session(session_client) -> None:
+    client, _, _, _ = session_client
+    session_id = client.post("/companion/sessions", json={}).json()["id"]
+
+    response = client.get(
+        f"/companion/sessions/{session_id}/memory-retrievals",
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "session_id": session_id,
+        "items": [],
+        "limit": 5,
+        "offset": 0,
+        "has_more": False,
+    }
+
+
+def test_memory_retrieval_history_is_bounded_ordered_and_account_scoped(
+    session_client,
+) -> None:
+    client, paths, _, _ = session_client
+    first_session_id = client.post("/companion/sessions", json={}).json()["id"]
+    second_session_id = client.post("/companion/sessions", json={}).json()["id"]
+    base_time = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
+    with account_session(paths) as session:
+        revision = create_revision(
+            session,
+            kind="memory",
+            name="pagination-memory",
+            content={"preference": "Use Python examples"},
+            diff="Remember Python examples",
+            author="local-user",
+            source_session=first_session_id,
+        )
+        evaluate_revision(
+            session,
+            revision.id,
+            {
+                "quality_passed": True,
+                "security_passed": True,
+                "cost_passed": True,
+            },
+        )
+        context = build_active_memory_context(session, query="Python examples")
+        first_event_ids = []
+        for index in range(11):
+            event = audit_memory_context_resolution(
+                session,
+                context,
+                conversation_id=first_session_id,
+            )
+            event.created_at = base_time + timedelta(seconds=index)
+            first_event_ids.append(event.id)
+        second_event = audit_memory_context_resolution(
+            session,
+            context,
+            conversation_id=second_session_id,
+        )
+        second_event.created_at = base_time + timedelta(seconds=30)
+
+    page = client.get(
+        f"/companion/sessions/{first_session_id}/memory-retrievals",
+        params={"limit": 3, "offset": 2},
+    )
+    second_history = client.get(
+        f"/companion/sessions/{second_session_id}/memory-retrievals",
+    )
+
+    assert page.status_code == 200
+    assert [item["audit_id"] for item in page.json()["items"]] == list(
+        reversed(first_event_ids)
+    )[2:5]
+    assert page.json()["has_more"] is True
+    assert page.json()["limit"] == 3
+    assert page.json()["offset"] == 2
+    assert [item["audit_id"] for item in second_history.json()["items"]] == [
+        second_event.id
+    ]
+    assert client.get(
+        f"/companion/sessions/{first_session_id}/memory-retrievals",
+        params={"limit": 11},
+    ).status_code == 422
+    assert client.get(
+        f"/companion/sessions/{first_session_id}/memory-retrievals",
+        params={"offset": 101},
+    ).status_code == 422
+
+    account_base = paths.root.parents[1]
+    other_paths = CompanionPaths.at_root(account_base).scoped_to("account-b")
+    with account_session(other_paths) as session:
+        session.add(
+            ConversationSessionRecord(
+                id=first_session_id,
+                title="Same opaque ID in another account",
+            )
+        )
+        session.flush()
+        other_context = build_active_memory_context(session, query="Python examples")
+        other_event = audit_memory_context_resolution(
+            session,
+            other_context,
+            conversation_id=first_session_id,
+        )
+    app.dependency_overrides[get_local_companion_paths] = lambda: other_paths
+    try:
+        isolated = client.get(
+            f"/companion/sessions/{first_session_id}/memory-retrievals",
+        )
+    finally:
+        app.dependency_overrides[get_local_companion_paths] = lambda: paths
+
+    assert isolated.status_code == 200
+    assert [item["audit_id"] for item in isolated.json()["items"]] == [
+        other_event.id
+    ]
+    assert not set(first_event_ids) & {
+        item["audit_id"] for item in isolated.json()["items"]
+    }
+
+
 def test_agent_name_and_soul_are_saved_to_database_and_local_profile(
     session_client,
 ) -> None:
@@ -204,6 +336,7 @@ def test_streamed_reply_retrieves_cited_cross_session_memory_and_outcomes(
 ) -> None:
     client, paths, account, _ = session_client
     captured: dict[str, object] = {}
+    session_id = client.post("/companion/sessions", json={}).json()["id"]
     with account_session(paths) as session:
         active = create_revision(
             session,
@@ -291,7 +424,10 @@ def test_streamed_reply_retrieves_cited_cross_session_memory_and_outcomes(
     app.dependency_overrides[get_hermes_runtime_manager] = lambda: StreamingRuntime()
     response = client.post(
         "/companion/chat/stream",
-        json={"message": "How should I prepare for a Python interview?"},
+        json={
+            "session_id": session_id,
+            "message": "How should I prepare for a Python interview?",
+        },
     )
 
     assert response.status_code == 200
@@ -308,6 +444,25 @@ def test_streamed_reply_retrieves_cited_cross_session_memory_and_outcomes(
     }
     assert all(entry["why_retrieved"] for entry in memory["entries"])
     assert all(entry["citation"] for entry in memory["entries"])
+    history_response = client.get(
+        f"/companion/sessions/{session_id}/memory-retrievals",
+    )
+    assert history_response.status_code == 200
+    history = history_response.json()
+    assert len(history["items"]) == 1
+    summaries = history["items"][0]["results"]
+    assert [summary["citation"] for summary in summaries] == [
+        entry["citation"] for entry in memory["entries"]
+    ]
+    assert all(summary["why_retrieved"] for summary in summaries)
+    serialized_history = json.dumps(history, ensure_ascii=False, sort_keys=True)
+    assert "Prepare concrete Python examples for interviews" not in serialized_history
+    assert (
+        "The Python interview needed more concrete debugging examples."
+        not in serialized_history
+    )
+    assert "How should I prepare for a Python interview?" not in serialized_history
+    assert "content_json" not in serialized_history
 
     with account_session(paths) as session:
         audit = session.scalar(

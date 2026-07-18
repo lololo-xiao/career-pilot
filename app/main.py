@@ -12,6 +12,7 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Query,
     Response,
     UploadFile,
     status,
@@ -103,6 +104,7 @@ from app.schemas import (
     EvidenceSnippet,
     MatchRequest,
     MatchResponse,
+    MemoryRetrievalHistoryResponse,
     MCPServerSettingsRequest,
     MCPSettingsResponse,
     ParsedCVResponse,
@@ -153,8 +155,11 @@ from career_companion.services.mcp_servers import (
     upsert_mcp_server,
 )
 from career_companion.services.memory_context import (
+    MAX_RETRIEVAL_HISTORY_LIMIT,
+    MAX_RETRIEVAL_HISTORY_OFFSET,
     audit_memory_context_resolution,
     build_active_memory_context,
+    list_memory_context_resolutions,
 )
 from career_companion.web import frontend_build_directory
 
@@ -649,6 +654,37 @@ def read_companion_session(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     _prevent_auth_caching(response)
     return ConversationSessionResponse.model_validate(payload)
+
+
+@app.get(
+    "/companion/sessions/{session_id}/memory-retrievals",
+    response_model=MemoryRetrievalHistoryResponse,
+)
+def read_companion_memory_retrievals(
+    session_id: str,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+    limit: Annotated[
+        int,
+        Query(ge=1, le=MAX_RETRIEVAL_HISTORY_LIMIT),
+    ] = 5,
+    offset: Annotated[
+        int,
+        Query(ge=0, le=MAX_RETRIEVAL_HISTORY_OFFSET),
+    ] = 0,
+) -> MemoryRetrievalHistoryResponse:
+    try:
+        with account_session(paths) as session:
+            payload = list_memory_context_resolutions(
+                session,
+                conversation_id=session_id,
+                limit=limit,
+                offset=offset,
+            )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _prevent_auth_caching(response)
+    return MemoryRetrievalHistoryResponse.model_validate(payload)
 
 
 @app.put(

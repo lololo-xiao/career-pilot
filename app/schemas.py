@@ -204,6 +204,51 @@ class ConversationSessionListResponse(StrictModel):
     sessions: list[ConversationSessionSummaryResponse]
 
 
+class MemoryRevisionCitation(StrictModel):
+    source_type: Literal["memory_revision"]
+    revision_id: str
+    name: str
+    version: int = Field(ge=1)
+    source_session: str
+
+
+class ApplicationOutcomeCitation(StrictModel):
+    source_type: Literal["application_status_event"]
+    event_id: str
+    application_id: str
+    job_id: str
+    recorded_at: str
+
+
+class MemoryRetrievalResultSummary(StrictModel):
+    source_type: Literal["memory_revision", "application_outcome"]
+    citation: MemoryRevisionCitation | ApplicationOutcomeCitation
+    relevance_score: int = Field(ge=1)
+    matched_terms: list[str] = Field(max_length=32)
+    why_retrieved: str = Field(min_length=1, max_length=1_000)
+    truncated: bool
+
+
+class MemoryRetrievalResolutionSummary(StrictModel):
+    audit_id: str
+    created_at: datetime
+    schema_version: str = Field(min_length=1, max_length=50)
+    query_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    retrieval_algorithm: str = Field(min_length=1, max_length=100)
+    content_sha256: str = Field(min_length=64, max_length=64)
+    included_item_count: int = Field(ge=0, le=6)
+    token_upper_bound: int = Field(ge=0, le=8_192)
+    results: list[MemoryRetrievalResultSummary] = Field(max_length=6)
+
+
+class MemoryRetrievalHistoryResponse(StrictModel):
+    session_id: str
+    items: list[MemoryRetrievalResolutionSummary] = Field(max_length=10)
+    limit: int = Field(ge=1, le=10)
+    offset: int = Field(ge=0, le=100)
+    has_more: bool
+
+
 IdentityMethod = Literal["local"]
 ProviderMethod = Literal["api_key", "codex"]
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
