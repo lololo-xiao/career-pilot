@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 import career_companion.web as web
-from career_companion.static_ui_release import write_static_ui_manifest
+from career_companion.static_ui_release import (
+    BUILD_ID_ATTESTATION_NAME,
+    frontend_source_fingerprint,
+    write_static_ui_manifest,
+)
 
 
 @pytest.fixture
@@ -39,7 +43,14 @@ def _build(directory: Path, marker: str) -> Path:
 
 def _verified_source(repository: Path, marker: str = "fresh source UI") -> Path:
     frontend = repository / "frontend"
-    expected = _build(frontend / "out", f"CareerPilot {marker}")
+    fingerprint = frontend_source_fingerprint(frontend, project_root=repository)
+    build_id = f"careerpilot-{fingerprint}"
+    expected = _build(frontend / "out", f"CareerPilot {build_id} {marker}")
+    (expected / BUILD_ID_ATTESTATION_NAME).write_text(build_id, encoding="utf-8")
+    build_directory = expected / "_next" / "static" / build_id
+    build_directory.mkdir(parents=True)
+    (build_directory / "_buildManifest.js").write_text(build_id, encoding="utf-8")
+    (build_directory / "_ssgManifest.js").write_text(build_id, encoding="utf-8")
     write_static_ui_manifest(frontend, project_root=repository)
     return expected
 

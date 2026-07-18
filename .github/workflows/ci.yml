@@ -91,6 +91,21 @@ jobs:
       - name: Build public Python artifacts with bundled UI
         working-directory: .
         run: uv build --out-dir dist
+      - name: Install and HTTP-smoke the real bundled wheel without Node or checkout paths
+        working-directory: .
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          fingerprint="$(python -c 'import json; print(json.load(open("frontend/out/.careerpilot-static-ui.json"))["export_fingerprint"])')"
+          runtime="${RUNNER_TEMP}/career-pilot-wheel-smoke"
+          uv venv --python 3.12 "${runtime}/venv"
+          uv pip install --no-deps --python "${runtime}/venv/bin/python" "${wheel}"
+          mkdir -p "${runtime}/empty"
+          cp scripts/static_ui_wheel_smoke.py "${runtime}/smoke.py"
+          cd "${runtime}/empty"
+          env -i PATH="${runtime}/venv/bin" LANG=C \
+            "${runtime}/venv/bin/python" "${runtime}/smoke.py" \
+            --expected-fingerprint "${fingerprint}" --require-no-node
 
   hermes-contract:
     runs-on: ubuntu-latest

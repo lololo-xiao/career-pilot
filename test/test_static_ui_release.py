@@ -12,12 +12,15 @@ from pathlib import Path
 
 import pytest
 
+import career_companion.static_ui_release as static_release
 from career_companion.static_ui_release import (
+    BUILD_ID_ATTESTATION_NAME,
     BUILD_CONTRACT,
     MANIFEST_NAME,
     StaticUIReleaseError,
     build_static_ui,
     frontend_source_fingerprint,
+    stage_verified_static_ui,
     verify_static_ui,
     write_static_ui_manifest,
 )
@@ -34,11 +37,30 @@ def _frontend(root: Path) -> Path:
     return frontend
 
 
-def _export(frontend: Path) -> None:
-    (frontend / "out" / "_next").mkdir(parents=True)
-    (frontend / "out" / "index.html").write_text("<title>CareerPilot</title>\n")
+def _expected_build_id(frontend: Path) -> str:
+    fingerprint = frontend_source_fingerprint(frontend, project_root=frontend.parent)
+    return f"careerpilot-{fingerprint}"
+
+
+def _export(
+    frontend: Path,
+    *,
+    build_id: str | None = None,
+    attest: bool = True,
+) -> str:
+    build_id = build_id or _expected_build_id(frontend)
+    build_directory = frontend / "out" / "_next" / "static" / build_id
+    build_directory.mkdir(parents=True)
+    (build_directory / "_buildManifest.js").write_text(f"build={build_id}\n")
+    (build_directory / "_ssgManifest.js").write_text(f"ssg={build_id}\n")
+    (frontend / "out" / "index.html").write_text(
+        f"<title>CareerPilot</title><meta content='{build_id}'>\n"
+    )
     (frontend / "out" / "_next" / "app.js").write_text("release bundle\n")
+    if attest:
+        (frontend / "out" / BUILD_ID_ATTESTATION_NAME).write_text(build_id)
     (frontend / "out" / ".DS_Store").write_bytes(b"junk")
+    return build_id
 
 
 def _copy_project(repository: Path, project: Path, *, frontend: bool = True) -> None:
@@ -99,7 +121,13 @@ def test_manifest_is_deterministic_and_ignores_only_generated_build_inputs(
 
     assert manifest == (frontend / "out" / MANIFEST_NAME).read_bytes()
     assert first.export_fingerprint == second.export_fingerprint
-    assert {file.path for file in first.files} == {"_next/app.js", "index.html"}
+    assert {file.path for file in first.files} == {
+        BUILD_ID_ATTESTATION_NAME,
+        "_next/app.js",
+        f"_next/static/{first.build_id}/_buildManifest.js",
+        f"_next/static/{first.build_id}/_ssgManifest.js",
+        "index.html",
+    }
 
     # Next owns and may rewrite this generated type shim during a real build.
     before = frontend_source_fingerprint(frontend, project_root=tmp_path)
@@ -125,7 +153,94 @@ def test_verifier_rejects_missing_and_modified_exports(tmp_path: Path) -> None:
         verify_static_ui(frontend, project_root=tmp_path)
 
 
-@pytest.mark.parametrize("relative", [Path(".env.production"), Path("config/.env.local")])
+@pytest.mark.parametrize("attestation", [None, "careerpilot-" + "0" * 64])
+def test_manifest_writer_requires_exact_source_derived_build_id(
+    tmp_path: Path,
+    attestation: str | None,
+) -> None:
+    frontend = _frontend(tmp_path)
+    _export(frontend, attest=False)
+    if attestation is not None:
+        (frontend / "out" / BUILD_ID_ATTESTATION_NAME).write_text(attestation)
+
+    with pytest.raises(StaticUIReleaseError, match="build ID attestation"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+
+@pytest.mark.parametrize("attestation", [None, "careerpilot-" + "f" * 64])
+def test_verifier_requires_exact_source_derived_build_id(
+    tmp_path: Path,
+    attestation: str | None,
+) -> None:
+    frontend = _frontend(tmp_path)
+    _export(frontend)
+    write_static_ui_manifest(frontend, project_root=tmp_path)
+    path = frontend / "out" / BUILD_ID_ATTESTATION_NAME
+    if attestation is None:
+        path.unlink()
+    else:
+        path.write_text(attestation)
+
+    with pytest.raises(StaticUIReleaseError, match="build ID attestation"):
+        verify_static_ui(frontend, project_root=tmp_path)
+
+
+def test_export_rejects_mixed_source_derived_build_ids(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path)
+    _export(frontend)
+    stale_id = "careerpilot-" + "a" * 64
+    (frontend / "out" / "mixed.js").write_text(f"stale={stale_id}\n")
+
+    with pytest.raises(StaticUIReleaseError, match="stale, or mixed"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+
+@pytest.mark.parametrize("required_name", ["_buildManifest.js", "_ssgManifest.js"])
+def test_export_requires_exact_build_id_artifacts(
+    tmp_path: Path,
+    required_name: str,
+) -> None:
+    frontend = _frontend(tmp_path)
+    build_id = _export(frontend)
+    (frontend / "out" / "_next" / "static" / build_id / required_name).unlink()
+
+    with pytest.raises(StaticUIReleaseError, match="regular file"):
+        write_static_ui_manifest(frontend, project_root=tmp_path)
+
+
+@pytest.mark.parametrize("next_build_id", [None, "careerpilot-" + "b" * 64])
+def test_build_rejects_missing_or_wrong_next_build_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    next_build_id: str | None,
+) -> None:
+    frontend = _frontend(tmp_path)
+    npm = tmp_path / "npm"
+    npm.write_text("fake\n")
+
+    def fake_build(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        _export(frontend)
+        (frontend / ".next").mkdir()
+        if next_build_id is not None:
+            (frontend / ".next" / "BUILD_ID").write_text(next_build_id)
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(shutil, "which", lambda _: str(npm))
+    monkeypatch.setattr(subprocess, "run", fake_build)
+
+    with pytest.raises(StaticUIReleaseError, match="BUILD_ID"):
+        build_static_ui(frontend, project_root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        Path(".env.production"),
+        Path("config/.env.local"),
+        Path(".ENV"),
+        Path("config/.Env.production"),
+    ],
+)
 def test_build_and_verify_reject_non_example_dotenv_anywhere(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -147,6 +262,16 @@ def test_build_and_verify_reject_non_example_dotenv_anywhere(
         build_static_ui(frontend, project_root=tmp_path)
     with pytest.raises(StaticUIReleaseError, match="non-example dotenv"):
         verify_static_ui(frontend, project_root=tmp_path)
+
+
+def test_case_insensitive_example_dotenv_is_allowed(tmp_path: Path) -> None:
+    frontend = _frontend(tmp_path)
+    (frontend / ".ENV.EXAMPLE").write_text("documented=true\n")
+    _export(frontend)
+
+    release = write_static_ui_manifest(frontend, project_root=tmp_path)
+
+    assert verify_static_ui(frontend, project_root=tmp_path) == release
 
 
 def test_build_scrubs_inherited_environment_before_fake_export(
@@ -190,9 +315,15 @@ def test_build_scrubs_inherited_environment_before_fake_export(
         assert check is True
         captured.update(env)
         leaked = env.get("NEXT_PUBLIC_RELEASE_SENTINEL", "clean")
-        (frontend / "out" / "_next").mkdir(parents=True)
+        build_id = env["CAREERPILOT_BUILD_ID"]
+        (frontend / ".next").mkdir(parents=True)
+        (frontend / ".next" / "BUILD_ID").write_text(build_id)
+        build_directory = frontend / "out" / "_next" / "static" / build_id
+        build_directory.mkdir(parents=True)
+        (build_directory / "_buildManifest.js").write_text(build_id)
+        (build_directory / "_ssgManifest.js").write_text(build_id)
         (frontend / "out" / "index.html").write_text(
-            f"<title>CareerPilot</title>{leaked}\n"
+            f"<title>CareerPilot</title>{build_id}{leaked}\n"
         )
         (frontend / "out" / "_next" / "app.js").write_text(leaked)
         return subprocess.CompletedProcess(command, 0)
@@ -257,8 +388,14 @@ def test_windows_cmd_launcher_runs_with_minimal_scrubbed_environment(
         "    assert name not in os.environ\n"
         "for name in ('COMSPEC', 'PATH', 'PATHEXT', 'SYSTEMROOT', 'TEMP'):\n"
         "    assert os.environ.get(name)\n"
-        "Path('out/_next').mkdir(parents=True)\n"
-        "Path('out/index.html').write_text('<title>CareerPilot</title>clean\\n')\n"
+        "build_id = os.environ['CAREERPILOT_BUILD_ID']\n"
+        "Path('.next').mkdir(parents=True)\n"
+        "Path('.next/BUILD_ID').write_text(build_id)\n"
+        "build_dir = Path('out/_next/static') / build_id\n"
+        "build_dir.mkdir(parents=True)\n"
+        "(build_dir / '_buildManifest.js').write_text(build_id)\n"
+        "(build_dir / '_ssgManifest.js').write_text(build_id)\n"
+        "Path('out/index.html').write_text('<title>CareerPilot</title>' + build_id + 'clean\\n')\n"
         "Path('out/_next/app.js').write_text('clean\\n')\n"
     )
     fake_npm = tmp_path / "npm.cmd"
@@ -295,7 +432,7 @@ def test_release_operations_reject_symlinked_frontend_root(
     except OSError as exc:
         pytest.skip(f"directory symlinks unavailable: {exc}")
 
-    with pytest.raises(StaticUIReleaseError, match="cannot be a symbolic link"):
+    with pytest.raises(StaticUIReleaseError, match="cannot contain aliases"):
         _release_operation(operation, link, project)
 
 
@@ -310,6 +447,94 @@ def test_release_operations_reject_frontend_outside_expected_project(
 
     with pytest.raises(StaticUIReleaseError, match="escapes the expected project root"):
         _release_operation(operation, outside, project)
+
+
+def test_reparse_attribute_is_treated_as_a_release_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "junction"
+    path.mkdir()
+    metadata = path.lstat()
+
+    class ReparseMetadata:
+        st_mode = metadata.st_mode
+        st_file_attributes = 0x400
+
+    monkeypatch.setattr(Path, "lstat", lambda self: ReparseMetadata())
+
+    assert static_release._path_is_alias(path)
+
+
+@pytest.mark.parametrize("operation", ["fingerprint", "verify", "stage"])
+def test_nested_resolved_escape_is_rejected_before_release_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    frontend = _frontend(tmp_path)
+    _export(frontend)
+    write_static_ui_manifest(frontend, project_root=tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("must-not-be-read")
+    if operation == "fingerprint":
+        escaped = frontend / "app" / "nested"
+        escaped.mkdir()
+    else:
+        escaped = frontend / "out" / "_next" / "app.js"
+
+    real_resolve = static_release._resolve_path
+
+    def resolved_with_junction_escape(path: Path) -> Path:
+        if Path(path) == escaped:
+            return sentinel
+        return real_resolve(path)
+
+    monkeypatch.setattr(static_release, "_resolve_path", resolved_with_junction_escape)
+
+    with pytest.raises(StaticUIReleaseError, match="resolves outside"):
+        if operation == "fingerprint":
+            frontend_source_fingerprint(frontend, project_root=tmp_path)
+        elif operation == "verify":
+            verify_static_ui(frontend, project_root=tmp_path)
+        else:
+            stage_verified_static_ui(
+                frontend,
+                project_root=tmp_path,
+                destination=tmp_path / "stage",
+            )
+    assert sentinel.read_text() == "must-not-be-read"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows directory junctions")
+@pytest.mark.parametrize("operation", ["build", "write", "verify"])
+def test_release_operations_reject_real_nested_windows_junction(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    frontend = _frontend(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("unchanged")
+    junction = frontend / "app" / "junction"
+    comspec = os.environ.get("COMSPEC", "cmd.exe")
+    created = subprocess.run(
+        [comspec, "/d", "/c", "mklink", "/J", str(junction), str(outside)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"could not create a Windows directory junction: {created.stdout}")
+    try:
+        with pytest.raises(StaticUIReleaseError, match="aliases"):
+            _release_operation(operation, frontend, tmp_path)
+        assert sentinel.read_text() == "unchanged"
+    finally:
+        os.rmdir(junction)
 
 
 def test_hatch_rejects_frontend_root_symlink_that_escapes_project(
@@ -340,7 +565,7 @@ def test_hatch_rejects_frontend_root_symlink_that_escapes_project(
 
     assert built.returncode != 0
     assert "Bundled static UI release policy failed" in built.stdout
-    assert "cannot be a symbolic link" in built.stdout
+    assert "cannot contain aliases" in built.stdout
     assert sentinel.read_text() == "unchanged"
 
 
@@ -350,6 +575,11 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
     repository = Path(__file__).resolve().parents[1]
     project = tmp_path / "project"
     _copy_project(repository, project)
+    rogue_name = "legacy-web-rogue-7d7f03c4.txt"
+    legacy_web = project / "career_companion" / "web"
+    legacy_web.mkdir()
+    (legacy_web / "index.html").write_text("stale bundled page\n")
+    (legacy_web / rogue_name).write_text("must never enter an artifact\n")
     uv, environment = _uv_environment()
     sentinel = "inherited-release-sentinel-must-not-enter-wheel"
     environment["NEXT_PUBLIC_RELEASE_SENTINEL"] = sentinel
@@ -383,6 +613,27 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
     assert "frontend sources changed" in stale.stdout
     page.write_text(original_page)
 
+    unmanifested = frontend / "out" / "unmanifested-release-rogue.js"
+    unmanifested.write_text("must be rejected\n")
+    rogue_export = subprocess.run(
+        [
+            uv,
+            "build",
+            "--offline",
+            "--out-dir",
+            str(tmp_path / "rogue-export"),
+            str(project),
+        ],
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert rogue_export.returncode != 0
+    assert "Bundled static UI release policy failed" in rogue_export.stdout
+    assert "export is stale" in rogue_export.stdout
+    unmanifested.unlink()
+
     distribution = tmp_path / "dist"
     built = subprocess.run(
         [uv, "build", "--offline", "--out-dir", str(distribution), str(project)],
@@ -395,9 +646,20 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
 
     sdist = next(distribution.glob("*.tar.gz"))
     with tarfile.open(sdist) as archive:
-        sdist_names = archive.getnames()
-    assert any(name.endswith(f"frontend/out/{MANIFEST_NAME}") for name in sdist_names)
-    assert any(name.endswith("frontend/out/index.html") for name in sdist_names)
+        sdist_names = [member.name for member in archive.getmembers() if member.isfile()]
+    sdist_root = next(
+        name.split("/", 1)[0]
+        for name in sdist_names
+        if name.endswith(f"frontend/out/{MANIFEST_NAME}")
+    )
+    expected_sdist_ui = {
+        f"{sdist_root}/frontend/out/{file.path}" for file in source_release.files
+    } | {f"{sdist_root}/frontend/out/{MANIFEST_NAME}"}
+    actual_sdist_ui = {name for name in sdist_names if "/frontend/out/" in name}
+    assert actual_sdist_ui == expected_sdist_ui
+    assert len(sdist_names) == len(set(sdist_names))
+    assert not any(name.endswith(rogue_name) for name in sdist_names)
+    assert not any(name.endswith("career_companion/web/index.html") for name in sdist_names)
     assert not any(name.endswith(".DS_Store") for name in sdist_names)
 
     wheel = next(distribution.glob("*.whl"))
@@ -407,6 +669,13 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
         assert f"career_companion/web/{MANIFEST_NAME}" in names
         assert "career_companion/web/index.html" in names
         assert "career_companion/web/_next/app.js" in names
+        assert (
+            f"career_companion/web/_next/static/{source_release.build_id}/"
+            "_buildManifest.js"
+        ) in names
+        assert f"career_companion/web/{BUILD_ID_ATTESTATION_NAME}" in names
+        assert rogue_name not in "\n".join(names)
+        assert len(names) == len(set(names))
         assert not any(name.endswith(".DS_Store") for name in names)
         assert all(sentinel.encode() not in archive.read(name) for name in names)
         archive.extractall(unpacked)
@@ -442,20 +711,6 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
         stderr=subprocess.STDOUT,
     )
     assert installed.returncode == 0, installed.stdout
-    isolated_site = subprocess.run(
-        [str(python), "-c", "import site; print(site.getsitepackages()[0])"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=True,
-    ).stdout.strip()
-    # Dependencies were already installed from the lock for this test run. Add
-    # them after the isolated site-packages directory so the installed wheel,
-    # never the source checkout, remains the package under test.
-    host_site = Path(pytest.__file__).resolve().parents[1]
-    (Path(isolated_site) / "_career_pilot_test_dependencies.pth").write_text(
-        str(host_site) + "\n"
-    )
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     runtime_environment = {
@@ -479,22 +734,10 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
     smoke = subprocess.run(
         [
             str(python),
-            "-c",
-            "import shutil; "
-            "import sys; "
-            "from pathlib import Path; "
-            "from fastapi import FastAPI; "
-            "from fastapi.testclient import TestClient; "
-            "from app.static_frontend import mount_static_frontend; "
-            "import career_companion; "
-            "from career_companion.web import frontend_build_directory; "
-            "assert shutil.which('node') is None; "
-            "package = Path(career_companion.__file__).resolve(); "
-            "assert package.is_relative_to(Path(sys.prefix).resolve()); "
-            "web = frontend_build_directory(); assert web is not None; "
-            "app = FastAPI(); mount_static_frontend(app, web); "
-            "response = TestClient(app).get('/'); "
-            "assert response.status_code == 200; assert 'CareerPilot' in response.text",
+            str(project / "scripts" / "static_ui_wheel_smoke.py"),
+            "--expected-fingerprint",
+            source_release.export_fingerprint,
+            "--require-no-node",
         ],
         cwd=runtime,
         env=runtime_environment,
