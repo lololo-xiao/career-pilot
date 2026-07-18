@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { explainApproval, type ApprovalRequest } from "./approval-explanation";
+import { MemoryRetrievalInspector } from "./memory-retrieval-inspector";
+import { MEMORY_RETRIEVAL_LABELS } from "./memory-retrieval";
 import { ResultView } from "./result-view";
 import type {
   AgentIdentity,
@@ -67,7 +69,7 @@ interface ContextUsage {
 }
 
 interface IconProps {
-  name: "home" | "briefcase" | "spark" | "paperclip" | "send" | "file" | "target" | "check" | "settings";
+  name: "home" | "briefcase" | "spark" | "paperclip" | "send" | "file" | "target" | "check" | "settings" | "history";
   size?: number;
 }
 
@@ -82,6 +84,7 @@ function Icon({ name, size = 18 }: IconProps) {
     target: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4" /><path d="m15 9 6-6M17 3h4v4" /></>,
     check: <path d="m5 12 4 4L19 6" />,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
+    history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></>,
   };
   return (
     <svg aria-hidden="true" fill="none" height={size} viewBox="0 0 24 24" width={size} stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8">
@@ -258,6 +261,8 @@ export default function Home() {
   const [identityEditorError, setIdentityEditorError] = useState<string | null>(null);
   const [identityEditorStatus, setIdentityEditorStatus] = useState<string | null>(null);
   const [isSavingIdentity, setIsSavingIdentity] = useState(false);
+  const [memoryRetrievalOpen, setMemoryRetrievalOpen] = useState(false);
+  const [memoryRetrievalRefreshKey, setMemoryRetrievalRefreshKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageIdRef = useRef(1);
   const conversationEndRef = useRef<HTMLDivElement>(null);
@@ -864,6 +869,7 @@ export default function Home() {
       if (!completed || !assistantStarted || !assistantText.trim()) {
         throw new Error("Pilot’s companion session ended without a reply.");
       }
+      setMemoryRetrievalRefreshKey((current) => current + 1);
       setSuggestions(
         jobDescription
           ? ["What should we do next?", "Help me prepare for this role"]
@@ -1111,6 +1117,15 @@ export default function Home() {
           </div>
           <div className="pilot-header-actions">
             <button className="pilot-identity-shortcut" type="button" onClick={() => openIdentityEditor()} title={`Open ${agentName}’s identity`}><Icon name="spark" size={17} /><span>SOUL</span></button>
+            <button
+              aria-controls="pilot-retrieval-inspector"
+              aria-haspopup="dialog"
+              aria-label={MEMORY_RETRIEVAL_LABELS.openButton}
+              className="pilot-mobile-retrieval-shortcut"
+              onClick={() => setMemoryRetrievalOpen(true)}
+              title="Recent memory retrievals"
+              type="button"
+            ><Icon name="history" size={17} /><span>Memory history</span></button>
             <button type="button" onClick={() => void loadDemo()}>Load demo</button>
             <Link href="/workspace"><Icon name="briefcase" size={17} /><span>Workspace</span></Link>
             <Link href="/settings"><Icon name="settings" size={17} /><span>Settings</span></Link>
@@ -1280,6 +1295,22 @@ export default function Home() {
           <section className="pilot-latest-check"><span>Evidence-grounded fit</span><div><strong>{report.score}<small>/10</small></strong><p>Separate from queue priority · {report.matched_skills.length} direct matches · {report.missing_skills.length} gaps</p></div></section>
         ) : null}
 
+        <section className="pilot-retrieval-card" aria-labelledby="pilot-retrieval-card-title">
+          <div className="pilot-retrieval-card-icon"><Icon name="history" /></div>
+          <div>
+            <span>What Pilot considered recently</span>
+            <strong id="pilot-retrieval-card-title">Recent memory retrievals</strong>
+            <p>Conversation-level history, separate from any one answer.</p>
+          </div>
+          <button
+            aria-controls="pilot-retrieval-inspector"
+            aria-haspopup="dialog"
+            aria-label={MEMORY_RETRIEVAL_LABELS.openButton}
+            onClick={() => setMemoryRetrievalOpen(true)}
+            type="button"
+          >Inspect <span aria-hidden="true">→</span></button>
+        </section>
+
         <section className="pilot-next-step" aria-labelledby="pilot-next-step-title">
           <span>Next best step</span>
           <strong id="pilot-next-step-title">{nextBestAction.label}</strong>
@@ -1292,6 +1323,14 @@ export default function Home() {
         <div className="pilot-privacy-note"><span>Persistent session memory</span><p>Messages, CV text, role context, and fit checks are saved in your device-local CareerPilot database until you delete the session.</p></div>
         <div className="pilot-privacy-note"><span>Local-only access</span><p>No CareerPilot account or sign-in is required on this device.</p></div>
       </aside>
+
+      <MemoryRetrievalInspector
+        apiBaseUrl={API_BASE_URL}
+        onClose={() => setMemoryRetrievalOpen(false)}
+        open={memoryRetrievalOpen}
+        refreshKey={memoryRetrievalRefreshKey}
+        sessionId={activeSessionId}
+      />
 
       {identityEditorOpen && agentIdentity ? (
         <div className="pilot-modal-backdrop" role="presentation" onMouseDown={() => setIdentityEditorOpen(false)}>

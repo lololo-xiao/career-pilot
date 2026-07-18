@@ -222,7 +222,7 @@ npm run lint
 npm run build
 ```
 
-The current main-branch audit passes **173 backend tests** and **8 frontend unit tests**.
+The current development audit passes **173 backend tests** and **20 frontend unit tests**.
 The offline evaluator validates **25 strong, partial, and mismatch cases**; frontend lint,
 the production build, and demo preflight also pass.
 
@@ -287,7 +287,7 @@ into a genuinely proactive job-search agent.
 - [ ] Add semantic/vector retrieval once the retention and production-storage contract is defined.
 - [ ] Cite career evidence in ordinary conversation, not only formal fit reports.
 - [x] Expose a bounded, privacy-safe API showing why memory was retrieved for a turn.
-- [ ] Add the user-facing retrieval inspector to Pilot.
+- [x] Add the user-facing retrieval inspector to Pilot.
 - [ ] Convert repeated corrections and outcomes into revision proposals.
 - [ ] Replay/evaluate proposed skill and rubric changes against fixed cases.
 - [x] Apply active, evaluated memory revisions to the runtime.

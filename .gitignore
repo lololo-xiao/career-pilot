@@ -25,6 +25,7 @@ node_modules/
 .next/
 out/
 .env*.local
+frontend/tsconfig.tsbuildinfo
 
 # Career Companion prototype frontend
 web/node_modules/
