@@ -61,7 +61,7 @@ orchestrate the whole chain conversationally, with safe pauses at every external
 | Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, and reversible. Active evaluated memory is used at runtime; active skill/rubric revisions are not yet applied |
 | Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, and track an explicit selection; dedicated guided discovery and tailoring orchestration remain unfinished |
 | Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
-| Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes, cites relied-upon sources, and stores privacy-safe provenance; semantic/vector retrieval is still planned |
+| Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes, cites relied-upon sources, and exposes a privacy-safe retrieval inspector; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
 | Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
 
