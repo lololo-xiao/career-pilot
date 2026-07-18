@@ -78,8 +78,9 @@ export default function SettingsPage() {
           <span className="eyebrow">Settings</span>
           <h1>Choose how Pilot thinks—and what it can use.</h1>
           <p>
-            CareerPilot runs locally without an account. Connect an OpenAI API key or
-            your ChatGPT/Codex subscription, then review every tool and connected
+            CareerPilot runs locally without a CareerPilot account. Connect an OpenAI
+            API key, or use an eligible ChatGPT plan through a compatible Codex runtime
+            already installed on this device. Then review every tool and connected
             service available to Pilot.
           </p>
         </section>

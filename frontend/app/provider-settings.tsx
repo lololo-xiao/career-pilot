@@ -365,8 +365,8 @@ export function ProviderSettings({
             <span>{codex?.active ? "Active" : "Plan-backed"}</span>
           </div>
           <p>
-            Authorize the official Codex runtime and use the limits included with an
-            eligible ChatGPT plan.
+            Requires a compatible Codex CLI/runtime already installed on this device.
+            Authorize it here to use limits included with an eligible ChatGPT plan.
           </p>
           {codex?.connected ? (
             <p className="connection-detail">

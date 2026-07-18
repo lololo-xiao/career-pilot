@@ -24,7 +24,8 @@ high-stakes workflow:
   and unsupported skills, with a citation behind every displayed match.
 - **A real operating workspace.** Reviewed career facts, projects, jobs, applications,
   artifact versions, approvals, model routes, revisions, and audit events survive restarts.
-- **Human control at the boundary.** Pilot may research, prepare, and fill approved fields;
+- **Human control at the boundary.** Pilot can discover roles and record guarded local
+  decisions. Tailoring and approved field filling remain separate workspace workflows;
   the user reviews sensitive changes and submits the final application manually.
 - **Local and extensible.** The current product runs on one trusted device using an OpenAI
   API key or eligible ChatGPT/Codex access, with skills and allowlisted MCP connections.
@@ -60,10 +61,10 @@ tailoring, interview practice, and preview-only form assistance.
 | Tailoring | 🟡 Partial | Draft/PDF/version-approval foundations exist; cited evidence snapshots, unsupported-gap handling, and retry/concurrency safety are being hardened before this is meetup-ready |
 | Agent resources | ✅ Ready | Visible built-in skills, editable user memories and skills, guarded create/edit/remove flows |
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
-| Revision safety | 🟡 Partial | Memory/skill/rubric proposals are versioned, evaluated, quarantined, and reversible. Active evaluated memory is used at runtime; active skill/rubric revisions are not yet applied |
+| Revision safety | 🟡 Partial | Skill/rubric proposals support evaluation, quarantine, activation, and rollback. Explicit supported memory corrections become inactive review drafts; existing active evaluated memory is used at runtime |
 | Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, track, approve, or archive an explicit scored selection; dedicated guided discovery and tailoring orchestration remain unfinished |
 | Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
-| Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes, cites relied-upon sources, and exposes a privacy-safe retrieval inspector; semantic/vector retrieval is still planned |
+| Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes. The privacy-safe inspector shows what was considered, not answer-level attribution; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
 | Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install verification is still planned |
 | Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
@@ -90,8 +91,12 @@ Recommended five-minute demo:
 1. Open Pilot and show its identity, persistent session, and working context.
 2. Ask whether one role is worth pursuing; open the grounded fit card.
 3. Show one demonstrated claim, one adjacent skill, and one honest gap.
-4. Open the memory inspector and show why a prior fact was retrieved without exposing internal prompts or identifiers.
-5. Move through the evidence profile, ranked queue, and application stage, then end at the boundary: Pilot prepares locally; the user reviews every artifact and submits.
+4. If the workspace was pre-warmed with a provider turn, open the memory inspector and show what Pilot considered without exposing prompts or identifiers; otherwise show its honest empty state and continue.
+5. Move through the evidence profile, ranked queue, and application stage, then end at the boundary: the workspace keeps preparation local and the user submits.
+
+The credential-free seed supplies the profile, queue, application stages, and audit-safe
+story. It intentionally does not fabricate a provider-generated fit report, retrieval
+history, or artifact pack; pre-warm those optional steps or omit them from the live path.
 
 The deck supports `←` / `→`, `PageUp` / `PageDown`, `Home` / `End`, `F` for fullscreen,
 `N` for speaker notes, and `D` to open the default local product URL.
@@ -146,7 +151,7 @@ Settings, connect either:
 
 | Connection | Billing and access |
 |---|---|
-| **ChatGPT plan through Codex** | Uses the official Codex runtime and limits included with an eligible ChatGPT plan |
+| **ChatGPT plan through Codex** | Uses limits included with an eligible ChatGPT plan and requires a compatible Codex CLI/runtime already installed |
 | **OpenAI API key** | Uses a user-owned OpenAI Platform project with separate usage billing |
 
 CareerPilot never silently falls back from one provider to the other. Credentials are
@@ -226,7 +231,7 @@ npm run build
 ```
 
 The current clean-archive development audit passes **651 backend tests** with **6
-platform-specific skips**, plus **20 frontend unit tests**. The offline evaluator validates **25
+environment/platform skips**, plus **20 frontend unit tests**. The offline evaluator validates **25
 strong, partial, and mismatch cases**; frontend lint, the production build, and demo
 preflight also pass.
 

@@ -136,6 +136,10 @@
     .mini-shot { position: relative; min-height: 0; border-radius: 20px; overflow: hidden; border: 1px solid rgba(24,41,35,.16); box-shadow: 0 16px 46px rgba(23,61,50,.13); background: white; }
     .mini-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
     .mini-shot.resources img { object-position: 50% 60%; }
+    .pipeline-copy { display: flex; flex-direction: column; justify-content: center; padding: 34px; background: rgba(255,255,255,.82); }
+    .pipeline-copy h3 { margin: 8px 0 20px; font: 500 31px/1.08 var(--serif); }
+    .pipeline-copy ul { margin: 0; padding-left: 20px; display: grid; gap: 13px; color: var(--muted); font-size: 15px; line-height: 1.4; }
+    .pipeline-copy p { margin: 22px 0 0; padding: 14px 16px; border-radius: 13px; background: var(--cream); color: var(--green); font-size: 13px; font-weight: 750; line-height: 1.4; }
     .caption-tag { position: absolute; left: 16px; bottom: 16px; padding: 9px 12px; border-radius: 999px; background: rgba(23,61,50,.94); color: white; font-size: 12px; font-weight: 800; }
 
     .architecture { display: grid; grid-template-columns: 1fr 80px 1fr 80px 1fr; align-items: center; margin: 30px 0 28px; }
@@ -246,7 +250,7 @@
           <p class="lede">A local-first career companion that remembers context, grounds feedback in evidence, and pauses before consequential actions.</p>
           <div class="pill-row">
             <span class="pill">One persistent agent</span>
-            <span class="pill">OpenAI API or ChatGPT/Codex</span>
+            <span class="pill">API key · or installed Codex runtime</span>
             <span class="pill">Skills + MCP</span>
           </div>
           <div class="cta-row">
@@ -297,7 +301,7 @@
             <article class="callout"><span>3</span><div><h3>Visible runtime</h3><p>The user sees the model, thinking effort, usage, and current context.</p></div></article>
           </div>
         </div>
-        <div class="frame screenshot-frame"><img src="meetup-assets/pilot-conversation.png" alt="CareerPilot conversation interface with persistent context and a user-approved next action" /></div>
+        <div class="frame screenshot-frame"><img src="meetup-assets/pilot-fit-card.png" alt="CareerPilot conversation interface with persistent context and an evidence-grounded fit card" /></div>
       </div>
       <aside class="speaker-notes" hidden>Point to the left rail sessions, the center conversation, and the right-side working memory. The strongest detail is the assistant saying it will pause before changing or submitting anything.</aside>
     </section>
@@ -327,7 +331,7 @@
           <div class="callout-list">
             <article class="callout"><span>✓</span><div><h3>Import and review</h3><p>PDF or DOCX becomes editable claims with source excerpts.</p></div></article>
             <article class="callout"><span>↗</span><div><h3>Link code evidence</h3><p>Read-only project analysis creates improvements and interview questions.</p></div></article>
-            <article class="callout"><span>⊘</span><div><h3>Choose what is usable</h3><p>Only confirmed facts can enter fit checks and tailored materials.</p></div></article>
+            <article class="callout"><span>⊘</span><div><h3>Choose what is usable</h3><p>Fit checks cite the CV text supplied by the user; hardened tailoring is limited to confirmed workspace facts.</p></div></article>
           </div>
         </div>
         <div class="frame screenshot-frame profile"><img src="meetup-assets/profile-evidence.png" alt="CareerPilot profile workspace with target roles, locations, languages, and CV import" /></div>
@@ -340,7 +344,7 @@
       <h2>Rank the opportunities. Then carry each one through a visible pipeline.</h2>
       <div class="side-by-side">
         <div class="mini-shot"><img src="meetup-assets/job-queue.png" alt="CareerPilot ranked job queue with score reasons" /><span class="caption-tag">Deterministic queue · reason for every score</span></div>
-        <div class="mini-shot"><img src="meetup-assets/applications.png" alt="CareerPilot application pipeline with stages and approved artifacts" /><span class="caption-tag">Human-controlled pipeline · artifacts + outcomes</span></div>
+        <div class="mini-shot pipeline-copy"><span class="tiny">SHIPPED WORKSPACE BOUNDARY</span><h3>Application tracking stays visible and human-controlled.</h3><ul><li>Detailed stages, status history, follow-ups, and outcomes</li><li>Versioned artifacts remain reviewable in the workspace</li><li>Pilot can track, approve, or archive an explicit scored role</li><li>Final submission is always manual</li></ul><p>Evidence-safe tailoring and preview-only form planning are active hardening lanes—not shipped Pilot powers yet.</p></div>
       </div>
       <aside class="speaker-notes" hidden>Clarify that the queue score is deterministic prioritization, while the 0–10 fit report is evidence-grounded analysis. The first-run guide and Workspace now make that distinction explicit.</aside>
     </section>
@@ -355,23 +359,23 @@
       <div class="pill-row">
         <span class="pill">Built-in job-search skills</span><span class="pill">User-owned Markdown skills</span><span class="pill">MCP presets</span><span class="pill">Explicit tool allowlists</span>
       </div>
-      <aside class="speaker-notes" hidden>Say what “self-evolving” means today: Pilot can propose versioned memory, skill, and rubric revisions; they are evaluated and reversible. Active evaluated memory is retrieved at runtime with citations. Applying active skill and rubric revisions remains on the roadmap.</aside>
+      <aside class="speaker-notes" hidden>Say what “self-evolving” means today: skill and rubric proposals can be evaluated and rolled back; explicit supported memory corrections become inactive drafts for review. Existing active evaluated memory is retrieved with provenance. The inspector shows what was considered, not which source caused a particular sentence.</aside>
     </section>
 
     <section class="slide dark" id="slide-9" data-title="Safety architecture">
       <div class="topline"><p class="kicker">Architecture and trust</p><span class="tiny">Local by default · explicit at the boundary</span></div>
-      <h2>The agent can prepare. The user decides what leaves the device.</h2>
+      <h2>The system keeps work local. The user decides what leaves the device.</h2>
       <div class="architecture" aria-label="CareerPilot architecture">
         <article class="arch-box"><span>Local source of truth</span><h3>Career workspace</h3><p>SQLite, CV evidence, jobs, applications, artifacts, conversations, revisions, audit events.</p></article>
         <div class="arch-arrow">→</div>
-        <article class="arch-box"><span>Agent runtime</span><h3>Pilot + skills</h3><p>OpenAI through API key or ChatGPT/Codex. Model routes, MCP allowlists, and guarded local tools.</p></article>
+        <article class="arch-box"><span>Agent runtime</span><h3>Pilot + skills</h3><p>OpenAI through an API key, or an eligible ChatGPT plan with a compatible Codex runtime already installed. Guarded tools stay allowlisted.</p></article>
         <div class="arch-arrow">→</div>
         <article class="arch-box"><span>Approval boundary</span><h3>Outside world</h3><p>Public job sources, optional MCP services, approved form filling. Final submission stays manual.</p></article>
       </div>
       <div class="guardrails">
-        <div class="guardrail"><strong>Truth boundary</strong><span>No unsupported claim becomes a match or tailored fact.</span></div>
+        <div class="guardrail"><strong>Truth boundary</strong><span>Fit reports separate demonstrated, adjacent, missing, and unsupported evidence.</span></div>
         <div class="guardrail"><strong>Action boundary</strong><span>Preview and approve sensitive operations; tokens are scoped and expiring.</span></div>
-        <div class="guardrail"><strong>Evolution boundary</strong><span>Version, evaluate, quarantine, activate, or roll back user-owned revisions.</span></div>
+        <div class="guardrail"><strong>Evolution boundary</strong><span>Skill/rubric revisions are evaluated; memory corrections remain inactive review drafts.</span></div>
       </div>
       <aside class="speaker-notes" hidden>This slide answers “why local?” and “what can the agent do?” Avoid claiming public multi-user readiness; current deployment is deliberately device-local.</aside>
     </section>
@@ -398,16 +402,16 @@
         <div class="demo-steps">
           <article class="demo-step"><div><strong>Start with Pilot</strong><span>Show personality, sessions, and working context.</span></div><time>0:45</time></article>
           <article class="demo-step"><div><strong>Ask: “Is this worth pursuing?”</strong><span>Open demonstrated, adjacent, and missing evidence.</span></div><time>1:30</time></article>
-          <article class="demo-step"><div><strong>Open the source of truth</strong><span>Show confirmed evidence, then open the privacy-safe memory inspector.</span></div><time>0:55</time></article>
-          <article class="demo-step"><div><strong>Move it through the pipeline</strong><span>Show score reason, artifacts, and explicit status.</span></div><time>1:00</time></article>
-          <article class="demo-step"><div><strong>End at the boundary</strong><span>“Prepare locally; I review every artifact and submit.”</span></div><time>0:50</time></article>
+          <article class="demo-step"><div><strong>Open the source of truth</strong><span>Show confirmed evidence. Open the inspector only in a pre-warmed session.</span></div><time>0:55</time></article>
+          <article class="demo-step"><div><strong>Move it through the pipeline</strong><span>Show score reasons, status history, and the next controlled action.</span></div><time>1:00</time></article>
+          <article class="demo-step"><div><strong>End at the boundary</strong><span>“The workspace stays local; I review and submit.”</span></div><time>0:50</time></article>
         </div>
       </div>
-      <aside class="speaker-notes" hidden>Keep a screenshot fallback open. Do not make a paid provider call unless the live provider smoke test has passed before the meetup. The seeded demo workspace is enough to tell the product story. The packaged local release now binds its static assets to one verified build ID, but clean macOS, Windows, and Linux install rehearsals are still release gates.</aside>
+      <aside class="speaker-notes" hidden>Keep screenshot fallbacks open. Do not make a paid provider call unless the live smoke test passed before the meetup. The seed covers profile, queue, application stages, and the local safety story; it intentionally does not fabricate a fit report, retrieval history, or artifact pack. The packaged release binds static assets to one verified build ID, but clean macOS, Windows, and Linux install rehearsals remain gates.</aside>
     </section>
 
     <section class="slide dark" id="slide-12" data-title="Closing">
-      <div class="topline"><div class="brand"><span class="brand-mark">CP</span>CareerPilot</div><span class="tiny">github.com/…/career-pilot</span></div>
+      <div class="topline"><div class="brand"><span class="brand-mark">CP</span>CareerPilot</div><span class="tiny">github.com/lololo-xiao/career-pilot</span></div>
       <div class="closing">
         <div>
           <p class="kicker">The promise</p>
