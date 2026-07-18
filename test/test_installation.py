@@ -165,3 +165,7 @@ def test_release_files_are_sanitized_and_package_the_full_runtime() -> None:
     dockerfile = (root / "Dockerfile").read_text()
     for required in ("app", "career_companion", "job_pipeline", "agent-profile"):
         assert f"COPY {required} " in dockerfile
+    for installer in (root / "install.sh", root / "install.ps1"):
+        installer_text = installer.read_text()
+        assert "scripts/static_ui_release.py" in installer_text
+        assert "npm run build" not in installer_text

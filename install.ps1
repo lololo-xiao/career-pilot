@@ -66,13 +66,12 @@ Push-Location (Join-Path $RootDir "frontend")
 try {
     npm ci
     if ($LASTEXITCODE -ne 0) { throw "Could not install frontend dependencies." }
-    $env:CAREERPILOT_STATIC_EXPORT = "true"
-    $env:NEXT_PUBLIC_API_BASE_URL = ""
-    npm run build
-    if ($LASTEXITCODE -ne 0) { throw "Could not build the browser application." }
 } finally {
     Pop-Location
 }
+& $RuntimePython (Join-Path $RootDir "scripts/static_ui_release.py") `
+    --frontend (Join-Path $RootDir "frontend") build
+if ($LASTEXITCODE -ne 0) { throw "Could not build the verified browser application." }
 
 & $RuntimePython -m playwright install chromium
 if ($LASTEXITCODE -ne 0) { throw "Could not install Playwright Chromium." }

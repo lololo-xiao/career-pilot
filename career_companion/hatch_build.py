@@ -29,7 +29,10 @@ class CustomBuildHook(BuildHookInterface):
             return
 
         try:
-            verified = verify_static_ui(Path(self.root) / "frontend")
+            verified = verify_static_ui(
+                Path(self.root) / "frontend",
+                project_root=Path(self.root),
+            )
         except StaticUIReleaseError as exc:
             raise RuntimeError(f"Bundled static UI release policy failed: {exc}") from exc
 

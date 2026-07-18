@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import career_companion.web as web
+from career_companion.static_ui_release import write_static_ui_manifest
 
 
 @pytest.fixture
@@ -14,8 +15,14 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Pat
     source = repository / "frontend" / "out"
     bundled = package / "web"
     package.mkdir(parents=True)
-    (repository / "frontend").mkdir()
-    (repository / "frontend" / "package.json").write_text("{}", encoding="utf-8")
+    frontend = repository / "frontend"
+    (frontend / "app").mkdir(parents=True)
+    (frontend / "app" / "page.tsx").write_text(
+        "export default function Page() {}\n", encoding="utf-8"
+    )
+    (frontend / "package.json").write_text("{}", encoding="utf-8")
+    (frontend / "package-lock.json").write_text("{}", encoding="utf-8")
+    (frontend / "next.config.ts").write_text("export default {};\n", encoding="utf-8")
     (repository / "pyproject.toml").write_text(
         '[project]\nname = "career-pilot"\n', encoding="utf-8"
     )
@@ -30,10 +37,17 @@ def _build(directory: Path, marker: str) -> Path:
     return directory.resolve()
 
 
+def _verified_source(repository: Path, marker: str = "fresh source UI") -> Path:
+    frontend = repository / "frontend"
+    expected = _build(frontend / "out", f"CareerPilot {marker}")
+    write_static_ui_manifest(frontend, project_root=repository)
+    return expected
+
+
 def test_source_export_wins_over_bundled_assets(checkout: tuple[Path, Path, Path]) -> None:
-    source, bundled, _repository = checkout
+    _source, bundled, repository = checkout
     _build(bundled, "stale bundled UI")
-    expected = _build(source, "fresh source UI")
+    expected = _verified_source(repository)
 
     assert web.frontend_build_directory() == expected
 
@@ -79,6 +93,40 @@ def test_source_checkout_without_export_falls_back_to_bundled_assets(
     checkout: tuple[Path, Path, Path],
 ) -> None:
     _source, bundled, _repository = checkout
+    expected = _build(bundled, "bundled UI")
+
+    assert web.frontend_build_directory() == expected
+
+
+def test_source_checkout_without_manifest_falls_back_to_bundled_assets(
+    checkout: tuple[Path, Path, Path],
+) -> None:
+    source, bundled, _repository = checkout
+    _build(source, "CareerPilot unmanifested source UI")
+    expected = _build(bundled, "bundled UI")
+
+    assert web.frontend_build_directory() == expected
+
+
+def test_stale_source_manifest_falls_back_to_bundled_assets(
+    checkout: tuple[Path, Path, Path],
+) -> None:
+    _source, bundled, repository = checkout
+    _verified_source(repository)
+    (repository / "frontend" / "app" / "page.tsx").write_text(
+        "export default function Stale() {}\n", encoding="utf-8"
+    )
+    expected = _build(bundled, "bundled UI")
+
+    assert web.frontend_build_directory() == expected
+
+
+def test_tampered_source_export_falls_back_to_bundled_assets(
+    checkout: tuple[Path, Path, Path],
+) -> None:
+    source, bundled, repository = checkout
+    _verified_source(repository)
+    (source / "index.html").write_text("CareerPilot tampered", encoding="utf-8")
     expected = _build(bundled, "bundled UI")
 
     assert web.frontend_build_directory() == expected

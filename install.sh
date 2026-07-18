@@ -63,8 +63,9 @@ UV_PROJECT_ENVIRONMENT="${PYTHON_ENV}" "${UV_ENV}/bin/uv" sync \
 
 pushd "${ROOT_DIR}/frontend" >/dev/null
 npm ci
-CAREERPILOT_STATIC_EXPORT=true NEXT_PUBLIC_API_BASE_URL= npm run build
 popd >/dev/null
+"${PYTHON_ENV}/bin/python" "${ROOT_DIR}/scripts/static_ui_release.py" \
+  --frontend "${ROOT_DIR}/frontend" build
 
 if [[ "$(uname -s)" == "Linux" ]]; then
   "${PYTHON_ENV}/bin/python" -m playwright install --with-deps chromium

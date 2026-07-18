@@ -85,7 +85,9 @@ jobs:
         run: npm run build
       - name: Build and fingerprint same-origin release bundle
         working-directory: .
-        run: uv run --no-project --python 3.12 python -m scripts.static_ui_release build
+        run: >-
+          uv run --no-project --python 3.12 python -m scripts.static_ui_release
+          build --verify-reproducible
       - name: Build public Python artifacts with bundled UI
         working-directory: .
         run: uv build --out-dir dist

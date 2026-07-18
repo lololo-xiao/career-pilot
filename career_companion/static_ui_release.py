@@ -14,12 +14,28 @@ INDEX_MARKER = "CareerPilot"
 BUILD_CONTRACT = {
     "CAREERPILOT_STATIC_EXPORT": "true",
     "NEXT_PUBLIC_API_BASE_URL": "",
+    "NEXT_TELEMETRY_DISABLED": "1",
 }
 
 _IGNORED_SOURCE_DIRECTORIES = frozenset({".next", "node_modules", "out", "test"})
 _IGNORED_GENERATED_SOURCE_FILES = frozenset({"next-env.d.ts"})
 _JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 _JUNK_DIRECTORIES = frozenset({"__MACOSX"})
+_BUILD_ENVIRONMENT_ALLOWLIST = frozenset(
+    {
+        "COMSPEC",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "WINDIR",
+    }
+)
 
 
 class StaticUIReleaseError(RuntimeError):
@@ -47,13 +63,22 @@ class VerifiedStaticUI:
     files: tuple[StaticUIFile, ...]
 
 
-def build_static_ui(frontend: Path, *, npm_executable: str = "npm") -> VerifiedStaticUI:
+def build_static_ui(
+    frontend: Path,
+    *,
+    project_root: Path,
+    npm_executable: str = "npm",
+) -> VerifiedStaticUI:
     """Create a static export and bind it to the unchanged frontend source tree."""
 
-    frontend = frontend.resolve()
-    source_before = frontend_source_fingerprint(frontend)
-    environment = os.environ.copy()
-    environment.update(BUILD_CONTRACT)
+    frontend = _validated_frontend_root(frontend, project_root=project_root)
+    source_before = frontend_source_fingerprint(frontend, project_root=project_root)
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in _BUILD_ENVIRONMENT_ALLOWLIST
+    }
+    environment.update(_effective_build_contract(source_before))
     try:
         subprocess.run(
             [npm_executable, "run", "build"],
@@ -68,19 +93,24 @@ def build_static_ui(frontend: Path, *, npm_executable: str = "npm") -> VerifiedS
     return write_static_ui_manifest(
         frontend,
         expected_source_fingerprint=source_before,
+        project_root=project_root,
     )
 
 
 def write_static_ui_manifest(
     frontend: Path,
     *,
+    project_root: Path,
     expected_source_fingerprint: str | None = None,
 ) -> VerifiedStaticUI:
     """Fingerprint a completed export for deterministic sdist/wheel inclusion."""
 
-    frontend = frontend.resolve()
+    frontend = _validated_frontend_root(frontend, project_root=project_root)
     export = frontend / "out"
-    source_fingerprint = frontend_source_fingerprint(frontend)
+    source_fingerprint = frontend_source_fingerprint(
+        frontend,
+        project_root=project_root,
+    )
     if (
         expected_source_fingerprint is not None
         and source_fingerprint != expected_source_fingerprint
@@ -93,7 +123,7 @@ def write_static_ui_manifest(
     index_sha256 = _validate_index(index)
     export_fingerprint = _fingerprint(files)
     payload = {
-        "build_contract": BUILD_CONTRACT,
+        "build_contract": _effective_build_contract(source_fingerprint),
         "export_fingerprint": export_fingerprint,
         "files": [file.as_json() for file in files],
         "format_version": MANIFEST_VERSION,
@@ -108,13 +138,21 @@ def write_static_ui_manifest(
         encoding="utf-8",
     )
     os.replace(temporary, manifest)
-    return verify_static_ui(frontend)
+    return verify_static_ui(frontend, project_root=project_root)
 
 
-def verify_static_ui(frontend: Path) -> VerifiedStaticUI:
+def verify_static_ui(
+    frontend: Path,
+    *,
+    project_root: Path,
+) -> VerifiedStaticUI:
     """Verify source freshness, exported file hashes, and the stable index marker."""
 
-    frontend = frontend.resolve()
+    frontend = _validated_frontend_root(frontend, project_root=project_root)
+    source_fingerprint = frontend_source_fingerprint(
+        frontend,
+        project_root=project_root,
+    )
     export = frontend / "out"
     if not export.is_dir():
         raise StaticUIReleaseError(
@@ -137,7 +175,6 @@ def verify_static_ui(frontend: Path) -> VerifiedStaticUI:
             "Static UI export is stale: its file list or content differs from the manifest."
         )
 
-    source_fingerprint = frontend_source_fingerprint(frontend)
     if payload.get("source_fingerprint") != source_fingerprint:
         raise StaticUIReleaseError(
             "Static UI export is stale: frontend sources changed after it was built."
@@ -159,10 +196,15 @@ def verify_static_ui(frontend: Path) -> VerifiedStaticUI:
     )
 
 
-def frontend_source_fingerprint(frontend: Path) -> str:
-    frontend = frontend.resolve()
+def frontend_source_fingerprint(
+    frontend: Path,
+    *,
+    project_root: Path,
+) -> str:
+    frontend = _validated_frontend_root(frontend, project_root=project_root)
     if not frontend.is_dir():
         raise StaticUIReleaseError(f"Frontend source directory is missing: {frontend}")
+    _reject_dotenv_files(frontend)
     files = _collect_files(
         frontend,
         ignored_top_level_directories=_IGNORED_SOURCE_DIRECTORIES,
@@ -176,6 +218,55 @@ def frontend_source_fingerprint(frontend: Path) -> str:
             f"Frontend source inputs are incomplete: missing {', '.join(missing)}"
         )
     return _fingerprint(files)
+
+
+def _validated_frontend_root(
+    frontend: Path,
+    *,
+    project_root: Path,
+) -> Path:
+    supplied = Path(frontend).expanduser()
+    absolute = Path(os.path.abspath(os.fspath(supplied)))
+    if absolute.is_symlink():
+        raise StaticUIReleaseError(
+            f"Frontend release root cannot be a symbolic link: {absolute}"
+        )
+
+    expected = Path(os.path.abspath(os.fspath(Path(project_root).expanduser())))
+    if not absolute.is_relative_to(expected):
+        raise StaticUIReleaseError(
+            f"Frontend release root escapes the expected project root: {absolute}"
+        )
+    if not absolute.resolve().is_relative_to(expected.resolve()):
+        raise StaticUIReleaseError(
+            f"Frontend release root resolves outside the expected project root: {absolute}"
+        )
+    return absolute
+
+
+def _reject_dotenv_files(frontend: Path) -> None:
+    """Reject inputs Next could load implicitly without following nested links."""
+
+    pending = [frontend]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    relative = Path(entry.path).relative_to(frontend)
+                    if entry.name.startswith(".env") and not entry.name.endswith(
+                        ".example"
+                    ):
+                        raise StaticUIReleaseError(
+                            "Frontend release inputs cannot contain non-example dotenv "
+                            f"files: {relative}"
+                        )
+                    if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
+                        pending.append(Path(entry.path))
+    except OSError as exc:
+        raise StaticUIReleaseError(
+            f"Could not safely inspect frontend dotenv inputs: {frontend}"
+        ) from exc
 
 
 def _export_files(export: Path) -> tuple[StaticUIFile, ...]:
@@ -226,8 +317,6 @@ def _collect_files(
                         if ignore_source_files:
                             # Next rewrites this generated type shim during builds.
                             if relative.as_posix() in _IGNORED_GENERATED_SOURCE_FILES:
-                                continue
-                            if entry.name.startswith(".env"):
                                 continue
                         paths.append(path)
                     else:
@@ -288,7 +377,13 @@ def _validate_manifest_header(payload: Any) -> None:
         raise StaticUIReleaseError("Static UI manifest root must be an object.")
     if payload.get("format_version") != MANIFEST_VERSION:
         raise StaticUIReleaseError("Static UI manifest format version is unsupported.")
-    if payload.get("build_contract") != BUILD_CONTRACT:
+    source_fingerprint = payload.get("source_fingerprint")
+    if (
+        not isinstance(source_fingerprint, str)
+        or len(source_fingerprint) != 64
+        or payload.get("build_contract")
+        != _effective_build_contract(source_fingerprint)
+    ):
         raise StaticUIReleaseError("Static UI manifest build contract is invalid.")
     if payload.get("index_marker") != INDEX_MARKER:
         raise StaticUIReleaseError("Static UI manifest index marker is invalid.")
@@ -315,6 +410,13 @@ def _fingerprint(files: tuple[StaticUIFile, ...]) -> str:
         digest.update(file.sha256.encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _effective_build_contract(source_fingerprint: str) -> dict[str, str]:
+    return {
+        **BUILD_CONTRACT,
+        "CAREERPILOT_BUILD_ID": f"careerpilot-{source_fingerprint}",
+    }
 
 
 def _sha256_file(path: Path) -> str:

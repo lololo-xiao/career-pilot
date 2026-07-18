@@ -2,7 +2,7 @@
 
 Release workflow:
   1. Install locked frontend dependencies with ``npm ci --prefix frontend``.
-  2. Run ``python -m scripts.static_ui_release build``.
+  2. Run ``python -m scripts.static_ui_release build --verify-reproducible``.
   3. Run ``uv build --offline`` once Hatchling is available in the uv cache.
 
 The build command runs the same-origin Next.js export, fingerprints its source and
@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the static Next.js export and write its deterministic manifest",
     )
     build.add_argument("--npm", default="npm", help="npm executable (default: npm)")
+    build.add_argument(
+        "--verify-reproducible",
+        action="store_true",
+        help="Build twice and require identical source/export/index fingerprints",
+    )
     subparsers.add_parser(
         "verify",
         help="Verify source freshness and every manifested export file",
@@ -53,9 +58,33 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "build":
-            result = build_static_ui(args.frontend, npm_executable=args.npm)
+            result = build_static_ui(
+                args.frontend,
+                npm_executable=args.npm,
+                project_root=REPOSITORY_ROOT,
+            )
+            if args.verify_reproducible:
+                first = result
+                result = build_static_ui(
+                    args.frontend,
+                    npm_executable=args.npm,
+                    project_root=REPOSITORY_ROOT,
+                )
+                if (
+                    result.source_fingerprint,
+                    result.export_fingerprint,
+                    result.index_sha256,
+                ) != (
+                    first.source_fingerprint,
+                    first.export_fingerprint,
+                    first.index_sha256,
+                ):
+                    raise StaticUIReleaseError(
+                        "Two clean static exports produced different fingerprints."
+                    )
+                print("Static UI reproducibility: two clean exports matched")
         else:
-            result = verify_static_ui(args.frontend)
+            result = verify_static_ui(args.frontend, project_root=REPOSITORY_ROOT)
     except StaticUIReleaseError as exc:
         raise SystemExit(f"Static UI release error: {exc}") from exc
     print(f"Static UI source fingerprint: {result.source_fingerprint}")
