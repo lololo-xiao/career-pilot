@@ -136,6 +136,8 @@ def approve_artifact(session: Session, artifact_id: str, sha256: str) -> Artifac
     artifact = session.get(ArtifactRecord, artifact_id)
     if not artifact:
         raise LookupError("Artifact not found")
+    if artifact.kind == "form_fill_preview":
+        raise ValueError("Local form previews are not application attachments")
     if artifact.sha256 != sha256 or _sha256(Path(artifact.path)) != sha256:
         raise ValueError("Artifact changed after review")
     artifact.approved = True

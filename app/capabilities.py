@@ -30,6 +30,7 @@ _CAREER_TOOLS = [
     "career_application_queue",
     "career_application_decide",
     "career_application_status",
+    "career_application_form_preview",
     "career_revision_propose",
     "career_memory_preference_propose",
     "career_policy_status",
@@ -99,12 +100,17 @@ def build_capability_settings(
         ),
         CapabilityGroupResponse(
             id="browser-assistance",
-            name="Application browser assistance",
-            description="Application form filling is not available to Pilot.",
-            state="disabled",
-            state_label="Off",
-            tools=[],
-            note="A dedicated preview, approval, and fill workflow must be added first.",
+            name="Application form preview",
+            description=(
+                "Build a local evidence-bound field plan without opening or changing a form."
+            ),
+            state="enabled",
+            state_label="Preview only",
+            tools=["career_application_form_preview"],
+            note=(
+                "Browser navigation, uploads, filling, and submission remain unavailable "
+                "to Pilot. Any later external phase will require a separate confirmation."
+            ),
         ),
         CapabilityGroupResponse(
             id="autonomous-actions",

@@ -6,6 +6,7 @@ const STATUS_LABELS: Record<string, string> = {
   approved: "Approved to tailor",
   tailoring: "Tailoring",
   ready: "Ready to apply",
+  form_previewed: "Form preview ready",
   form_filled: "Form filled",
   submitted: "Applied",
   followed_up: "Followed up",

@@ -41,6 +41,10 @@ worktree or an observed runtime check proves it.
   approvals, confirmed submissions,
   route budgets, immutable facts, reversible revisions, and the account-secret
   Hermes bridge.
+- Form-preview tests prove exact current-message binding, explicit application approval,
+  verified-evidence and approved-artifact mapping, deterministic retry/concurrency
+  convergence, account isolation, prompt-injection resistance, visible unresolved fields,
+  reload reconciliation, and a false external-mutation audit record.
 - Hermes lifecycle tests prove route-selected provider isolation, encrypted Codex
   refresh, authenticated readiness, provider invalidation, shutdown, and streamed
   browser events without exposing provider or bridge credentials.

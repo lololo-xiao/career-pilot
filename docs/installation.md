@@ -58,6 +58,8 @@ The scripts stop on a failed version, checksum, browser launch, build, or diagno
 3. Import and review the CV evidence. Uncertain claims remain unverified until the user
    confirms them.
 4. Add a job, review deterministic fit evidence, and generate artifacts.
+5. For a review-ready application, describe the form fields locally and inspect the
+   evidence-bound preview. This step does not open or modify an employer form.
 
 Conversation sessions are stored in the device-local operational database. Refreshing or
 restarting the app restores the last selected session, including its messages, CV/role
@@ -111,6 +113,10 @@ trusted host-level access control. Do not expose it directly to the public inter
 
 ## Safe limitations
 
+- Form preview is local-only. It stores a deterministic field plan, shows unresolved
+  fields, and performs no navigation, upload, fill, or external mutation. Any later
+  external phase is separate, requires a new explicit confirmation, and is not yet
+  available through Pilot.
 - Browser assistance fills approved fields and files, then removes its temporary form
   and mutating-request guard so the user can review and submit manually. It never clicks
   the final submit control.

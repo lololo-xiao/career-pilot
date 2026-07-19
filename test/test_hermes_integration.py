@@ -194,6 +194,7 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
         "career_application_queue",
         "career_application_decide",
         "career_application_status",
+        "career_application_form_preview",
         "career_revision_propose",
         "career_memory_preference_propose",
         "career_policy_status",
@@ -259,6 +260,7 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
         "career_public_job_discover",
         "career_job_track_selected",
         "career_application_decide",
+        "career_application_form_preview",
         "career_memory_preference_propose",
         "mcp__company_jobs__web_job_search",
         "mcp__linkedin_search__search_jobs",
@@ -332,7 +334,23 @@ def test_profile_plugin_registers_only_the_restricted_career_surface(
     assert "ready" not in status_values
     assert "scored" not in status_values
     assert "form_filled" not in status_values
+    assert "form_previewed" not in status_values
     assert "interview" in status_values
+
+    preview_tool = context.tools["career_application_form_preview"]
+    preview_parameters = preview_tool["schema"]["parameters"]
+    assert preview_parameters["required"] == [
+        "application_id",
+        "preview_reference",
+    ]
+    assert set(preview_parameters["properties"]) == {
+        "application_id",
+        "preview_reference",
+    }
+    assert preview_parameters["additionalProperties"] is False
+    assert "deterministic local-only" in preview_tool["description"]
+    assert "does not browse" in preview_tool["description"]
+    assert "external mutation" in preview_tool["description"]
 
     identity_parameters = context.tools["career_identity_update"]["schema"][
         "parameters"
@@ -507,6 +525,60 @@ def test_profile_plugin_sends_memory_preference_with_canonical_run_binding(
     ]
 
 
+def test_profile_plugin_sends_only_the_bound_finite_form_preview_request(
+    monkeypatch,
+) -> None:
+    plugin = _load_profile_plugin()
+    context = FakePluginContext()
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        run_message = ""
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "run_message": self.run_message,
+                    **kwargs,
+                }
+            )
+            return {
+                "activity": {
+                    "type": "local_write",
+                    "external_mutation_performed": False,
+                }
+            }
+
+    monkeypatch.setattr(plugin, "HermesBridgeClient", FakeClient)
+    plugin.register(context)
+    application_id = "00000000-0000-0000-0000-000000000001"
+    message_id = "00000000-0000-0000-0000-000000000002"
+    directive = f"Preview application {application_id} fields: email, resume."
+    result = json.loads(
+        context.tools["career_application_form_preview"]["handler"](
+            {
+                "application_id": application_id,
+                "preview_reference": directive,
+            },
+            session_id=message_id,
+        )
+    )
+
+    assert result["ok"] is True
+    assert calls == [
+        {
+            "method": "POST",
+            "path": f"/applications/{application_id}/form-preview",
+            "run_message": message_id,
+            "json_body": {"preview_reference": directive},
+        }
+    ]
+    assert "url" not in json.dumps(calls)
+    assert "selector" not in json.dumps(calls)
+
+
 def test_protected_pilot_instructions_keep_memory_preferences_as_drafts() -> None:
     instructions = " ".join(HERMES_COMPANION_INSTRUCTIONS.split())
     assert "career_memory_preference_propose" in instructions
@@ -518,6 +590,10 @@ def test_protected_pilot_instructions_keep_memory_preferences_as_drafts() -> Non
     assert "never use career_revision_propose for memory" in instructions
     assert "unevaluated draft for later user review" in instructions
     assert "never as remembered, active, or verified" in instructions
+    assert "career_application_form_preview" in instructions
+    assert "finite local-only preview" in instructions
+    assert "does not browse, navigate, click, upload, fill, submit" in instructions
+    assert "new explicit user confirmation" in instructions
 
     soul = " ".join(
         (REPOSITORY_ROOT / "agent-profile" / "SOUL.md").read_text().split()
@@ -2153,6 +2229,7 @@ def test_internal_bridge_generic_status_preserves_outcomes_but_not_gated_states(
         "withdrawn",
         "tailoring",
         "ready",
+        "form_previewed",
         "form_filled",
     ):
         blocked = client.post(

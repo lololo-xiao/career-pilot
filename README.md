@@ -63,7 +63,7 @@ tailoring, interview practice, and preview-only form assistance.
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
 | Revision safety | 🟡 Partial | Skill/rubric proposals support evaluation, quarantine, activation, and rollback. Explicit supported memory corrections become inactive review drafts; existing active evaluated memory is used at runtime |
 | Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, track, approve, or archive an explicit scored selection; dedicated guided discovery and tailoring orchestration remain unfinished |
-| Form assistance | 🟡 Partial | Approved browser-fill backend exists; the friendly end-to-end preview/approval/fill experience is unfinished |
+| Form assistance | 🟡 Partial | On supported POSIX systems, Pilot can build persistent evidence-bound local field previews without opening a form. The guarded browser-fill backend remains separate and is not exposed to Pilot; external fill is unfinished |
 | Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes. The privacy-safe inspector shows what was considered, not answer-level attribution; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
 | Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install verification is still planned |
@@ -228,10 +228,11 @@ npm run lint
 npm run build
 ```
 
-The current clean-archive development audit passes **651 backend tests** with **6
-environment/platform skips**, plus **20 frontend unit tests**. The offline evaluator validates **25
-strong, partial, and mismatch cases**; frontend lint, the production build, and demo
-preflight also pass.
+The current clean-archive development audit passes **677 backend tests** with **6
+environment/platform skips**, plus **25 frontend unit tests**. Two offline
+package-contract checks could not run because this sandbox could not access the
+pre-populated dependency cache. The offline evaluator validates **25 strong, partial,
+and mismatch cases**; frontend lint, the production build, and demo preflight also pass.
 
 One explicit provider-backed smoke test is available:
 
@@ -282,7 +283,8 @@ into a genuinely proactive job-search agent.
 - [x] Expose Greenhouse/Lever discovery through Pilot.
 - [ ] Add a dedicated guided discovery experience to the primary UI.
 - [ ] Let Pilot orchestrate discover → deduplicate → rank → track → tailor in one conversation.
-- [ ] Add a guided preview/approve/fill flow around the existing form-fill backend.
+- [x] Add a guided, deterministic local form-field preview from verified evidence and approved artifacts.
+- [ ] Add a separately confirmed external fill phase around the existing guarded backend.
 - [ ] Surface approval history and explain exactly what each token authorizes.
 - [ ] Add safe daily/weekly search queues with a visible pause switch and budget.
 - [ ] Draft follow-ups from recorded outcomes; never send without a user preview and approval.
@@ -334,7 +336,7 @@ before it reaches `main`:
 | `guided-practice` | 🟡 Adversarial review | First run, isolated interview practice, grounded feedback, and resilient UX | Close process-cleanup, Windows-path, cross-tab, and reconciliation races |
 | `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
 | `tailoring-drafts` | 🟡 In progress | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Complete implementation, full gates, and independent review |
-| `form-fill-workspace` | 🟡 In progress | Local preview-only field plan without browsing or submission | Complete implementation, adversarial gates, and independent review |
+| `form-fill-workspace` | ✅ Integrated | Persistent evidence-bound local preview; no browser or external mutation | Add a secure Windows storage backend, then design a separately confirmed external fill phase |
 
 Each lane starts with an explicit interface contract. Database migrations stay owned by
 one lane at a time, and integration uses small reviewed commits instead of a shared mutable
@@ -364,6 +366,7 @@ worktree.
 - `POST /match` — retrieval, provider analysis, and grounding validation.
 - `GET|POST /api/v1/jobs` plus discovery, import, and score routes — deduplicated job queue.
 - `GET|POST /api/v1/applications` plus status and artifact routes — pipeline and versioned materials.
+- `GET|POST /api/v1/applications/.../form-preview` — deterministic local-only field plans; no URL, selector, browser, upload, or submission surface.
 - `GET /api/v1/model-routes` and `PUT /api/v1/model-routes/{route_name}` — task-specific model and cost controls.
 - `GET|POST /api/v1/revisions`, `POST /{id}/evaluate`, and `POST /{id}/rollback` — reversible user-owned revisions.
 - `GET|POST /settings/mcp` and `PUT|DELETE /settings/mcp/{name}` — allowlisted MCP configuration.

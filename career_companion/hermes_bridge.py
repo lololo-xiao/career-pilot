@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 import secrets
@@ -35,7 +36,14 @@ from career_companion.database import (
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session
 from career_companion.router import _application_json, _job_json, _revision_json
-from career_companion.schemas import ApplicationStatus, Job, JobSpec
+from career_companion.schemas import (
+    ApplicationStatus,
+    FormFieldKey,
+    FormFieldSpec,
+    FormPreviewRequest,
+    Job,
+    JobSpec,
+)
 from career_companion.services.applications import (
     ApplicationPersistenceError,
     decide_scored_application,
@@ -48,6 +56,7 @@ from career_companion.services.conversation_sessions import (
     update_agent_profile,
 )
 from career_companion.services.discovery import DiscoveryError, discover_public_jobs
+from career_companion.services.form_preview import prepare_form_preview
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.revisions import (
     MemoryPreferenceConflictError,
@@ -71,12 +80,19 @@ _DIRECTIVE_PATTERN = re.compile(
     r"(?P<identity>\S(?:.*\S)?)\Z",
     re.IGNORECASE,
 )
+_FORM_PREVIEW_DIRECTIVE_PATTERN = re.compile(
+    r"\A(?:(?:please)(?:,\s+|\s+))?preview\s+application\s+"
+    r"(?P<application_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s+"
+    r"fields:\s+(?P<fields>[a-z_]+(?:,\s*[a-z_]+)*)(?:[.!])?\Z",
+    re.IGNORECASE,
+)
 _PILOT_GATED_APPLICATION_STATUSES = {
     ApplicationStatus.SCORED,
     ApplicationStatus.APPROVED,
     ApplicationStatus.WITHDRAWN,
     ApplicationStatus.TAILORING,
     ApplicationStatus.READY,
+    ApplicationStatus.FORM_PREVIEWED,
     ApplicationStatus.FORM_FILLED,
 }
 
@@ -119,6 +135,10 @@ class HermesRevisionPayload(BoundToolPayload):
 
 class MemoryPreferenceProposalPayload(BoundToolPayload):
     correction_phrase: str = Field(min_length=1, max_length=200)
+
+
+class FormPreviewPayload(BoundToolPayload):
+    preview_reference: str = Field(min_length=1, max_length=1_000)
 
 
 def _unauthorized() -> HTTPException:
@@ -521,6 +541,75 @@ def list_applications(
     return [_application_json(row) for row in rows]
 
 
+@router.post("/applications/{application_id}/form-preview")
+def preview_application_form(
+    application_id: str,
+    payload: FormPreviewPayload,
+    session: SessionDep,
+    paths: PathsDep,
+    run_message: RunMessageDep,
+) -> dict[str, Any]:
+    run_message = _rebind_latest_run_message_for_write(session, run_message.id)
+    if payload.preview_reference != run_message.content:
+        raise HTTPException(
+            409,
+            "Preview reference must exactly equal the latest user message",
+        )
+    bound_application_id, field_keys = _parse_form_preview_directive(
+        run_message.content
+    )
+    if bound_application_id != application_id:
+        raise HTTPException(
+            409,
+            "Preview directive does not identify this application exactly",
+        )
+    request = FormPreviewRequest(
+        form_reference=f"Pilot field checklist for application {application_id}",
+        fields=[
+            FormFieldSpec(
+                field_id=f"pilot-{index + 1}-{field_key.value}",
+                label=_FORM_PREVIEW_LABELS[field_key],
+                field_key=field_key,
+                required=True,
+            )
+            for index, field_key in enumerate(field_keys)
+        ],
+    )
+    try:
+        preview, created = prepare_form_preview(
+            session,
+            application_id,
+            paths,
+            request,
+            source_session=run_message.session_id,
+            source_message_id=run_message.id,
+            source_message_sha256=hashlib.sha256(
+                run_message.content.encode("utf-8")
+            ).hexdigest(),
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {
+        "activity": {
+            "type": "local_write",
+            "operations": ["evidence_bound_form_preview"],
+            "public_network_read": False,
+            "browser_used": False,
+            "external_mutation_performed": False,
+        },
+        "preview": preview,
+        "created": created,
+        "next_safe_action": (
+            "Review the local preview and resolve every unknown, unsupported, or "
+            "ambiguous field. No external fill phase is available."
+        ),
+    }
+
+
 @router.post("/applications/{application_id}/status")
 def set_application_status(
     application_id: str,
@@ -732,6 +821,44 @@ def _parse_bound_directive(message: str) -> tuple[str, tuple[str, ...]]:
         if without_punctuation:
             identities.append(without_punctuation)
     return match.group("action").casefold(), tuple(identities)
+
+
+_FORM_PREVIEW_LABELS = {
+    FormFieldKey.FULL_NAME: "Full name",
+    FormFieldKey.EMAIL: "Email",
+    FormFieldKey.PHONE: "Phone",
+    FormFieldKey.LOCATION: "Location",
+    FormFieldKey.WORK_AUTHORIZATION: "Work authorization",
+    FormFieldKey.RESUME: "Resume",
+    FormFieldKey.COVER_LETTER: "Cover letter",
+}
+_PILOT_FORM_FIELD_KEYS = frozenset(_FORM_PREVIEW_LABELS)
+
+
+def _parse_form_preview_directive(
+    message: str,
+) -> tuple[str, tuple[FormFieldKey, ...]]:
+    match = _FORM_PREVIEW_DIRECTIVE_PATTERN.fullmatch(message)
+    if match is None:
+        raise HTTPException(
+            409,
+            "The latest user message is not one narrow form-preview directive",
+        )
+    raw_fields = tuple(
+        value.strip().casefold() for value in match.group("fields").split(",")
+    )
+    try:
+        fields = tuple(FormFieldKey(value) for value in raw_fields)
+    except ValueError as exc:
+        raise HTTPException(
+            409,
+            "Preview directive contains an unsupported field key",
+        ) from exc
+    if any(field not in _PILOT_FORM_FIELD_KEYS for field in fields):
+        raise HTTPException(409, "Preview directive contains an unsupported field key")
+    if len(set(fields)) != len(fields):
+        raise HTTPException(409, "Preview directive field keys must be unique")
+    return match.group("application_id").casefold(), fields
 
 
 def _matches_named_job_identity(

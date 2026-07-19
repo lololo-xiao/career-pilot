@@ -169,9 +169,13 @@ small environment allowlist, then forwards only explicitly selected provider and
 credentials. The default Hermes API-server toolset keeps terminal, file, and code
 operations inside the device-local CareerPilot workspace. It excludes raw memory writes,
 cron mutation, delegation, messaging, and general browser automation. Optional web search
-receives only an encrypted user-owned search credential when configured. Form filling
-remains available only through the career bridge, where an exact one-time approval is
-consumed and final submission is impossible.
+receives only an encrypted user-owned search credential when configured. Pilot exposes
+one finite form-preview tool bound to the exact latest user message. It accepts only an
+application ID and a fixed field vocabulary, then creates a deterministic local JSON
+artifact from verified evidence and exact approved application artifacts. It has no URL,
+selector, browser, upload, click, approval-token, or submission surface. The existing
+guarded browser-fill backend is not exposed to Pilot; a separately confirmed external
+phase remains future work.
 
 FastAPI starts Hermes on demand because the provider and task route are not known at
 application startup. It owns the child until provider invalidation or application shutdown.

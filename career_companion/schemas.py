@@ -118,6 +118,7 @@ class ApplicationStatus(StrEnum):
     APPROVED = "approved"
     TAILORING = "tailoring"
     READY = "ready"
+    FORM_PREVIEWED = "form_previewed"
     FORM_FILLED = "form_filled"
     SUBMITTED = "submitted"
     FOLLOWED_UP = "followed_up"
@@ -135,6 +136,64 @@ class ApplicationStatus(StrEnum):
     REJECTED = "rejected"
     NO_RESPONSE = "no_response"
     WITHDRAWN = "withdrawn"
+
+
+class FormFieldKey(StrEnum):
+    FULL_NAME = "full_name"
+    EMAIL = "email"
+    PHONE = "phone"
+    LOCATION = "location"
+    WORK_AUTHORIZATION = "work_authorization"
+    RESUME = "resume"
+    COVER_LETTER = "cover_letter"
+    UNSUPPORTED = "unsupported"
+
+
+class FormFieldState(StrEnum):
+    MAPPED = "mapped"
+    UNKNOWN = "unknown"
+    UNSUPPORTED = "unsupported"
+    AMBIGUOUS = "ambiguous"
+
+
+class FormFieldSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_id: str = Field(
+        min_length=1,
+        max_length=120,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,119}$",
+    )
+    label: str = Field(min_length=1, max_length=300)
+    field_key: FormFieldKey
+    required: StrictBool = False
+    options: list[Annotated[str, Field(min_length=1, max_length=300)]] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+    @model_validator(mode="after")
+    def validate_options(self) -> "FormFieldSpec":
+        normalized = [" ".join(value.split()).casefold() for value in self.options]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Form field options must be unique")
+        if self.field_key in {FormFieldKey.RESUME, FormFieldKey.COVER_LETTER} and self.options:
+            raise ValueError("Artifact fields cannot define choice options")
+        return self
+
+
+class FormPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    form_reference: str = Field(min_length=1, max_length=300)
+    fields: list[FormFieldSpec] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_field_ids(self) -> "FormPreviewRequest":
+        field_ids = [field.field_id for field in self.fields]
+        if len(set(field_ids)) != len(field_ids):
+            raise ValueError("Form field IDs must be unique")
+        return self
 
 
 class ArtifactVersion(BaseModel):

@@ -28,6 +28,7 @@ from career_companion.paths import CompanionPaths
 from career_companion.schemas import (
     ApplicationStatus,
     CandidateProfile,
+    FormPreviewRequest,
     Job,
     MCPServerConfig,
     ModelRoute,
@@ -47,6 +48,12 @@ from career_companion.services.discovery import (
     DiscoveryError,
     discover_greenhouse,
     discover_lever,
+)
+from career_companion.services.form_preview import (
+    FORM_PREVIEW_ARTIFACT_KIND,
+    latest_form_preview,
+    list_latest_form_previews,
+    prepare_form_preview,
 )
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.model_routes import daily_cost, upsert_route
@@ -279,6 +286,14 @@ def list_applications(session: SessionDep) -> list[dict[str, Any]]:
 def set_application_status(
     application_id: str, payload: ApplicationTransitionRequest, session: SessionDep
 ) -> dict[str, Any]:
+    if payload.status in {
+        ApplicationStatus.FORM_PREVIEWED,
+        ApplicationStatus.FORM_FILLED,
+    }:
+        raise HTTPException(
+            409,
+            "Form preview and form completion require their dedicated workflows",
+        )
     try:
         record = transition_application(
             session,
@@ -293,6 +308,46 @@ def set_application_status(
     except (PermissionError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     return _application_json(record)
+
+
+@router.get("/applications/form-previews")
+def list_form_previews(session: SessionDep, paths: PathsDep) -> dict[str, dict[str, Any]]:
+    return list_latest_form_previews(session, paths)
+
+
+@router.get("/applications/{application_id}/form-preview")
+def get_form_preview(
+    application_id: str,
+    session: SessionDep,
+    paths: PathsDep,
+) -> dict[str, Any]:
+    try:
+        return latest_form_preview(session, application_id, paths)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/applications/{application_id}/form-preview")
+def create_form_preview(
+    application_id: str,
+    payload: FormPreviewRequest,
+    session: SessionDep,
+    paths: PathsDep,
+) -> dict[str, Any]:
+    try:
+        preview, created = prepare_form_preview(
+            session,
+            application_id,
+            paths,
+            payload,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return preview | {"created": created}
 
 
 @router.post("/applications/{application_id}/artifacts/generate")
@@ -555,7 +610,11 @@ def _application_json(row: ApplicationRecord) -> dict[str, Any]:
         "next_action": row.next_action,
         "next_action_at": row.next_action_at,
         "submitted_at": row.submitted_at,
-        "artifacts": [_artifact_json(item) for item in row.artifacts],
+        "artifacts": [
+            _artifact_json(item)
+            for item in row.artifacts
+            if item.kind != FORM_PREVIEW_ARTIFACT_KIND
+        ],
         "status_events": [
             {
                 "from": event.from_status,

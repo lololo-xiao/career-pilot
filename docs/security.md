@@ -20,7 +20,9 @@ loopback FastAPI process, not the language model.
 - The profile exposes career tools, workspace-scoped file/terminal/code tools, curated
   session search and skills, optional web search, and allowlisted MCP tools. Raw memory
   writes, delegation, messaging, cron mutation, and general browser automation are
-  excluded. The dedicated form-fill tool remains approval-bound and cannot submit.
+  excluded. The finite application-form tool creates only a local evidence-bound
+  preview from an exact current-message directive. It cannot receive a URL or selector,
+  browse, click, upload, fill, request an approval, submit, or mutate an external system.
 - The local Settings UI—not retrieved content or the agent—may create, edit, and remove
   user-owned memory and skill files. Names are slug-validated, paths are derived by the
   server, symlinks are rejected, built-in skills are immutable, and edits are synchronized
@@ -44,6 +46,12 @@ loopback FastAPI process, not the language model.
 - Browser filling revalidates redirects, permits exactly one safe element per selector,
   validates file inputs and approved artifact hashes, blocks form submission and
   mutating network requests during automation, and records that submission did not occur.
+- Initial local form previews require a `scored → approved` history, `ready` workflow
+  state, verified source evidence, and an integrity-checked approved CV. Revisions remain
+  inside the dedicated `form_previewed` workflow. They use a deterministic
+  account-scoped JSON artifact plus the existing status/audit records, preserve unknown,
+  unsupported, and ambiguous fields, and transition through the dedicated
+  `form_previewed` state. Job and form text are data only.
 - Backup archives have an allowlisted layout, size/count/compression limits, no symlinks,
   no duplicate or traversal paths, consistent SQLite snapshots, and rollback on a failed
   replacement. Secret and runtime paths are excluded.

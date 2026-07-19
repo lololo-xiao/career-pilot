@@ -21,11 +21,15 @@ import type {
 } from "../types";
 import { ApplicationSummary } from "./application-summary";
 import { API_BASE_URL, apiRequest, openArtifact } from "./api";
+import { FormPreviewPanel } from "./form-preview-panel";
+import { reconcileFormPreviews } from "./form-preview";
 import type {
   Application,
   Approval,
   CandidateProfile,
   CompanionSettings,
+  FormPreview,
+  FormPreviewFieldSpec,
   Job,
   ModelRoute,
   ProfileClaim,
@@ -115,6 +119,7 @@ const APPLICATION_STATUS_OPTIONS = [
   ["approved", "Approved to tailor"],
   ["tailoring", "Tailoring"],
   ["ready", "Ready to apply"],
+  ["form_previewed", "Form preview ready"],
   ["form_filled", "Form filled"],
   ["submitted", "Applied"],
   ["followed_up", "Followed up"],
@@ -269,6 +274,7 @@ export default function WorkspacePage() {
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [formPreviews, setFormPreviews] = useState<Record<string, FormPreview>>({});
   const [settings, setSettings] = useState<CompanionSettings | null>(null);
   const [activeGroundedFit, setActiveGroundedFit] = useState<MatchResponse | null>(null);
 
@@ -280,7 +286,7 @@ export default function WorkspacePage() {
       ).then((sessionList) => apiRequest<ConversationSession>(
         `/companion/sessions/${encodeURIComponent(sessionList.active_session_id)}`,
       ));
-      const [jobRows, applicationRows, profileRow, routeRows, revisionRows, approvalRows, settingsRow, activeConversation] =
+      const [jobRows, applicationRows, profileRow, routeRows, revisionRows, approvalRows, previewRows, settingsRow, activeConversation] =
         await Promise.all([
           apiRequest<Job[]>("/api/v1/jobs"),
           apiRequest<Application[]>("/api/v1/applications"),
@@ -288,6 +294,7 @@ export default function WorkspacePage() {
           apiRequest<ModelRoute[]>("/api/v1/model-routes"),
           apiRequest<Revision[]>("/api/v1/revisions"),
           apiRequest<Approval[]>("/api/v1/approvals"),
+          apiRequest<Record<string, FormPreview>>("/api/v1/applications/form-previews"),
           apiRequest<CompanionSettings>("/api/v1/settings"),
           activeConversationRequest,
         ]);
@@ -297,6 +304,7 @@ export default function WorkspacePage() {
       setRoutes(routeRows);
       setRevisions(revisionRows);
       setApprovals(approvalRows);
+      setFormPreviews((current) => reconcileFormPreviews(current, previewRows, true));
       setSettings(settingsRow);
       setActiveGroundedFit(activeConversation.match_report);
       setError(null);
@@ -442,9 +450,11 @@ export default function WorkspacePage() {
           {activeTab === "applications" ? (
             <ApplicationsPanel
               applications={applications}
+              formPreviews={formPreviews}
               jobById={jobById}
               refresh={refresh}
               setError={setError}
+              setFormPreviews={setFormPreviews}
             />
           ) : null}
           {activeTab === "controls" ? (
@@ -1345,14 +1355,20 @@ const NEXT_STATUS: Record<string, { target: string; label: string }> = {
 
 function ApplicationsPanel({
   applications,
+  formPreviews,
   jobById,
   refresh,
   setError,
+  setFormPreviews,
 }: {
   applications: Application[];
+  formPreviews: Record<string, FormPreview>;
   jobById: Map<string, Job>;
   refresh: (quiet?: boolean) => Promise<void>;
   setError: (message: string | null) => void;
+  setFormPreviews: (
+    update: (current: Record<string, FormPreview>) => Record<string, FormPreview>,
+  ) => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showSummary, setShowSummary] = useState(false);
@@ -1373,6 +1389,32 @@ function ApplicationsPanel({
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The application could not be updated.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function createFormPreview(
+    application: Application,
+    formReference: string,
+    fields: FormPreviewFieldSpec[],
+  ) {
+    setBusyId(application.id);
+    try {
+      const preview = await apiRequest<FormPreview>(
+        `/api/v1/applications/${application.id}/form-preview`,
+        {
+          method: "POST",
+          body: JSON.stringify({ form_reference: formReference, fields }),
+        },
+      );
+      setFormPreviews((current) => reconcileFormPreviews(current, {
+        [application.id]: preview,
+      }));
+      await refresh(true);
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The local form preview could not be created.");
     } finally {
       setBusyId(null);
     }
@@ -1403,6 +1445,10 @@ function ApplicationsPanel({
 
   function updateStatus(application: Application, status: string) {
     if (status === application.status) return;
+    if (["form_previewed", "form_filled"].includes(status)) {
+      setError("Form preview and form completion use dedicated workflows.");
+      return;
+    }
     void post(`/api/v1/applications/${application.id}/status`, application.id, {
       status,
       note: "Status updated by the user in the local workspace",
@@ -1446,10 +1492,10 @@ function ApplicationsPanel({
                   </div>
                 </div>
                 <div className="workspace-actions">
-                  <label className="workspace-status-editor">Status<select aria-label={`Status for ${job?.title ?? "application"}`} disabled={busyId === application.id} onChange={(event) => updateStatus(application, event.target.value)} value={application.status}>{APPLICATION_STATUS_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                  <label className="workspace-status-editor">Status<select aria-label={`Status for ${job?.title ?? "application"}`} disabled={busyId === application.id} onChange={(event) => updateStatus(application, event.target.value)} value={application.status}>{APPLICATION_STATUS_OPTIONS.map(([value, label]) => <option disabled={["form_previewed", "form_filled"].includes(value) && value !== application.status} key={value} value={value}>{label}</option>)}</select></label>
                   {next ? <button disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: next.target, note: "Confirmed in local workspace" })} type="button">{next.label}</button> : null}
                   {application.status === "approved" ? <button disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/artifacts/generate`, application.id)} type="button">Generate application pack</button> : null}
-                  {["ready", "form_filled"].includes(application.status) ? <button className="workspace-danger-safe" disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: "submitted", note: "User confirmed manual submission", confirmed_by_user: true })} type="button">I submitted it manually</button> : null}
+                  {["ready", "form_previewed", "form_filled"].includes(application.status) ? <button className="workspace-danger-safe" disabled={busyId === application.id} onClick={() => void post(`/api/v1/applications/${application.id}/status`, application.id, { status: "submitted", note: "User confirmed manual submission", confirmed_by_user: true })} type="button">I submitted it manually</button> : null}
                 </div>
               </div>
               {application.artifacts.length ? (
@@ -1462,6 +1508,15 @@ function ApplicationsPanel({
                     </div>
                   ))}
                 </div>
+              ) : null}
+              {["ready", "form_previewed"].includes(application.status) || formPreviews[application.id] ? (
+                <FormPreviewPanel
+                  application={application}
+                  busy={busyId === application.id}
+                  key={formPreviews[application.id]?.id ?? `empty-${application.id}`}
+                  onCreate={(formReference, fields) => createFormPreview(application, formReference, fields)}
+                  preview={formPreviews[application.id]}
+                />
               ) : null}
             </article>
           );

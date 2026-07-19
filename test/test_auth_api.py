@@ -63,7 +63,7 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
     group_states = {group["id"]: group["state"] for group in payload["groups"]}
     assert group_states["local-workspace"] == "disabled"
     assert group_states["web-search"] == "disabled"
-    assert group_states["browser-assistance"] == "disabled"
+    assert group_states["browser-assistance"] == "enabled"
     assert {"skills", "session_search", "todo", "clarify"}.issubset(
         payload["enabled_toolsets"]
     )
@@ -76,6 +76,13 @@ def test_capabilities_show_tools_mcp_and_configure_encrypted_web_search(
     assert "career_public_job_discover" in career_tools
     assert "career_job_track_selected" in career_tools
     assert "career_application_decide" in career_tools
+    preview_group = next(
+        group for group in payload["groups"] if group["id"] == "browser-assistance"
+    )
+    assert preview_group["name"] == "Application form preview"
+    assert preview_group["state_label"] == "Preview only"
+    assert preview_group["tools"] == ["career_application_form_preview"]
+    assert "Browser navigation" in preview_group["note"]
     assert {server["name"] for server in payload["mcp_servers"]} == {
         "gmail",
         "google-calendar",

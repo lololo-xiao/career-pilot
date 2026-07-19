@@ -116,6 +116,59 @@ export interface Application {
   updated_at?: string;
 }
 
+export type FormFieldKey =
+  | "full_name"
+  | "email"
+  | "phone"
+  | "location"
+  | "work_authorization"
+  | "resume"
+  | "cover_letter"
+  | "unsupported";
+
+export type FormFieldState = "mapped" | "unknown" | "unsupported" | "ambiguous";
+
+export interface FormPreviewFieldSpec {
+  field_id: string;
+  label: string;
+  field_key: FormFieldKey;
+  required: boolean;
+  options: string[];
+}
+
+export interface FormPreviewField extends FormPreviewFieldSpec {
+  state: FormFieldState;
+  value: string | null;
+  source: Record<string, unknown> | null;
+  reason: string;
+}
+
+export interface FormPreview {
+  id: string;
+  schema_version: "local-form-fill-preview-v1";
+  application_id: string;
+  form_reference: string;
+  request_digest: string;
+  evidence_digest: string;
+  mode: "preview_only";
+  all_required_mapped: boolean;
+  unresolved_required_count: number;
+  fields: FormPreviewField[];
+  source: Record<string, unknown>;
+  safety: {
+    browser_used: false;
+    navigation_performed: false;
+    controls_clicked: false;
+    files_uploaded: false;
+    form_filled: false;
+    submitted: false;
+    external_mutation_performed: false;
+    later_external_phase_implemented: false;
+    later_explicit_confirmation_required: true;
+  };
+  created?: boolean;
+}
+
 export interface ModelRoute {
   name: string;
   provider: "openai-api" | "openai-codex";

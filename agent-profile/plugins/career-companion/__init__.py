@@ -185,6 +185,15 @@ def _application_status(args: dict[str, Any]) -> Any:
     )
 
 
+def _application_form_preview(args: dict[str, Any]) -> Any:
+    application_id = quote(str(args["application_id"]), safe="")
+    return _client().request(
+        "POST",
+        f"/applications/{application_id}/form-preview",
+        json_body={"preview_reference": args["preview_reference"]},
+    )
+
+
 def _revision(args: dict[str, Any]) -> Any:
     if args.get("kind") not in {"skill", "rubric"}:
         raise PermissionError("Pilot's generic revision tool cannot propose memories")
@@ -225,6 +234,7 @@ _GATED_APPLICATION_STATUSES = {
     "withdrawn",
     "tailoring",
     "ready",
+    "form_previewed",
     "form_filled",
 }
 
@@ -457,6 +467,33 @@ TOOLS = (
             "additionalProperties": False,
         },
         _application_status,
+    ),
+    ToolDefinition(
+        "career_application_form_preview",
+        (
+            "Create or reuse one deterministic local-only form-fill preview for an "
+            "explicitly approved, review-ready application. The latest user message "
+            "must be exactly 'Preview application <application-id> fields: <field-key>, "
+            "...'. Supported keys are full_name, email, phone, location, "
+            "work_authorization, resume, and cover_letter. Copy that whole current "
+            "message exactly. This finite tool does not browse, navigate, click, "
+            "upload, fill, submit, request an approval, or perform an external mutation."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "application_id": {"type": "string", "format": "uuid"},
+                "preview_reference": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": "The exact whole latest user preview directive.",
+                },
+            },
+            "required": ["application_id", "preview_reference"],
+            "additionalProperties": False,
+        },
+        _application_form_preview,
     ),
     ToolDefinition(
         "career_revision_propose",

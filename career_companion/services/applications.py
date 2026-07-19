@@ -25,7 +25,8 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "scored": {"approved", "withdrawn"},
     "approved": {"tailoring", "withdrawn"},
     "tailoring": {"ready", "withdrawn"},
-    "ready": {"form_filled", "submitted", "withdrawn"},
+    "ready": {"submitted", "withdrawn"},
+    "form_previewed": {"submitted", "withdrawn"},
     "form_filled": {"submitted", "withdrawn"},
     "submitted": {
         "followed_up", "oa", "interview", "interview_1", "rejected",
@@ -83,6 +84,7 @@ NEXT_ACTIONS = {
     "approved": "Prepare application materials",
     "tailoring": "Review the tailored application",
     "ready": "Submit when ready",
+    "form_previewed": "Review the local form-fill preview",
     "form_filled": "Review and submit manually",
     "submitted": "Schedule a follow-up",
     "followed_up": "Wait for a response",
