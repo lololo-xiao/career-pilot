@@ -277,6 +277,26 @@ def test_user_can_record_a_detailed_application_outcome(client) -> None:
     assert recorded.json()["status_events"][-1]["to"] == "oa_failed"
 
 
+@pytest.mark.parametrize("protected_status", ["form_previewed", "form_filled"])
+def test_generic_status_api_rejects_dedicated_form_workflow_targets(
+    client,
+    protected_status,
+) -> None:
+    job_id = client.post("/api/v1/jobs", json=_job_payload()).json()["id"]
+    application_id = client.post(
+        "/api/v1/applications",
+        params={"job_id": job_id},
+    ).json()["id"]
+
+    response = client.post(
+        f"/api/v1/applications/{application_id}/status",
+        json={"status": protected_status, "manual_override": True},
+    )
+
+    assert response.status_code == 409
+    assert "dedicated workflows" in response.json()["detail"]
+
+
 def test_job_queue_csv_import_accepts_aliases_and_reports_row_errors(client) -> None:
     csv_text = """company,role,location,job_url,posted_date,workplace,company_size,description
 Northstar Labs,AI Engineer,"Berlin, Germany",https://jobs.example.com/northstar-ai,2026-07-15,hybrid,51-200,Build retrieval systems.
@@ -324,6 +344,30 @@ Pinecone Robotics,ML Engineer,"Munich, Germany",https://jobs.example.com/pinecon
         "interview_1_failed",
     }
     assert all(item["submitted_at"].startswith("2026-07") for item in applications)
+
+
+@pytest.mark.parametrize("protected_status", ["form_previewed", "form_filled"])
+def test_application_csv_import_rejects_dedicated_workflow_statuses(
+    client,
+    protected_status,
+) -> None:
+    csv_text = f"""company,title,url,status,notes
+Boundary Labs,AI Engineer,https://jobs.example.com/{protected_status},{protected_status},Imported status
+"""
+
+    response = client.post(
+        "/api/v1/applications/import",
+        files={"file": ("applications.csv", csv_text, "text/csv")},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["created_jobs"] == 0
+    assert result["created_applications"] == 0
+    assert result["errors"] == [
+        f"Row 2: status '{protected_status}' requires a dedicated workflow and cannot be imported"
+    ]
+    assert client.get("/api/v1/applications").json() == []
 
 
 def test_demo_csv_templates_import_end_to_end(client) -> None:

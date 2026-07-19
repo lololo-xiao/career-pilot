@@ -47,6 +47,7 @@ from career_companion.services.applications import (
     ensure_application,
     transition_application,
 )
+from career_companion.services import form_preview as form_preview_service
 from career_companion.services.approvals import (
     consume_approval,
     decide_approval,
@@ -167,6 +168,41 @@ def test_application_submission_requires_confirmation_and_valid_state(session) -
         "ready",
         "submitted",
     )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [ApplicationStatus.FORM_PREVIEWED, ApplicationStatus.FORM_FILLED],
+)
+def test_generic_transition_cannot_enter_dedicated_form_states(
+    session,
+    target,
+) -> None:
+    application = create_application(session, _job(session).id)
+
+    with pytest.raises(ValueError, match="requires its dedicated workflow"):
+        transition_application(
+            session,
+            application.id,
+            target,
+            manual_override=True,
+        )
+
+
+def test_form_preview_storage_contract_fails_closed_without_posix_support(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "companion")
+    paths.create()
+    monkeypatch.setattr(
+        form_preview_service,
+        "_secure_dir_fd_available",
+        lambda: False,
+    )
+
+    with pytest.raises(RuntimeError, match="require POSIX directory-descriptor"):
+        form_preview_service._assert_secure_preview_storage(paths)
 
 
 def test_ensure_application_is_idempotent_for_one_saved_job(session) -> None:

@@ -60,6 +60,15 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "withdrawn": set(),
 }
 
+# These states attest that a dedicated, guarded workflow completed. Generic callers
+# must never be able to manufacture that attestation, including via manual_override.
+DEDICATED_WORKFLOW_STATUSES = frozenset(
+    {
+        ApplicationStatus.FORM_PREVIEWED.value,
+        ApplicationStatus.FORM_FILLED.value,
+    }
+)
+
 APPLICATION_STARTED_STATUSES = {
     "submitted",
     "followed_up",
@@ -331,6 +340,10 @@ def transition_application(
     if not application:
         raise LookupError("Application not found")
     current = application.status
+    if target.value in DEDICATED_WORKFLOW_STATUSES:
+        raise ValueError(
+            f"Application status '{target.value}' requires its dedicated workflow"
+        )
     if target.value == current:
         prior_events = session.scalars(
             select(StatusEventRecord).where(

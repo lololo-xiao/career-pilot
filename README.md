@@ -24,9 +24,9 @@ high-stakes workflow:
   and unsupported skills, with a citation behind every displayed match.
 - **A real operating workspace.** Reviewed career facts, projects, jobs, applications,
   artifact versions, approvals, model routes, revisions, and audit events survive restarts.
-- **Human control at the boundary.** Pilot can discover roles and record guarded local
-  decisions. Tailoring and approved field filling remain separate workspace workflows;
-  the user reviews sensitive changes and submits the final application manually.
+- **Human control at the boundary.** Pilot may research, prepare, and create a local
+  evidence-bound field preview. A separate guarded browser-fill backend exists, but it is
+  not exposed to Pilot; the user remains responsible for review and final submission.
 - **Local and extensible.** The current product runs on one trusted device using an OpenAI
   API key or eligible ChatGPT/Codex access, with skills and allowlisted MCP connections.
 
@@ -63,7 +63,7 @@ tailoring, interview practice, and preview-only form assistance.
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
 | Revision safety | 🟡 Partial | Skill/rubric proposals support evaluation, quarantine, activation, and rollback. Explicit supported memory corrections become inactive review drafts; existing active evaluated memory is used at runtime |
 | Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, track, approve, or archive an explicit scored selection; dedicated guided discovery and tailoring orchestration remain unfinished |
-| Form assistance | 🟡 Partial | On supported POSIX systems, Pilot can build persistent evidence-bound local field previews without opening a form. The guarded browser-fill backend remains separate and is not exposed to Pilot; external fill is unfinished |
+| Form assistance | 🟡 Partial | Pilot can create evidence-bound local field previews without opening a form on POSIX systems with secure directory-descriptor storage; it fails closed elsewhere. A guarded browser-fill backend exists separately and is not exposed to Pilot |
 | Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes. The privacy-safe inspector shows what was considered, not answer-level attribution; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
 | Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install verification is still planned |
@@ -228,11 +228,12 @@ npm run lint
 npm run build
 ```
 
-The current clean-archive development audit passes **677 backend tests** with **6
-environment/platform skips**, plus **25 frontend unit tests**. Two offline
-package-contract checks could not run because this sandbox could not access the
-pre-populated dependency cache. The offline evaluator validates **25 strong, partial,
-and mismatch cases**; frontend lint, the production build, and demo preflight also pass.
+The current reproducible safe backend audit passes **677 backend tests** with **6
+platform-specific skips**, plus **25 frontend unit tests**. Two offline package-contract
+checks were not run because the available sandbox could not access their required
+package/cache runtime; they are not included in the passing count. The offline
+evaluator validates **25 strong, partial, and mismatch cases**; frontend lint, the
+production build, and demo preflight also pass.
 
 One explicit provider-backed smoke test is available:
 

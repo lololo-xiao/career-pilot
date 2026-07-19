@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from career_companion.services import form_preview as form_preview_service
 from app.auth import AuthStore, AuthenticatedAccount, ProviderConnection
 from app.main import app, get_store, require_current_account
 from career_companion.config import ProductConfig
@@ -38,16 +40,23 @@ from career_companion.schemas import (
     FormPreviewRequest,
     ProfileClaim,
 )
-from career_companion.services.applications import transition_application
 from career_companion.services.conversation_sessions import (
     append_message,
     create_conversation_session,
 )
 from career_companion.services.form_preview import (
     FORM_PREVIEW_ARTIFACT_KIND,
+    _read_anchored_file,
+    _write_deterministic_preview,
     prepare_form_preview,
 )
 from career_companion.services.profile import save_profile
+
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix",
+    reason="Secure form-preview storage intentionally fails closed without POSIX dir-fd support",
+)
 
 
 def _account(user_id: str) -> AuthenticatedAccount:
@@ -338,6 +347,41 @@ def test_preview_is_local_evidence_bound_persistent_and_idempotent(
     assert "not application attachments" in approval.json()["detail"]
 
 
+def test_preview_canonicalizes_a_matching_legacy_artifact_path(preview_client) -> None:
+    client = preview_client
+    paths, application_id = _seed_review_ready_application()
+    first = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+    assert first.status_code == 200
+    preview_id = first.json()["id"]
+    expected = paths.artifacts / f"form-preview-{application_id}-{preview_id}.json"
+    legacy = paths.artifacts / application_id / "form-previews" / f"{preview_id}.json"
+    legacy.parent.mkdir(parents=True)
+    expected.rename(legacy)
+    with account_session(paths) as session:
+        artifact = session.get(ArtifactRecord, preview_id)
+        assert artifact is not None
+        artifact.path = str(legacy)
+
+    retry = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+
+    assert retry.status_code == 200
+    assert retry.json()["created"] is False
+    assert expected.is_file()
+    assert client.get(
+        f"/api/v1/applications/{application_id}/form-preview"
+    ).json()["id"] == preview_id
+    with account_session(paths) as session:
+        artifact = session.get(ArtifactRecord, preview_id)
+        assert artifact is not None
+        assert Path(artifact.path) == expected
+
+
 def test_preview_marks_missing_unsupported_and_ambiguous_fields(preview_client) -> None:
     client = preview_client
     _paths, application_id = _seed_review_ready_application(
@@ -368,6 +412,77 @@ def test_preview_marks_missing_unsupported_and_ambiguous_fields(preview_client) 
     assert fields["cover-letter"]["state"] == "unknown"
     assert all(fields[key]["value"] is None for key in fields)
     assert response.json()["unresolved_required_count"] == 3
+
+
+def test_schema_max_unicode_options_fit_the_bounded_preview_storage(
+    preview_client,
+) -> None:
+    del preview_client
+    paths, application_id = _seed_review_ready_application()
+    request = FormPreviewRequest(
+        form_reference="Large local field checklist",
+        fields=[
+            FormFieldSpec(
+                field_id=f"unicode-{field_index}",
+                label="😀" * 300,
+                field_key=FormFieldKey.UNSUPPORTED,
+                options=[
+                    f"{field_index:02d}-{option_index:02d}" + "😀" * 295
+                    for option_index in range(50)
+                ],
+            )
+            for field_index in range(50)
+        ],
+    )
+
+    with account_session(paths) as session:
+        preview, created = prepare_form_preview(
+            session,
+            application_id,
+            paths,
+            request,
+        )
+        session.commit()
+        artifact = session.get(ArtifactRecord, preview["id"])
+        assert artifact is not None
+        artifact_path = Path(artifact.path)
+
+    assert created is True
+    assert len(preview["fields"]) == 50
+    assert artifact_path.stat().st_size < 16 * 1024 * 1024
+
+
+def test_preview_requires_claim_value_inside_the_exact_cited_excerpt(
+    preview_client,
+) -> None:
+    client = preview_client
+    paths, application_id = _seed_review_ready_application()
+    with account_session(paths) as session:
+        profile = session.scalar(
+            select(CandidateProfileRecord).order_by(
+                CandidateProfileRecord.updated_at.desc(),
+                CandidateProfileRecord.id.desc(),
+            )
+        )
+        assert profile is not None
+        claims = json.loads(json.dumps(profile.payload["claims"]))
+        email = next(claim for claim in claims if claim["key"] == "email")
+        email["evidence"][0]["excerpt"] = "Built Python services"
+        profile.payload = {**profile.payload, "claims": claims}
+
+    payload = _preview_payload()
+    payload["fields"] = [payload["fields"][0], payload["fields"][1]]
+    response = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    fields = {field["field_id"]: field for field in response.json()["fields"]}
+    assert fields["email"]["state"] == "unknown"
+    assert fields["email"]["value"] is None
+    assert fields["email"]["source"] is None
+    assert fields["resume"]["state"] == "mapped"
 
 
 def test_preview_rejects_missing_artifact_unapproved_state_and_secret_text(
@@ -497,20 +612,6 @@ def test_preview_rejects_missing_artifact_unapproved_state_and_secret_text(
     assert no_approval.status_code == 403
     assert "explicitly approved" in no_approval.json()["detail"]
 
-    generic = client.post(
-        f"/api/v1/applications/{application_id}/status",
-        json={"status": "form_previewed", "manual_override": True},
-    )
-    assert generic.status_code == 409
-    assert "dedicated workflows" in generic.json()["detail"]
-    generic_filled = client.post(
-        f"/api/v1/applications/{application_id}/status",
-        json={"status": "form_filled", "manual_override": True},
-    )
-    assert generic_filled.status_code == 409
-    assert "dedicated workflows" in generic_filled.json()["detail"]
-
-
 def test_form_previews_are_account_isolated(preview_client) -> None:
     client = preview_client
     _paths, application_id = _seed_review_ready_application()
@@ -529,19 +630,322 @@ def test_form_previews_are_account_isolated(preview_client) -> None:
     assert unauthorized.json()["detail"] == "Application not found"
 
 
-def test_generic_transition_service_cannot_enter_form_preview_state(
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink regression")
+def test_preview_writer_rejects_symlinked_artifacts_root_parent(
     preview_client,
 ) -> None:
     del preview_client
-    paths, application_id = _seed_review_ready_application()
+    paths, _application_id = _seed_review_ready_application()
+    outside = paths.root / "outside-artifacts-parent"
+    paths.artifacts.rename(outside)
+    paths.artifacts.symlink_to(outside, target_is_directory=True)
+    content = b'{"mode":"preview_only"}\n'
 
+    with pytest.raises(RuntimeError, match="root is not a trusted local path"):
+        _write_deterministic_preview(
+            paths.artifacts,
+            Path("form-preview-safe.json"),
+            content,
+            hashlib.sha256(content).hexdigest(),
+        )
+
+    assert not list(outside.glob("form-preview-*.json"))
+    assert not list(outside.glob(".form-preview-*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX FIFO regression")
+def test_preview_writer_rejects_fifo_without_blocking(preview_client) -> None:
+    del preview_client
+    paths, _application_id = _seed_review_ready_application()
+    relative = Path("form-preview-fifo.json")
+    os.mkfifo(paths.artifacts / relative)
+    content = b'{"mode":"preview_only"}\n'
+
+    with pytest.raises(RuntimeError, match="regular files only"):
+        _write_deterministic_preview(
+            paths.artifacts,
+            relative,
+            content,
+            hashlib.sha256(content).hexdigest(),
+        )
+
+    assert (paths.artifacts / relative).is_fifo()
+    assert not list(paths.artifacts.glob(".form-preview-*.tmp"))
+
+
+def test_preview_reader_rejects_oversized_sparse_file_before_capture(
+    preview_client,
+) -> None:
+    del preview_client
+    paths, _application_id = _seed_review_ready_application()
+    relative = Path("form-preview-oversized.json")
+    with (paths.artifacts / relative).open("wb") as stream:
+        stream.truncate(2 * 1024 * 1024)
+
+    with pytest.raises(RuntimeError, match="bounded read limit"):
+        _read_anchored_file(
+            paths.artifacts,
+            relative,
+            capture=True,
+            max_bytes=1024 * 1024,
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root-rebind regression")
+def test_existing_preview_rebind_after_hash_fails_before_success(
+    preview_client,
+    monkeypatch,
+) -> None:
+    client = preview_client
+    paths, application_id = _seed_review_ready_application()
+    first = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+    assert first.status_code == 200
+    moved_root = paths.root / "moved-existing-artifacts"
+    original_hash = form_preview_service._sha256_anchored_file
+    rebound = False
+
+    def hash_then_rebind(root, relative, *, max_bytes):
+        nonlocal rebound
+        digest = original_hash(root, relative, max_bytes=max_bytes)
+        if not rebound and relative.name.startswith("form-preview-"):
+            rebound = True
+            root.rename(moved_root)
+            root.mkdir()
+        return digest
+
+    monkeypatch.setattr(
+        form_preview_service,
+        "_sha256_anchored_file",
+        hash_then_rebind,
+    )
+    retry = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+
+    assert rebound is True
+    assert retry.status_code == 409
+    assert "parent changed" in retry.json()["detail"]
+    assert list(paths.artifacts.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root-rebind regression")
+def test_preview_reader_rejects_root_rebind_after_resolve(
+    preview_client,
+    monkeypatch,
+) -> None:
+    del preview_client
+    paths, _application_id = _seed_review_ready_application()
+    relative = Path("form-preview-read-race.json")
+    content = b'{"mode":"preview_only"}\n'
+    (paths.artifacts / relative).write_bytes(content)
+    moved_root = paths.root / "moved-read-artifacts"
+    original_check = form_preview_service._assert_resolves_beneath_root
+    rebound = False
+
+    def check_then_rebind(root, candidate):
+        nonlocal rebound
+        original_check(root, candidate)
+        if not rebound:
+            rebound = True
+            root.rename(moved_root)
+            root.mkdir()
+            (root / candidate).write_bytes(content)
+
+    monkeypatch.setattr(
+        form_preview_service,
+        "_assert_resolves_beneath_root",
+        check_then_rebind,
+    )
+
+    with pytest.raises(RuntimeError, match="trusted artifacts root changed"):
+        _read_anchored_file(
+            paths.artifacts,
+            relative,
+            capture=True,
+            max_bytes=1024,
+        )
+    assert rebound is True
+
+
+def test_preview_reports_clear_fail_closed_platform_storage_error(
+    preview_client,
+    monkeypatch,
+) -> None:
+    client = preview_client
+    _paths, application_id = _seed_review_ready_application()
+    monkeypatch.setattr(form_preview_service, "_secure_dir_fd_available", lambda: False)
+
+    response = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Secure local form previews require POSIX directory-descriptor storage "
+        "and are unavailable on this platform"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink regression")
+def test_preview_ignores_preexisting_legacy_child_symlink_and_writes_only_at_root(
+    preview_client,
+) -> None:
+    client = preview_client
+    paths, application_id = _seed_review_ready_application()
+    outside = paths.root / "outside-preview-target"
+    outside.mkdir()
+    preview_parent = paths.artifacts / application_id / "form-previews"
+    preview_parent.symlink_to(outside, target_is_directory=True)
+
+    response = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+
+    assert response.status_code == 200
+    assert list(outside.iterdir()) == []
+    preview_id = response.json()["id"]
+    expected = paths.artifacts / f"form-preview-{application_id}-{preview_id}.json"
+    assert expected.is_file()
     with account_session(paths) as session:
-        with pytest.raises(ValueError, match="Invalid application transition"):
-            transition_application(
-                session,
-                application_id,
-                ApplicationStatus.FORM_PREVIEWED,
+        application = session.get(ApplicationRecord, application_id)
+        assert application is not None
+        assert application.status == ApplicationStatus.FORM_PREVIEWED.value
+        previews = session.scalars(
+            select(ArtifactRecord).where(
+                ArtifactRecord.application_id == application_id,
+                ArtifactRecord.kind == FORM_PREVIEW_ARTIFACT_KIND,
             )
+        ).all()
+        assert len(previews) == 1
+        assert Path(previews[0].path) == expected
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory-swap regression")
+def test_preview_child_parent_swap_during_replace_cannot_redirect_root_write(
+    preview_client,
+    monkeypatch,
+) -> None:
+    client = preview_client
+    paths, application_id = _seed_review_ready_application()
+    preview_parent = paths.artifacts / application_id / "form-previews"
+    preview_parent.mkdir()
+    outside = paths.root / "outside-swapped-preview"
+    outside.mkdir()
+    moved_parent = outside / "moved-form-previews"
+    original_replace = os.replace
+    swapped = False
+
+    def swap_then_replace(
+        source,
+        destination,
+        *,
+        src_dir_fd=None,
+        dst_dir_fd=None,
+    ):
+        nonlocal swapped
+        if not swapped and destination.endswith(".json"):
+            swapped = True
+            preview_parent.rename(moved_parent)
+            preview_parent.symlink_to(outside, target_is_directory=True)
+        return original_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(
+        "career_companion.services.form_preview.os.replace",
+        swap_then_replace,
+    )
+    response = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+
+    assert swapped is True
+    assert response.status_code == 200
+    assert list(moved_parent.iterdir()) == []
+    assert not any(path.suffix == ".json" for path in outside.rglob("*"))
+    assert list(paths.artifacts.glob(".form-preview-*.tmp")) == []
+    preview_id = response.json()["id"]
+    expected = paths.artifacts / f"form-preview-{application_id}-{preview_id}.json"
+    assert expected.is_file()
+    with account_session(paths) as session:
+        application = session.get(ApplicationRecord, application_id)
+        assert application is not None
+        assert application.status == ApplicationStatus.FORM_PREVIEWED.value
+        previews = session.scalars(
+            select(ArtifactRecord).where(
+                ArtifactRecord.application_id == application_id,
+                ArtifactRecord.kind == FORM_PREVIEW_ARTIFACT_KIND,
+            )
+        ).all()
+        assert len(previews) == 1
+        assert Path(previews[0].path) == expected
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root-rebind regression")
+def test_preview_artifacts_root_rebind_fails_closed_and_removes_pinned_payload(
+    preview_client,
+    monkeypatch,
+) -> None:
+    client = preview_client
+    paths, application_id = _seed_review_ready_application()
+    moved_root = paths.root / "moved-artifacts-root"
+    original_replace = os.replace
+    rebound = False
+
+    def rebind_root_then_replace(
+        source,
+        destination,
+        *,
+        src_dir_fd=None,
+        dst_dir_fd=None,
+    ):
+        nonlocal rebound
+        if not rebound and destination.endswith(".json"):
+            rebound = True
+            paths.artifacts.rename(moved_root)
+            paths.artifacts.mkdir()
+        return original_replace(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(
+        "career_companion.services.form_preview.os.replace",
+        rebind_root_then_replace,
+    )
+    response = client.post(
+        f"/api/v1/applications/{application_id}/form-preview",
+        json=_preview_payload(),
+    )
+
+    assert rebound is True
+    assert response.status_code == 409
+    assert "parent changed" in response.json()["detail"]
+    assert not list(moved_root.glob("form-preview-*.json"))
+    assert not list(moved_root.glob(".form-preview-*.tmp"))
+    assert list(paths.artifacts.iterdir()) == []
+    with account_session(paths) as session:
+        application = session.get(ApplicationRecord, application_id)
+        assert application is not None
+        assert application.status == ApplicationStatus.READY.value
+        assert session.scalars(
+            select(ArtifactRecord).where(
+                ArtifactRecord.application_id == application_id,
+                ArtifactRecord.kind == FORM_PREVIEW_ARTIFACT_KIND,
+            )
+        ).all() == []
 
 
 @pytest.mark.parametrize("attempt", range(3))

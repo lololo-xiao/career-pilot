@@ -1460,7 +1460,7 @@ function ApplicationsPanel({
   return (
     <section>
       <div className="workspace-section-heading">
-        <div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Track each stage, review versioned artifacts, submit manually, and record every outcome.</p></div>
+        <div><span className="workspace-eyebrow">CONTROLLED PROGRESS</span><h1>Applications.</h1><p>Pilot can prepare materials and a local field preview. You review, submit manually, and record each outcome.</p></div>
         <button aria-expanded={showSummary} onClick={() => setShowSummary((value) => !value)} type="button">{showSummary ? "Hide summary" : "View summary"}</button>
       </div>
       <CsvImportPanel endpoint="/api/v1/applications/import" kind="applications" refresh={refresh} setError={setError} />

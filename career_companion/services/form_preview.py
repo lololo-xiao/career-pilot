@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
+import stat
+import threading
 import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - the storage gate fails closed off POSIX
+    fcntl = None  # type: ignore[assignment]
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -32,7 +40,6 @@ from career_companion.schemas import (
     ProfileClaim,
 )
 from career_companion.services.audit import record_audit
-from career_companion.services.profile import sha256_file
 
 
 FORM_PREVIEW_ARTIFACT_KIND = "form_fill_preview"
@@ -58,6 +65,10 @@ _SECRET = re.compile(
 )
 _URL_LIKE = re.compile(r"(?:https?://|www\.)", re.IGNORECASE)
 _MAX_MAPPED_VALUE = 1_000
+_MAX_PREVIEW_BYTES = 16 * 1024 * 1024
+_MAX_SOURCE_DOCUMENT_BYTES = 20 * 1024 * 1024
+_MAX_APPROVED_ARTIFACT_BYTES = 20 * 1024 * 1024
+_PREVIEW_THREAD_LOCK = threading.Lock()
 _PREVIEW_SAFETY = {
     "browser_used": False,
     "navigation_performed": False,
@@ -106,6 +117,7 @@ def prepare_form_preview(
         raise PermissionError(
             "Form previews require an application explicitly approved from the scored state"
         )
+    _assert_secure_preview_storage(paths)
 
     profile_record = session.scalar(
         select(CandidateProfileRecord).order_by(
@@ -183,14 +195,17 @@ def prepare_form_preview(
     preview_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"careerpilot:{plan_digest}"))
     preview = {"id": preview_id, **core}
     encoded = (json.dumps(preview, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(encoded) > _MAX_PREVIEW_BYTES:
+        raise ValueError("The deterministic form preview exceeds the 16 MiB local limit")
     file_sha256 = hashlib.sha256(encoded).hexdigest()
-    preview_path = (
-        paths.artifacts
-        / application.id
-        / "form-previews"
-        / f"{preview_id}.json"
+    preview_relative_path = Path(_preview_filename(application.id, preview_id))
+    preview_path = paths.artifacts / preview_relative_path
+    _write_deterministic_preview(
+        paths.artifacts,
+        preview_relative_path,
+        encoded,
+        file_sha256,
     )
-    _write_deterministic_preview(preview_path, encoded, file_sha256)
 
     inserted = session.execute(
         sqlite_insert(ArtifactRecord)
@@ -214,6 +229,14 @@ def prepare_form_preview(
         or artifact.sha256 != file_sha256
     ):
         raise RuntimeError("The deterministic form preview binding is invalid")
+    if artifact.path != str(preview_path):
+        # A deterministic row created by the former nested layout has the same
+        # content binding. Point it at the newly verified flat root artifact before
+        # advancing or reconciling workflow state.
+        artifact.path = str(preview_path)
+        session.flush()
+    if artifact.path != str(preview_path):
+        raise RuntimeError("The deterministic form preview path binding is invalid")
 
     next_action = (
         f"Resolve {unresolved_required} required form field"
@@ -313,15 +336,22 @@ def _source_documents(
         )
     ).all()
     documents: dict[str, SourceDocumentRecord] = {}
-    imports_root = paths.imports.resolve()
     for row in rows:
-        path = Path(row.stored_path).resolve()
         try:
-            path.relative_to(imports_root)
-        except ValueError:
+            relative = _relative_stored_path(row.stored_path, paths.imports)
+            if (
+                relative is None
+                or _sha256_anchored_file(
+                    paths.imports,
+                    relative,
+                    max_bytes=_MAX_SOURCE_DOCUMENT_BYTES,
+                )
+                != row.sha256
+            ):
+                continue
+        except (OSError, RuntimeError, ValueError):
             continue
-        if path.is_file() and sha256_file(path) == row.sha256:
-            documents[row.id] = row
+        documents[row.id] = row
     return documents
 
 
@@ -355,7 +385,7 @@ def _evidence_is_valid(
         excerpt
         and value
         and excerpt in document_text
-        and value in document_text
+        and value in excerpt
     )
 
 
@@ -373,12 +403,19 @@ def _validated_artifacts(
     ).all()
     result: dict[str, list[ArtifactRecord]] = {}
     for row in rows:
-        path = Path(row.path).resolve()
         try:
-            path.relative_to(paths.workspace.resolve())
-        except ValueError:
-            continue
-        if not path.is_file() or sha256_file(path) != row.sha256:
+            relative = _relative_stored_path(row.path, paths.artifacts)
+            if (
+                relative is None
+                or _sha256_anchored_file(
+                    paths.artifacts,
+                    relative,
+                    max_bytes=_MAX_APPROVED_ARTIFACT_BYTES,
+                )
+                != row.sha256
+            ):
+                continue
+        except (OSError, RuntimeError, ValueError):
             continue
         result.setdefault(row.kind, []).append(row)
     for kind in result:
@@ -626,50 +663,167 @@ def _record_preview_status(
 
 
 def _write_deterministic_preview(
-    path: Path,
+    root: Path,
+    relative_path: Path,
     content: bytes,
     expected_sha256: str,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file():
-        if sha256_file(path) != expected_sha256:
-            raise RuntimeError("The deterministic form preview file changed unexpectedly")
-        return
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
+    with _PREVIEW_THREAD_LOCK:
+        _write_deterministic_preview_locked(
+            root,
+            relative_path,
+            content,
+            expected_sha256,
         )
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+
+
+def _write_deterministic_preview_locked(
+    root: Path,
+    relative_path: Path,
+    content: bytes,
+    expected_sha256: str,
+) -> None:
+    """Write beneath a trusted root without following any path component.
+
+    POSIX directory descriptors bind every operation to the directory that was
+    actually inspected. Platforms without the required primitives fail closed.
+    """
+
+    parts = _relative_parts(relative_path)
+    if len(parts) != 1:
+        raise ValueError(
+            "Deterministic form previews must be stored directly under the artifacts root"
+        )
+    parent_parts, filename = parts[:-1], parts[-1]
+    try:
+        root_fd = _open_trusted_directory(root)
+    except OSError as exc:
+        raise RuntimeError(
+            "The deterministic form preview root is not a trusted local path"
+        ) from exc
+    parent_fd = -1
+    temporary_name = f".form-preview-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+    replaced_identity: os.stat_result | None = None
+    try:
+        _lock_preview_storage_root(root_fd)
+        parent_fd = _open_relative_directory(
+            root_fd,
+            parent_parts,
+            create=True,
+        )
+        try:
+            existing_digest = _sha256_anchored_file(
+                root,
+                relative_path,
+                max_bytes=_MAX_PREVIEW_BYTES,
+            )
+        except FileNotFoundError:
+            existing_digest = None
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "The deterministic form preview path is not a trusted local path"
+            ) from exc
+        if existing_digest is not None:
+            if existing_digest != expected_sha256:
+                raise RuntimeError(
+                    "The deterministic form preview file changed unexpectedly"
+                )
+            _assert_directory_binding(root, parent_parts, parent_fd)
+            return
+
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _no_follow_flag(),
+            0o600,
+            dir_fd=root_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(descriptor)
+
+        try:
+            _assert_directory_binding(root, parent_parts, parent_fd)
+            os.replace(
+                temporary_name,
+                filename,
+                src_dir_fd=root_fd,
+                dst_dir_fd=parent_fd,
+            )
+        except (NotImplementedError, TypeError) as exc:
+            raise RuntimeError(
+                "Secure local preview replacement is unavailable on this platform"
+            ) from exc
+        final_fd = _open_regular_file(parent_fd, filename)
+        try:
+            replaced_identity = os.fstat(final_fd)
+        finally:
+            os.close(final_fd)
+
+        try:
+            _assert_directory_binding(root, parent_parts, parent_fd)
+            final_digest = _sha256_anchored_file(
+                root,
+                relative_path,
+                max_bytes=_MAX_PREVIEW_BYTES,
+            )
+            os.fsync(parent_fd)
+            _assert_directory_binding(root, parent_parts, parent_fd)
+        except (OSError, RuntimeError, ValueError) as exc:
+            _unlink_if_same_file(parent_fd, filename, replaced_identity)
+            raise RuntimeError(
+                "The deterministic form preview parent changed during the write"
+            ) from exc
+        if final_digest != expected_sha256:
+            _unlink_if_same_file(parent_fd, filename, replaced_identity)
+            raise RuntimeError("The deterministic form preview file failed verification")
+    except OSError as exc:
+        if replaced_identity is not None and parent_fd >= 0:
+            _unlink_if_same_file(parent_fd, filename, replaced_identity)
+        raise RuntimeError(
+            "The deterministic form preview path is not a trusted local path"
+        ) from exc
     finally:
-        temporary.unlink(missing_ok=True)
-    if sha256_file(path) != expected_sha256:
-        raise RuntimeError("The deterministic form preview file failed verification")
+        try:
+            os.unlink(temporary_name, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
+        finally:
+            if parent_fd >= 0:
+                os.close(parent_fd)
+            os.close(root_fd)
 
 
 def _read_preview_artifact(
     artifact: ArtifactRecord,
     paths: CompanionPaths,
 ) -> dict[str, Any] | None:
-    path = Path(artifact.path).resolve()
-    expected_parent = (
-        paths.artifacts / artifact.application_id / "form-previews"
-    ).resolve()
     try:
-        path.relative_to(expected_parent)
+        expected_relative = Path(
+            _preview_filename(artifact.application_id, artifact.id)
+        )
     except ValueError:
         return None
-    if not path.is_file() or sha256_file(path) != artifact.sha256:
+    stored_relative = _relative_stored_path(artifact.path, paths.artifacts)
+    if stored_relative != expected_relative:
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        digest, encoded = _read_anchored_file(
+            paths.artifacts,
+            expected_relative,
+            capture=True,
+            max_bytes=_MAX_PREVIEW_BYTES,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if digest != artifact.sha256 or encoded is None:
+        return None
+    try:
+        payload = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     if (
         not isinstance(payload, dict)
@@ -682,6 +836,324 @@ def _read_preview_artifact(
     ):
         return None
     return payload
+
+
+def _secure_dir_fd_available() -> bool:
+    required = (os.open, os.mkdir, os.stat, os.unlink)
+    return bool(
+        os.name == "posix"
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_NONBLOCK")
+        and fcntl is not None
+        and hasattr(fcntl, "flock")
+        and all(function in os.supports_dir_fd for function in required)
+        and _replace_supports_dir_fd()
+    )
+
+
+def _assert_secure_preview_storage(paths: CompanionPaths) -> None:
+    if not _secure_dir_fd_available():
+        raise RuntimeError(
+            "Secure local form previews require POSIX directory-descriptor storage "
+            "and are unavailable on this platform"
+        )
+    for root in (paths.imports, paths.artifacts):
+        try:
+            descriptor = _open_trusted_directory(root)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                "A local form-preview storage root is not a trusted non-symlink directory"
+            ) from exc
+        else:
+            os.close(descriptor)
+
+
+def _replace_supports_dir_fd() -> bool:
+    try:
+        parameters = inspect.signature(os.replace).parameters
+    except (TypeError, ValueError):
+        return False
+    return {"src_dir_fd", "dst_dir_fd"}.issubset(parameters)
+
+
+def _no_follow_flag() -> int:
+    if not _secure_dir_fd_available():
+        raise RuntimeError(
+            "Secure local preview storage is unavailable on this platform"
+        )
+    return int(os.O_NOFOLLOW)
+
+
+def _directory_flags() -> int:
+    flags = os.O_RDONLY | int(os.O_DIRECTORY) | _no_follow_flag()
+    return flags | int(getattr(os, "O_CLOEXEC", 0))
+
+
+def _safe_path_component(value: str) -> str:
+    if not value or value in {".", ".."} or Path(value).name != value:
+        raise ValueError("Unsafe local preview path component")
+    return value
+
+
+def _preview_filename(application_id: str, preview_id: str) -> str:
+    application = _safe_path_component(application_id)
+    preview = _safe_path_component(preview_id)
+    return _safe_path_component(f"form-preview-{application}-{preview}.json")
+
+
+def _relative_parts(relative_path: Path) -> tuple[str, ...]:
+    if relative_path.is_absolute() or not relative_path.parts:
+        raise ValueError("Local preview paths must be relative to the artifacts root")
+    parts = tuple(relative_path.parts)
+    if any(part in {"", ".", ".."} or Path(part).name != part for part in parts):
+        raise ValueError("Unsafe local preview path component")
+    return parts
+
+
+def _open_trusted_directory(root: Path) -> int:
+    """Open an absolute directory component-by-component without symlink traversal."""
+
+    if not _secure_dir_fd_available():
+        raise RuntimeError(
+            "Secure local preview storage is unavailable on this platform"
+        )
+    absolute = Path(os.path.abspath(os.fspath(root)))
+    if not absolute.is_absolute():
+        raise RuntimeError("The local preview artifacts root must be absolute")
+    flags = _directory_flags()
+    descriptor = os.open(absolute.anchor, flags)
+    try:
+        for component in absolute.parts[1:]:
+            next_descriptor = os.open(
+                _safe_path_component(component),
+                flags,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_relative_directory(
+    root_fd: int,
+    parts: tuple[str, ...],
+    *,
+    create: bool,
+) -> int:
+    descriptor = os.dup(root_fd)
+    try:
+        for raw_component in parts:
+            component = _safe_path_component(raw_component)
+            if create:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            next_descriptor = os.open(
+                component,
+                _directory_flags(),
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_regular_file(parent_fd: int, filename: str) -> int:
+    descriptor = os.open(
+        _safe_path_component(filename),
+        os.O_RDONLY
+        | _no_follow_flag()
+        | int(os.O_NONBLOCK)
+        | int(getattr(os, "O_CLOEXEC", 0)),
+        dir_fd=parent_fd,
+    )
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RuntimeError("Local preview storage accepts regular files only")
+    return descriptor
+
+
+def _lock_preview_storage_root(root_fd: int) -> None:
+    if fcntl is None:  # pragma: no cover - guarded by _secure_dir_fd_available
+        raise RuntimeError("Secure local preview locking is unavailable")
+    try:
+        fcntl.flock(root_fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        raise RuntimeError(
+            "Secure local preview locking is unavailable on this platform"
+        ) from exc
+
+
+def _same_file(first: os.stat_result, second: os.stat_result) -> bool:
+    return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
+
+
+def _same_file_generation(first: os.stat_result, second: os.stat_result) -> bool:
+    return bool(
+        _same_file(first, second)
+        and first.st_mode == second.st_mode
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+        and first.st_ctime_ns == second.st_ctime_ns
+    )
+
+
+def _assert_directory_binding(
+    root: Path,
+    parent_parts: tuple[str, ...],
+    expected_parent_fd: int,
+) -> None:
+    fresh_root_fd = _open_trusted_directory(root)
+    fresh_parent_fd = -1
+    try:
+        fresh_parent_fd = _open_relative_directory(
+            fresh_root_fd,
+            parent_parts,
+            create=False,
+        )
+        if not _same_file(os.fstat(expected_parent_fd), os.fstat(fresh_parent_fd)):
+            raise RuntimeError("The artifact parent changed during access")
+    finally:
+        if fresh_parent_fd >= 0:
+            os.close(fresh_parent_fd)
+        os.close(fresh_root_fd)
+
+
+def _read_anchored_file(
+    root: Path,
+    relative_path: Path,
+    *,
+    capture: bool,
+    max_bytes: int,
+) -> tuple[str, bytes | None]:
+    if max_bytes <= 0:
+        raise ValueError("Anchored file reads require a positive byte limit")
+    parts = _relative_parts(relative_path)
+    root_fd = _open_trusted_directory(root)
+    parent_fd = -1
+    file_fd = -1
+    try:
+        parent_fd = _open_relative_directory(root_fd, parts[:-1], create=False)
+        file_fd = _open_regular_file(parent_fd, parts[-1])
+        root_identity = os.fstat(root_fd)
+        parent_identity = os.fstat(parent_fd)
+        file_identity = os.fstat(file_fd)
+        if file_identity.st_size > max_bytes:
+            raise RuntimeError("The local artifact exceeds its bounded read limit")
+        digest = hashlib.sha256()
+        chunks: list[bytes] | None = [] if capture else None
+        total = 0
+        with os.fdopen(os.dup(file_fd), "rb") as stream:
+            while block := stream.read(min(1024 * 1024, max_bytes - total + 1)):
+                total += len(block)
+                if total > max_bytes:
+                    raise RuntimeError("The local artifact exceeds its bounded read limit")
+                digest.update(block)
+                if chunks is not None:
+                    chunks.append(block)
+
+        # Resolve-based policy is checked before the final descriptor identity pass.
+        # The final pass below is the linearization point for the bytes just read.
+        _assert_resolves_beneath_root(root, relative_path)
+        fresh_root_fd = _open_trusted_directory(root)
+        fresh_parent_fd = -1
+        fresh_file_fd = -1
+        try:
+            if not _same_file(root_identity, os.fstat(fresh_root_fd)):
+                raise RuntimeError("The trusted artifacts root changed during access")
+            fresh_parent_fd = _open_relative_directory(
+                fresh_root_fd,
+                parts[:-1],
+                create=False,
+            )
+            if not _same_file(parent_identity, os.fstat(fresh_parent_fd)):
+                raise RuntimeError("The artifact parent changed during access")
+            fresh_file_fd = _open_regular_file(fresh_parent_fd, parts[-1])
+            if not _same_file_generation(file_identity, os.fstat(fresh_file_fd)):
+                raise RuntimeError("The artifact file changed during access")
+        finally:
+            if fresh_file_fd >= 0:
+                os.close(fresh_file_fd)
+            if fresh_parent_fd >= 0:
+                os.close(fresh_parent_fd)
+            os.close(fresh_root_fd)
+
+        return digest.hexdigest(), b"".join(chunks) if chunks is not None else None
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        os.close(root_fd)
+
+
+def _sha256_anchored_file(
+    root: Path,
+    relative_path: Path,
+    *,
+    max_bytes: int,
+) -> str:
+    digest, _content = _read_anchored_file(
+        root,
+        relative_path,
+        capture=False,
+        max_bytes=max_bytes,
+    )
+    return digest
+
+
+def _assert_resolves_beneath_root(root: Path, relative_path: Path) -> None:
+    lexical_root = Path(os.path.abspath(os.fspath(root)))
+    resolved_root = root.resolve(strict=True)
+    resolved_path = (root / relative_path).resolve(strict=True)
+    if resolved_root != lexical_root:
+        raise RuntimeError("The trusted artifacts root contains a symbolic link")
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError as exc:
+        raise RuntimeError("The artifact path escaped its trusted root") from exc
+
+
+def _relative_stored_path(stored_path: str, root: Path) -> Path | None:
+    candidate = Path(stored_path)
+    if not candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    lexical_root = Path(os.path.abspath(os.fspath(root)))
+    lexical_candidate = Path(os.path.abspath(os.fspath(candidate)))
+    try:
+        relative = lexical_candidate.relative_to(lexical_root)
+        _relative_parts(relative)
+    except ValueError:
+        return None
+    return relative
+
+
+def _unlink_if_same_file(
+    parent_fd: int,
+    filename: str,
+    expected: os.stat_result,
+) -> None:
+    """Remove our failed write while the caller holds the pinned-root inode lock."""
+
+    descriptor = -1
+    try:
+        descriptor = _open_regular_file(parent_fd, filename)
+        if _same_file(expected, os.fstat(descriptor)):
+            os.unlink(filename, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+    except FileNotFoundError:
+        pass
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _normalize(value: str) -> str:

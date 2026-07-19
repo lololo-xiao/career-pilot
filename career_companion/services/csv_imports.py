@@ -12,6 +12,7 @@ from career_companion.database import JobRecord
 from career_companion.schemas import ApplicationStatus, Job, JobSpec
 from career_companion.services.applications import (
     ApplicationPersistenceError,
+    DEDICATED_WORKFLOW_STATUSES,
     ensure_application,
     transition_application,
 )
@@ -217,10 +218,19 @@ def _application_status(row: dict[str, str]) -> ApplicationStatus:
     normalized = _normalize_value(raw_status)
     status_value = STATUS_ALIASES.get(normalized, normalized)
     try:
-        return ApplicationStatus(status_value)
+        status = ApplicationStatus(status_value)
     except ValueError as exc:
-        supported = ", ".join(item.value for item in ApplicationStatus)
+        supported = ", ".join(
+            item.value
+            for item in ApplicationStatus
+            if item.value not in DEDICATED_WORKFLOW_STATUSES
+        )
         raise ValueError(f"unsupported status '{raw_status}'. Use one of: {supported}") from exc
+    if status.value in DEDICATED_WORKFLOW_STATUSES:
+        raise ValueError(
+            f"status '{raw_status}' requires a dedicated workflow and cannot be imported"
+        )
+    return status
 
 
 def _enrich_job(record: JobRecord, spec: JobSpec) -> bool:
