@@ -13,6 +13,7 @@ from career_companion.database import ApprovalRecord
 from career_companion.services.approvals import (
     APPROVAL_ACTIONS,
     AUTHORIZATION_SNAPSHOT_KEY,
+    has_current_consumer_validation,
     sanitize_approval_summary,
 )
 
@@ -132,6 +133,7 @@ def _history_item(row: ApprovalRecord, now: datetime) -> dict[str, Any]:
     usable = bool(
         definition
         and definition.consumer_enabled
+        and has_current_consumer_validation(row.preview, row.action_type)
         and binding_valid
         and state == "approved"
     )

@@ -11,7 +11,13 @@ from sqlalchemy import func, select
 
 from app.auth import AuthStore, AuthenticatedAccount, ProviderConnection
 from app.main import app, get_store, require_current_account
-from career_companion.database import ApprovalRecord, AuditEventRecord
+from career_companion.database import (
+    ApplicationRecord,
+    ApprovalRecord,
+    ArtifactRecord,
+    AuditEventRecord,
+    JobRecord,
+)
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import (
     account_session,
@@ -19,15 +25,24 @@ from career_companion.persistence import (
     session_factory_for,
 )
 from career_companion.services import approvals as approval_service
+from career_companion.schemas import FormFillRequest
 from career_companion.services.approval_history import list_approval_history
 from career_companion.services.approvals import (
     APPROVAL_ACTIONS,
     AUTHORIZATION_SNAPSHOT_KEY,
+    CONSUMER_VALIDATION_MARKER_KEY,
+    CONSUMER_VALIDATION_VERSIONS,
     consume_approval,
+    current_consumer_validation_marker,
     decide_approval,
     payload_digest,
     request_approval,
 )
+from career_companion.services.form_fill import canonical_form_fill_payload
+
+APPLICATION_ID = "00000000-0000-0000-0000-000000000001"
+ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
+JOB_ID = "00000000-0000-0000-0000-000000000003"
 
 
 def _account(user_id: str) -> AuthenticatedAccount:
@@ -51,6 +66,9 @@ def approval_client(tmp_path, monkeypatch):
     store = AuthStore(tmp_path / "auth.db", "s" * 48)
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[require_current_account] = lambda: _account("account-a")
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        _seed_form_resources(session, paths)
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
     app.dependency_overrides.clear()
@@ -59,12 +77,39 @@ def approval_client(tmp_path, monkeypatch):
 
 def _form_payload(label: str = "Ada") -> dict:
     return {
-        "application_id": "00000000-0000-0000-0000-000000000001",
+        "application_id": APPLICATION_ID,
         "url": "https://jobs.example.test/apply?candidate=private",
         "fields": {"#name": label, "#email": "ada@example.test"},
-        "files": {"#resume": "/private/workspace/resume.pdf"},
+        "files": {"#resume": ARTIFACT_ID},
         "headless": False,
     }
+
+
+def _seed_form_resources(session, paths: CompanionPaths) -> ArtifactRecord:
+    paths.create()
+    attachment = paths.workspace / "approved-resume.pdf"
+    attachment.write_bytes(b"approved resume")
+    job = JobRecord(
+        id=JOB_ID,
+        company="Example GmbH",
+        title="Engineer",
+        canonical_url="https://jobs.example.test/role",
+        fingerprint="f" * 64,
+        normalized_spec={},
+    )
+    application = ApplicationRecord(id=APPLICATION_ID, job=job)
+    artifact = ArtifactRecord(
+        id=ARTIFACT_ID,
+        application=application,
+        kind="cv",
+        version=1,
+        path=str(attachment),
+        sha256="a" * 64,
+        approved=True,
+    )
+    session.add_all([job, application, artifact])
+    session.flush()
+    return artifact
 
 
 def _create(client: TestClient, *, label: str = "Ada", ttl_minutes: int = 30):
@@ -78,6 +123,17 @@ def _create(client: TestClient, *, label: str = "Ada", ttl_minutes: int = 30):
                 "untrusted": {"raw": "must not appear in history"},
             },
             "ttl_minutes": ttl_minutes,
+        },
+    )
+
+
+def _post_form_approval(client: TestClient, payload: dict, preview: dict | None = None):
+    return client.post(
+        "/api/v1/approvals",
+        json={
+            "action_type": "application.form_fill",
+            "payload": payload,
+            "preview": preview or {"summary": "Review the exact form fill"},
         },
     )
 
@@ -212,19 +268,30 @@ def test_history_computes_expiry_without_mutating_the_record_or_audit(tmp_path) 
 def test_request_rules_are_bounded_and_snapshot_is_server_owned(tmp_path) -> None:
     paths = CompanionPaths.at_root(tmp_path / "companion").scoped_to("account-a")
     with account_session(paths) as session:
+        _seed_form_resources(session, paths)
         approval = request_approval(
             session,
             "application.form_fill",
             _form_payload(),
             {
                 "summary": "Review\u202e    exact\nrequest",
-                AUTHORIZATION_SNAPSHOT_KEY: {"target_hostname": "attacker.test"},
+                AUTHORIZATION_SNAPSHOT_KEY: {
+                    "target_hostname": "attacker.test",
+                    CONSUMER_VALIDATION_MARKER_KEY: {
+                        "consumer": "application.form_fill",
+                        "version": 999,
+                    },
+                },
             },
+            paths=paths,
         )
         assert approval.preview["summary"] == "Review exact request"
         assert approval.preview[AUTHORIZATION_SNAPSHOT_KEY]["target_hostname"] == (
             "jobs.example.test"
         )
+        assert approval.preview[AUTHORIZATION_SNAPSHOT_KEY][
+            CONSUMER_VALIDATION_MARKER_KEY
+        ] == current_consumer_validation_marker("application.form_fill")
 
         with pytest.raises(ValueError, match="Unsupported approval action"):
             request_approval(session, "arbitrary.write", {}, {})
@@ -235,7 +302,7 @@ def test_request_rules_are_bounded_and_snapshot_is_server_owned(tmp_path) -> Non
         with pytest.raises(ValueError, match="NaN"):
             request_approval(
                 session,
-                "application.form_fill",
+                "email.draft",
                 {"number": float("nan")},
                 {},
             )
@@ -245,14 +312,435 @@ def test_request_rules_are_bounded_and_snapshot_is_server_owned(tmp_path) -> Non
             for _ in range(9):
                 cursor["child"] = {}
                 cursor = cursor["child"]
-            request_approval(session, "application.form_fill", deeply_nested, {})
+            request_approval(session, "email.draft", deeply_nested, {})
         with pytest.raises(ValueError, match="byte limit"):
             request_approval(
                 session,
-                "application.form_fill",
+                "email.draft",
                 {},
                 {"summary": "x" * 17_000},
             )
+
+
+def test_form_fill_approval_hashes_the_shared_normalized_defaulted_payload(
+    approval_client,
+) -> None:
+    raw_payload = {
+        "application_id": f"  {APPLICATION_ID}  ",
+        "url": "  HTTPS://JOBS.EXAMPLE.TEST:443/apply#review  ",
+        "fields": {"  #name  ": "Ada"},
+    }
+
+    created = _post_form_approval(approval_client, raw_payload)
+
+    assert created.status_code == 200
+    canonical = canonical_form_fill_payload(raw_payload)
+    assert FormFillRequest.model_validate(raw_payload).model_dump(mode="python") == canonical
+    assert canonical == {
+        "application_id": APPLICATION_ID,
+        "url": "https://jobs.example.test/apply",
+        "fields": {"#name": "Ada"},
+        "files": {},
+        "headless": False,
+    }
+    assert created.json()["payload_digest"] == payload_digest(canonical)
+    assert created.json()["payload_digest"] != payload_digest(raw_payload)
+
+    decided = approval_client.post(
+        f"/api/v1/approvals/{created.json()['id']}/decision",
+        json={"decision": "approved"},
+    )
+    assert decided.status_code == 200
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        consumed = consume_approval(session, "application.form_fill", raw_payload)
+        assert consumed.id == created.json()["id"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"url": "https://jobs.example.test/apply"},
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "unexpected": True,
+        },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "headless": "false",
+        },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "fields": {"#name": 42},
+        },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "files": {"#resume": 42},
+        },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "fields": {" #target ": "Ada"},
+            "files": {"#target": ARTIFACT_ID},
+        },
+    ],
+)
+def test_form_fill_approval_rejects_missing_extra_coerced_or_ambiguous_payloads(
+    approval_client,
+    payload,
+) -> None:
+    response = _post_form_approval(approval_client, payload)
+
+    assert response.status_code == 422
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
+        assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://b\u00fccher.example/apply",
+        "https://%6cinkedin.com/jobs/view/1",
+        "https://jobs.example.test/job opening",
+        "https://jobs.example.test\\attacker.test/apply",
+        "https://jobs.example.test/a/../apply",
+        "https://jobs.example.test/%2e%2e/apply",
+        "https://jobs.example.test/apply%zz",
+    ],
+)
+def test_form_fill_url_contract_rejects_whatwg_ambiguous_destinations(
+    approval_client,
+    url,
+) -> None:
+    response = _post_form_approval(
+        approval_client,
+        {"application_id": APPLICATION_ID, "url": url},
+    )
+
+    assert response.status_code == 422
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
+        assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://www.linkedin.com/jobs/view/1",
+        },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://candidate:secret@jobs.example.test/apply",
+        },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "fields": {"button[type=submit]": "Apply"},
+        },
+    ],
+)
+def test_form_fill_approval_rejects_unsafe_destinations_and_controls_without_writes(
+    approval_client,
+    payload,
+) -> None:
+    response = _post_form_approval(approval_client, payload)
+
+    assert response.status_code == 403
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
+        assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+def test_form_fill_approval_maps_missing_and_unapproved_resources_without_writes(
+    approval_client,
+) -> None:
+    missing_application = _post_form_approval(
+        approval_client,
+        {
+            "application_id": "missing-application",
+            "url": "https://jobs.example.test/apply",
+        },
+    )
+    missing_artifact = _post_form_approval(
+        approval_client,
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "files": {"#resume": "missing-artifact"},
+        },
+    )
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        artifact = session.get(ArtifactRecord, ARTIFACT_ID)
+        assert artifact is not None
+        artifact.approved = False
+    unapproved = _post_form_approval(approval_client, _form_payload())
+
+    assert missing_application.status_code == 404
+    assert missing_artifact.status_code == 404
+    assert unapproved.status_code == 403
+    with account_session(paths) as session:
+        assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
+        assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        ({"url": "https://jobs.example.test/apply"}, 422),
+        (
+            {
+                "application_id": APPLICATION_ID,
+                "url": "https://jobs.example.test/apply",
+                "extra": True,
+            },
+            422,
+        ),
+        (
+            {
+                "application_id": APPLICATION_ID,
+                "url": "https://jobs.example.test/apply",
+                "headless": 1,
+            },
+            422,
+        ),
+        (
+            {
+                "application_id": APPLICATION_ID,
+                "url": "https://linkedin.com/jobs/view/1",
+            },
+            403,
+        ),
+        (
+            {
+                "application_id": APPLICATION_ID,
+                "url": "https://candidate:secret@jobs.example.test/apply",
+            },
+            403,
+        ),
+        (
+            {
+                "application_id": APPLICATION_ID,
+                "url": "https://jobs.example.test/apply",
+                "fields": {"#submit": "Apply"},
+            },
+            403,
+        ),
+        (
+            {
+                "application_id": "missing-application",
+                "url": "https://jobs.example.test/apply",
+            },
+            404,
+        ),
+        (
+            {
+                "application_id": APPLICATION_ID,
+                "url": "https://jobs.example.test/apply",
+                "files": {"#resume": "missing-artifact"},
+            },
+            404,
+        ),
+    ],
+)
+def test_browser_fill_endpoint_uses_the_same_strict_contract_and_error_mapping(
+    approval_client,
+    payload,
+    expected_status,
+) -> None:
+    response = approval_client.post("/api/v1/browser/fill", json=payload)
+
+    assert response.status_code == expected_status
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
+        assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+def test_browser_fill_endpoint_rejects_an_unapproved_attachment_without_writes(
+    approval_client,
+) -> None:
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        artifact = session.get(ArtifactRecord, ARTIFACT_ID)
+        assert artifact is not None
+        artifact.approved = False
+
+    response = approval_client.post("/api/v1/browser/fill", json=_form_payload())
+
+    assert response.status_code == 403
+    with account_session(paths) as session:
+        assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
+        assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+@pytest.mark.parametrize(
+    ("marker_kind", "usable"),
+    [
+        ("absent", False),
+        ("wrong", False),
+        ("boolean", False),
+        ("current", True),
+    ],
+)
+def test_history_and_consumption_require_the_current_validation_marker(
+    tmp_path,
+    marker_kind,
+    usable,
+) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "companion").scoped_to("account-a")
+    payload = canonical_form_fill_payload(_form_payload())
+    with account_session(paths) as session:
+        _seed_form_resources(session, paths)
+        snapshot = {"action_type": "application.form_fill"}
+        if marker_kind == "wrong":
+            snapshot[CONSUMER_VALIDATION_MARKER_KEY] = {
+                "consumer": "application.form_fill",
+                "version": 999,
+            }
+        elif marker_kind == "boolean":
+            snapshot[CONSUMER_VALIDATION_MARKER_KEY] = {
+                "consumer": "application.form_fill",
+                "version": True,
+            }
+        elif marker_kind == "current":
+            snapshot[CONSUMER_VALIDATION_MARKER_KEY] = (
+                current_consumer_validation_marker("application.form_fill")
+            )
+        row = ApprovalRecord(
+            action_type="application.form_fill",
+            payload_digest=payload_digest(payload),
+            preview={AUTHORIZATION_SNAPSHOT_KEY: snapshot},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            decision="approved",
+        )
+        session.add(row)
+        session.flush()
+        row_id = row.id
+
+        item = list_approval_history(session)["items"][0]
+        assert item["usable"] is usable
+        assert item["authorization"]["binding"]["remaining_uses"] == int(usable)
+        if usable:
+            assert consume_approval(session, "application.form_fill", payload).id == row_id
+        else:
+            with pytest.raises(PermissionError, match="matching approval"):
+                consume_approval(session, "application.form_fill", payload)
+
+
+def test_marker_version_rotation_invalidates_old_records_and_marks_new_ones(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "companion").scoped_to("account-a")
+    payload = _form_payload()
+    with account_session(paths) as session:
+        _seed_form_resources(session, paths)
+        old = request_approval(
+            session,
+            "application.form_fill",
+            payload,
+            {},
+            paths=paths,
+        )
+        decide_approval(session, old.id, "approved")
+        old_id = old.id
+
+    monkeypatch.setattr(
+        approval_service,
+        "CONSUMER_VALIDATION_VERSIONS",
+        {"application.form_fill": CONSUMER_VALIDATION_VERSIONS["application.form_fill"] + 1},
+    )
+    with account_session(paths) as session:
+        old_item = list_approval_history(session)["items"][0]
+        assert old_item["id"] == old_id
+        assert old_item["usable"] is False
+        with pytest.raises(PermissionError, match="matching approval"):
+            consume_approval(session, "application.form_fill", payload)
+
+        current = request_approval(
+            session,
+            "application.form_fill",
+            payload,
+            {},
+            paths=paths,
+        )
+        decide_approval(session, current.id, "approved")
+        assert current.preview[AUTHORIZATION_SNAPSHOT_KEY][
+            CONSUMER_VALIDATION_MARKER_KEY
+        ]["version"] == 2
+        assert consume_approval(session, "application.form_fill", payload).id == current.id
+
+
+def test_validated_consumer_marker_snapshot_is_extensible_by_action(monkeypatch) -> None:
+    monkeypatch.setattr(
+        approval_service,
+        "CONSUMER_VALIDATION_VERSIONS",
+        {"future.write": 3},
+    )
+
+    snapshot = approval_service._authorization_snapshot(
+        "future.write",
+        {},
+        consumer_validated=True,
+    )
+
+    assert snapshot == {
+        "action_type": "future.write",
+        CONSUMER_VALIDATION_MARKER_KEY: {
+            "consumer": "future.write",
+            "version": 3,
+        },
+    }
+
+
+def test_consumption_skips_invalid_newest_marker_for_valid_older_record(tmp_path) -> None:
+    paths = CompanionPaths.at_root(tmp_path / "companion").scoped_to("account-a")
+    payload = _form_payload()
+    with account_session(paths) as session:
+        _seed_form_resources(session, paths)
+        valid = request_approval(
+            session,
+            "application.form_fill",
+            payload,
+            {},
+            paths=paths,
+        )
+        decide_approval(session, valid.id, "approved")
+        valid.created_at = datetime.now(UTC) - timedelta(minutes=1)
+        invalid = ApprovalRecord(
+            action_type="application.form_fill",
+            payload_digest=valid.payload_digest,
+            preview={
+                AUTHORIZATION_SNAPSHOT_KEY: {
+                    "action_type": "application.form_fill",
+                    CONSUMER_VALIDATION_MARKER_KEY: {
+                        "consumer": "application.form_fill",
+                        "version": 999,
+                    },
+                }
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            decision="approved",
+        )
+        session.add(invalid)
+        session.flush()
+        invalid_id = invalid.id
+        valid_id = valid.id
+
+        assert consume_approval(session, "application.form_fill", payload).id == valid_id
+        assert session.get(ApprovalRecord, invalid_id).decision == "approved"
+        assert session.get(ApprovalRecord, valid_id).decision == "consumed"
 
 
 def test_unsupported_legacy_records_are_conservative(tmp_path) -> None:
@@ -305,11 +793,13 @@ def test_concurrent_decisions_have_exactly_one_winner(tmp_path) -> None:
     paths = CompanionPaths.at_root(tmp_path / "companion").scoped_to("account-a")
     factory = session_factory_for(paths)
     with factory() as session:
+        _seed_form_resources(session, paths)
         approval = request_approval(
             session,
             "application.form_fill",
             _form_payload(),
             {"summary": "Choose once"},
+            paths=paths,
         )
         approval_id = approval.id
         session.commit()
@@ -353,14 +843,19 @@ def test_concurrent_consumers_can_use_one_token_only_once(tmp_path) -> None:
     factory = session_factory_for(paths)
     payload = _form_payload()
     with factory() as session:
+        _seed_form_resources(session, paths)
         approval = request_approval(
             session,
             "application.form_fill",
             payload,
             {"summary": "Use once"},
+            paths=paths,
         )
         decide_approval(session, approval.id, "approved")
         approval_id = approval.id
+        assert approval.preview[AUTHORIZATION_SNAPSHOT_KEY][
+            CONSUMER_VALIDATION_MARKER_KEY
+        ] == current_consumer_validation_marker("application.form_fill")
         session.commit()
     barrier = Barrier(2)
 
@@ -395,11 +890,13 @@ def test_consumption_and_audit_roll_back_together(tmp_path, monkeypatch) -> None
     paths = CompanionPaths.at_root(tmp_path / "companion").scoped_to("account-a")
     payload = _form_payload()
     with account_session(paths) as session:
+        _seed_form_resources(session, paths)
         approval = request_approval(
             session,
             "application.form_fill",
             payload,
             {"summary": "Atomic request"},
+            paths=paths,
         )
         decide_approval(session, approval.id, "approved")
         approval_id = approval.id

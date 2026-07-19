@@ -207,15 +207,26 @@ class _FakeLocator:
 
 
 class _FakePage:
-    def __init__(self, controls, redirect_url="https://jobs.example.test/apply"):
+    def __init__(
+        self,
+        controls,
+        redirect_url="https://jobs.example.test/apply",
+        on_goto=None,
+    ):
         self.controls = controls
         self.url = "about:blank"
         self.redirect_url = redirect_url
+        self.on_goto = on_goto
         self.interactions = []
         self.guards = []
+        self.init_scripts = []
         self.routes = []
+        self.web_socket_routes = []
+        self.launch_options = {}
 
     async def goto(self, _url, **_kwargs):
+        if self.on_goto is not None:
+            self.on_goto()
         self.url = self.redirect_url
 
     async def evaluate(self, script):
@@ -231,6 +242,61 @@ class _FakePage:
         return _FakeLocator(self.controls[selector], self.interactions, selector)
 
 
+class _HostileRequest:
+    method = "POST"
+    url = "https://jobs.example.test/collect"
+
+
+class _HostileRoute:
+    def __init__(self) -> None:
+        self.aborted = False
+        self.continued = False
+
+    async def abort(self, _reason):
+        self.aborted = True
+
+    async def continue_(self):
+        self.continued = True
+
+
+class _HostileWebSocket:
+    url = "wss://jobs.example.test/collect"
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self, **_kwargs):
+        self.closed = True
+
+
+class _HostilePage(_FakePage):
+    def __init__(self, controls) -> None:
+        super().__init__(controls)
+        self.mutations_reaching_server: list[str] = []
+        self.blocked_during_navigation: list[str] = []
+        self.init_guard_present_at_navigation = False
+
+    async def goto(self, _url, **_kwargs):
+        self.init_guard_present_at_navigation = bool(self.init_scripts)
+        if not self.init_guard_present_at_navigation:
+            self.mutations_reaching_server.append("form-submit")
+        request_route = _HostileRoute()
+        if self.routes:
+            await self.routes[-1][1](request_route, _HostileRequest())
+        if request_route.aborted:
+            self.blocked_during_navigation.append("fetch-post")
+        else:
+            self.mutations_reaching_server.append("fetch-post")
+        web_socket = _HostileWebSocket()
+        if self.web_socket_routes:
+            await self.web_socket_routes[-1][1](web_socket)
+        if web_socket.closed:
+            self.blocked_during_navigation.append("websocket")
+        else:
+            self.mutations_reaching_server.append("websocket")
+        self.url = self.redirect_url
+
+
 def _install_fake_playwright(monkeypatch, page):
     class FakeContext:
         pages = [page]
@@ -238,11 +304,24 @@ def _install_fake_playwright(monkeypatch, page):
         async def new_page(self):
             return page
 
+        async def route(self, pattern, handler):
+            await page.route(pattern, handler)
+
+        async def unroute(self, pattern, handler):
+            await page.unroute(pattern, handler)
+
+        async def route_web_socket(self, pattern, handler):
+            page.web_socket_routes.append((pattern, handler))
+
+        async def add_init_script(self, script):
+            page.init_scripts.append(script)
+
         async def close(self):
             return None
 
     class FakeChromium:
-        async def launch_persistent_context(self, *_args, **_kwargs):
+        async def launch_persistent_context(self, *_args, **kwargs):
+            page.launch_options = kwargs
             return FakeContext()
 
     class FakePlaywright:
@@ -284,14 +363,16 @@ def browser_session(tmp_path):
     clear_factory_cache()
 
 
-def _approve(session, payload):
+def _approve(session, paths, payload):
     approval = request_approval(
         session,
         "application.form_fill",
         payload,
         {"summary": "Fill without submitting"},
+        paths=paths,
     )
     decide_approval(session, approval.id, "approved")
+    return approval
 
 
 def test_browser_fill_checks_element_semantics_and_never_submits(
@@ -303,7 +384,7 @@ def test_browser_fill_checks_element_semantics_and_never_submits(
         "application_id": application.id,
         "fields": {"#application-name": "Ada Candidate"},
     }
-    _approve(session, payload)
+    _approve(session, paths, payload)
     page = _FakePage(
         {"#application-name": {"tag": "input", "type": "text", "disabled": False}}
     )
@@ -317,24 +398,207 @@ def test_browser_fill_checks_element_semantics_and_never_submits(
     assert len(page.guards) == 2
 
     unsafe_payload = {
+        "application_id": application.id,
         "url": "https://jobs.example.test/apply",
         "fields": {"#continue": "ignored"},
     }
-    _approve(session, unsafe_payload)
+    unsafe_approval = _approve(session, paths, unsafe_payload)
     unsafe_page = _FakePage(
         {"#continue": {"tag": "input", "type": "submit", "disabled": False}}
     )
     _install_fake_playwright(monkeypatch, unsafe_page)
     with pytest.raises(PermissionError, match="non-submit"):
         asyncio.run(BrowserAssistant(paths).fill(session, unsafe_payload))
+    assert unsafe_approval.decision == "approved"
+
+
+@pytest.mark.parametrize("control_type", ["checkbox", "radio", "color", "range"])
+def test_browser_preflight_blocks_unsupported_input_types_without_consuming(
+    browser_session,
+    monkeypatch,
+    control_type,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "fields": {"#unsupported": "value"},
+    }
+    approval = _approve(session, paths, payload)
+    page = _FakePage(
+        {
+            "#unsupported": {
+                "tag": "input",
+                "type": control_type,
+                "disabled": False,
+            }
+        }
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    with pytest.raises(PermissionError, match="non-submit"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert approval.decision == "approved"
+    assert page.interactions == []
+
+
+def test_browser_boundaries_exist_before_hostile_document_startup(
+    browser_session,
+    monkeypatch,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "fields": {"#unsupported": "value"},
+    }
+    approval = _approve(session, paths, payload)
+    page = _HostilePage(
+        {
+            "#unsupported": {
+                "tag": "input",
+                "type": "checkbox",
+                "disabled": False,
+            }
+        }
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    with pytest.raises(PermissionError, match="non-submit"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert page.launch_options["service_workers"] == "block"
+    assert page.init_guard_present_at_navigation is True
+    assert page.mutations_reaching_server == []
+    assert page.blocked_during_navigation == ["fetch-post", "websocket"]
+    assert page.routes == []
+    assert approval.decision == "approved"
 
 
 def test_browser_revalidates_redirect_target(browser_session, monkeypatch) -> None:
-    paths, session, _application = browser_session
-    payload = {"url": "https://jobs.example.test/redirect", "fields": {}}
-    _approve(session, payload)
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/redirect",
+        "fields": {},
+    }
+    approval = _approve(session, paths, payload)
     page = _FakePage({}, redirect_url="https://www.linkedin.com/jobs/view/1")
     _install_fake_playwright(monkeypatch, page)
 
     with pytest.raises(PermissionError, match="LinkedIn remains manual"):
         asyncio.run(BrowserAssistant(paths).fill(session, payload))
+    assert approval.decision == "approved"
+
+
+def test_browser_rejects_a_different_safe_redirect_without_consuming(
+    browser_session,
+    monkeypatch,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply?opening=1",
+        "fields": {"#name": "Ada"},
+    }
+    approval = _approve(session, paths, payload)
+    page = _FakePage(
+        {"#name": {"tag": "input", "type": "text", "disabled": False}},
+        redirect_url="https://jobs.example.test/apply?opening=2",
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    with pytest.raises(PermissionError, match="exact approved application URL"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert approval.decision == "approved"
+    assert page.interactions == []
+
+
+def test_browser_url_binding_ignores_fragments_but_not_the_destination(
+    browser_session,
+    monkeypatch,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "HTTPS://JOBS.EXAMPLE.TEST:443/apply#approved-step",
+        "fields": {"#name": "Ada"},
+    }
+    approval = _approve(session, paths, payload)
+    page = _FakePage(
+        {"#name": {"tag": "input", "type": "text", "disabled": False}},
+        redirect_url="https://jobs.example.test/apply#runtime-step",
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    result = asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert result["controls"] == ["#name"]
+    assert approval.decision == "consumed"
+
+
+def test_missing_browser_runtime_does_not_consume_approval(
+    browser_session,
+    monkeypatch,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+    }
+    approval = _approve(session, paths, payload)
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
+
+    with pytest.raises(RuntimeError, match="Install the browser extra"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert approval.decision == "approved"
+
+
+@pytest.mark.parametrize("change", ["unapprove", "delete"])
+def test_browser_final_attachment_validation_precedes_consumption(
+    browser_session,
+    monkeypatch,
+    change,
+) -> None:
+    paths, session, application = browser_session
+    attachment = paths.workspace / "approved-cv.pdf"
+    attachment.write_bytes(b"approved")
+    artifact = ArtifactRecord(
+        application_id=application.id,
+        kind="cv",
+        version=1,
+        path=str(attachment),
+        sha256="a" * 64,
+        approved=True,
+    )
+    session.add(artifact)
+    session.flush()
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "files": {"#resume": artifact.id},
+    }
+    approval = _approve(session, paths, payload)
+
+    def make_stale() -> None:
+        if change == "unapprove":
+            artifact.approved = False
+        else:
+            attachment.unlink()
+
+    page = _FakePage(
+        {"#resume": {"tag": "input", "type": "file", "disabled": False}},
+        on_goto=make_stale,
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    expected = PermissionError if change == "unapprove" else LookupError
+    with pytest.raises(expected):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert approval.decision == "approved"
+    assert page.interactions == []

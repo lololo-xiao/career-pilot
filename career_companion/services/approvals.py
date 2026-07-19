@@ -11,11 +11,16 @@ from types import MappingProxyType
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from career_companion.database import ApprovalRecord
+from career_companion.paths import CompanionPaths
 from career_companion.services.audit import record_audit
+from career_companion.services.form_fill import (
+    canonical_form_fill_payload,
+    validate_form_payload,
+)
 
 MAX_APPROVAL_TTL_MINUTES = 1440
 MAX_APPROVAL_PAYLOAD_BYTES = 1_100_000
@@ -24,6 +29,10 @@ MAX_APPROVAL_JSON_DEPTH = 8
 MAX_APPROVAL_JSON_NODES = 2_048
 MAX_APPROVAL_SUMMARY_CHARACTERS = 280
 AUTHORIZATION_SNAPSHOT_KEY = "_careerpilot_authorization_v1"
+CONSUMER_VALIDATION_MARKER_KEY = "consumer_validation"
+CONSUMER_VALIDATION_VERSIONS: Mapping[str, int] = MappingProxyType(
+    {"application.form_fill": 1}
+)
 
 
 @dataclass(frozen=True)
@@ -138,6 +147,34 @@ def sanitize_approval_summary(value: Any) -> str | None:
     return normalized[:MAX_APPROVAL_SUMMARY_CHARACTERS]
 
 
+def current_consumer_validation_marker(action_type: str) -> dict[str, Any] | None:
+    version = CONSUMER_VALIDATION_VERSIONS.get(action_type)
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        return None
+    return {"consumer": action_type, "version": version}
+
+
+def has_current_consumer_validation(
+    preview: Any,
+    action_type: str,
+) -> bool:
+    expected = current_consumer_validation_marker(action_type)
+    if expected is None or not isinstance(preview, dict):
+        return False
+    snapshot = preview.get(AUTHORIZATION_SNAPSHOT_KEY)
+    if not isinstance(snapshot, dict) or snapshot.get("action_type") != action_type:
+        return False
+    marker = snapshot.get(CONSUMER_VALIDATION_MARKER_KEY)
+    return bool(
+        isinstance(marker, dict)
+        and set(marker) == {"consumer", "version"}
+        and marker.get("consumer") == expected["consumer"]
+        and isinstance(marker.get("version"), int)
+        and not isinstance(marker.get("version"), bool)
+        and marker.get("version") == expected["version"]
+    )
+
+
 def _validate_json_shape(value: Any, *, label: str) -> None:
     nodes = 0
 
@@ -202,23 +239,27 @@ def payload_digest(payload: dict[str, Any]) -> str:
 def _authorization_snapshot(
     action_type: str,
     payload: dict[str, Any],
+    *,
+    consumer_validated: bool,
 ) -> dict[str, Any]:
     snapshot: dict[str, Any] = {"action_type": action_type}
-    if action_type != "application.form_fill":
-        return snapshot
-    raw_url = payload.get("url")
-    if isinstance(raw_url, str):
-        parsed = urlsplit(raw_url.strip())
-        hostname = (parsed.hostname or "").rstrip(".").casefold()
-        if hostname and parsed.scheme.casefold() in {"http", "https"}:
-            snapshot["target_hostname"] = hostname[:253]
-    application_id = payload.get("application_id")
-    if isinstance(application_id, str) and 1 <= len(application_id) <= 64:
-        snapshot["application_id"] = application_id
-    fields = payload.get("fields")
-    files = payload.get("files")
-    snapshot["field_count"] = len(fields) if isinstance(fields, dict) else 0
-    snapshot["attachment_count"] = len(files) if isinstance(files, dict) else 0
+    if action_type == "application.form_fill":
+        raw_url = payload.get("url")
+        if isinstance(raw_url, str):
+            parsed = urlsplit(raw_url.strip())
+            hostname = (parsed.hostname or "").rstrip(".").casefold()
+            if hostname and parsed.scheme.casefold() in {"http", "https"}:
+                snapshot["target_hostname"] = hostname[:253]
+        application_id = payload.get("application_id")
+        if isinstance(application_id, str) and 1 <= len(application_id) <= 64:
+            snapshot["application_id"] = application_id
+        fields = payload.get("fields")
+        files = payload.get("files")
+        snapshot["field_count"] = len(fields) if isinstance(fields, dict) else 0
+        snapshot["attachment_count"] = len(files) if isinstance(files, dict) else 0
+    marker = current_consumer_validation_marker(action_type)
+    if consumer_validated and marker is not None:
+        snapshot[CONSUMER_VALIDATION_MARKER_KEY] = marker
     return snapshot
 
 
@@ -226,6 +267,8 @@ def _stored_preview(
     action_type: str,
     payload: dict[str, Any],
     preview: dict[str, Any],
+    *,
+    consumer_validated: bool,
 ) -> dict[str, Any]:
     _canonical_json(
         preview,
@@ -238,7 +281,11 @@ def _stored_preview(
         stored.pop("summary", None)
     else:
         stored["summary"] = summary
-    stored[AUTHORIZATION_SNAPSHOT_KEY] = _authorization_snapshot(action_type, payload)
+    stored[AUTHORIZATION_SNAPSHOT_KEY] = _authorization_snapshot(
+        action_type,
+        payload,
+        consumer_validated=consumer_validated,
+    )
     _canonical_json(
         stored,
         label="Approval preview",
@@ -262,14 +309,28 @@ def request_approval(
     payload: dict[str, Any],
     preview: dict[str, Any],
     ttl_minutes: int = 30,
+    *,
+    paths: CompanionPaths | None = None,
 ) -> ApprovalRecord:
     _require_known_action(action_type)
     if not 1 <= ttl_minutes <= MAX_APPROVAL_TTL_MINUTES:
         raise ValueError(
             f"Approval TTL must be between 1 and {MAX_APPROVAL_TTL_MINUTES} minutes"
         )
+    consumer_validated = False
+    if action_type == "application.form_fill":
+        if paths is None:
+            raise ValueError("Form-fill approval validation requires account paths")
+        payload = canonical_form_fill_payload(payload)
+        validate_form_payload(session, payload, paths)
+        consumer_validated = True
     digest = payload_digest(payload)
-    stored_preview = _stored_preview(action_type, payload, preview)
+    stored_preview = _stored_preview(
+        action_type,
+        payload,
+        preview,
+        consumer_validated=consumer_validated,
+    )
     approval = ApprovalRecord(
         action_type=action_type,
         payload_digest=digest,
@@ -335,8 +396,33 @@ def consume_approval(session: Session, action_type: str, payload: dict[str, Any]
     definition = _require_known_action(action_type)
     if not definition.consumer_enabled:
         raise PermissionError("This approval action has no enabled consumer")
+    if action_type == "application.form_fill":
+        payload = canonical_form_fill_payload(payload)
+    marker = current_consumer_validation_marker(action_type)
+    if marker is None:
+        raise PermissionError("This approval consumer has no current validation marker")
     digest = payload_digest(payload)
     now = datetime.now(UTC)
+    marker_consumer = ApprovalRecord.preview[AUTHORIZATION_SNAPSHOT_KEY][
+        CONSUMER_VALIDATION_MARKER_KEY
+    ]["consumer"].as_string()
+    marker_version = ApprovalRecord.preview[AUTHORIZATION_SNAPSHOT_KEY][
+        CONSUMER_VALIDATION_MARKER_KEY
+    ]["version"].as_integer()
+    current_marker = (
+        ApprovalRecord.preview[AUTHORIZATION_SNAPSHOT_KEY][
+            "action_type"
+        ].as_string()
+        == action_type,
+        marker_consumer == marker["consumer"],
+        func.json_type(
+            ApprovalRecord.preview,
+            f'$."{AUTHORIZATION_SNAPSHOT_KEY}".'
+            f'"{CONSUMER_VALIDATION_MARKER_KEY}"."version"',
+        )
+        == "integer",
+        marker_version == marker["version"],
+    )
     candidate_id = (
         select(ApprovalRecord.id)
         .where(
@@ -344,6 +430,7 @@ def consume_approval(session: Session, action_type: str, payload: dict[str, Any]
             ApprovalRecord.payload_digest == digest,
             ApprovalRecord.decision == "approved",
             ApprovalRecord.expires_at > now,
+            *current_marker,
         )
         .order_by(ApprovalRecord.created_at.desc(), ApprovalRecord.id.desc())
         .limit(1)
@@ -368,6 +455,7 @@ def consume_approval(session: Session, action_type: str, payload: dict[str, Any]
                 ApprovalRecord.payload_digest == digest,
                 ApprovalRecord.decision == "approved",
                 ApprovalRecord.expires_at <= now,
+                *current_marker,
             )
             .limit(1)
         )

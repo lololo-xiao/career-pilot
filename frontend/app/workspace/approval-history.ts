@@ -243,6 +243,17 @@ export function effectiveApprovalState(
   return item.state;
 }
 
+export function effectiveApprovalUsability(
+  item: ApprovalHistoryItem,
+  now = Date.now(),
+): boolean {
+  return item.usable && effectiveApprovalState(item, now) === "approved";
+}
+
+export function approvalScopeLabel(effectiveUsable: boolean): string {
+  return effectiveUsable ? "Authorizes" : "Recorded scope";
+}
+
 export function approvalStateCopy(state: ApprovalHistoryState): string {
   return approvalStatePresentation(state, true).copy;
 }

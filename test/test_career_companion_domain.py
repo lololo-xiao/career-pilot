@@ -55,6 +55,10 @@ from career_companion.services.approvals import (
     request_approval,
 )
 from career_companion.services.browser import validate_form_payload
+from career_companion.services.form_fill import (
+    FormFillRequestError,
+    canonical_form_fill_payload,
+)
 from career_companion.services.model_routes import record_usage, upsert_route
 from career_companion.services.conversation_sessions import (
     append_message,
@@ -722,21 +726,34 @@ def test_parallel_identical_scored_decisions_create_one_event(paths, session) ->
     assert len(decision_events) == 1
 
 
-def test_approval_is_bound_to_payload_and_can_only_be_consumed_once(session) -> None:
-    payload = {"url": "https://example.test/apply", "fields": {"#name": "Ada"}}
+def test_approval_is_bound_to_payload_and_can_only_be_consumed_once(
+    session,
+    paths,
+) -> None:
+    job = _job(session)
+    application = ApplicationRecord(job_id=job.id)
+    session.add(application)
+    session.flush()
+    payload = {
+        "application_id": application.id,
+        "url": "https://example.test/apply",
+        "fields": {"#name": "Ada"},
+    }
     approval = request_approval(
         session,
         "application.form_fill",
         payload,
         {"summary": "Fill Example GmbH form"},
+        paths=paths,
     )
-    assert approval.payload_digest == payload_digest(
-        {"fields": {"#name": "Ada"}, "url": "https://example.test/apply"}
-    )
+    assert approval.payload_digest == payload_digest(canonical_form_fill_payload(payload))
     decide_approval(session, approval.id, "approved")
 
-    with pytest.raises(PermissionError, match="matching approval"):
+    with pytest.raises(FormFillRequestError, match="strict schema"):
         consume_approval(session, "application.form_fill", payload | {"extra": True})
+    changed = payload | {"fields": {"#name": "Grace"}}
+    with pytest.raises(PermissionError, match="matching approval"):
+        consume_approval(session, "application.form_fill", changed)
 
     consumed = consume_approval(session, "application.form_fill", payload)
     assert consumed.decision == "consumed"
@@ -1134,5 +1151,14 @@ def test_rubric_activation_derives_gates_from_replay_not_caller_booleans(session
 def test_browser_assistance_rejects_linkedin_and_submit_controls(
     session, paths, payload, message
 ) -> None:
+    job = _job(session)
+    application = ApplicationRecord(job_id=job.id)
+    session.add(application)
+    session.flush()
+    payload = {"application_id": application.id, **payload}
     with pytest.raises(PermissionError, match=message):
-        validate_form_payload(session, payload, paths)
+        validate_form_payload(
+            session,
+            canonical_form_fill_payload(payload),
+            paths,
+        )

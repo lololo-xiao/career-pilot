@@ -30,6 +30,7 @@ from career_companion.paths import CompanionPaths
 from career_companion.schemas import (
     ApplicationStatus,
     CandidateProfile,
+    FormFillRequest,
     FormPreviewRequest,
     Job,
     MCPServerConfig,
@@ -56,6 +57,10 @@ from career_companion.services.form_preview import (
     latest_form_preview,
     list_latest_form_previews,
     prepare_form_preview,
+)
+from career_companion.services.form_fill import (
+    FormFillRequestError,
+    FormFillResourceNotFound,
 )
 from career_companion.services.jobs import add_job, score_job
 from career_companion.services.model_routes import daily_cost, upsert_route
@@ -112,14 +117,6 @@ class EvaluationRequest(BaseModel):
 
 class ArtifactApprovalRequest(BaseModel):
     sha256: str = Field(min_length=64, max_length=64)
-
-
-class FormFillRequest(BaseModel):
-    application_id: str
-    url: str
-    fields: dict[str, str] = Field(default_factory=dict)
-    files: dict[str, str] = Field(default_factory=dict)
-    headless: bool = False
 
 
 @router.get("/settings")
@@ -404,7 +401,11 @@ def list_approvals(session: SessionDep) -> list[dict[str, Any]]:
 
 
 @router.post("/approvals")
-def create_approval(payload: ApprovalRequest, session: SessionDep) -> dict[str, Any]:
+def create_approval(
+    payload: ApprovalRequest,
+    session: SessionDep,
+    paths: PathsDep,
+) -> dict[str, Any]:
     try:
         row = request_approval(
             session,
@@ -412,7 +413,14 @@ def create_approval(payload: ApprovalRequest, session: SessionDep) -> dict[str, 
             payload.payload,
             payload.preview,
             payload.ttl_minutes,
+            paths=paths,
         )
+    except FormFillRequestError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except FormFillResourceNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return _approval_json(row)
@@ -555,10 +563,14 @@ async def fill_application_form(
 ) -> dict[str, Any]:
     browser = BrowserAssistant(paths)
     try:
-        return await browser.fill(session, payload.model_dump())
+        return await browser.fill(session, payload.model_dump(mode="python"))
+    except FormFillRequestError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except FormFillResourceNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
-    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from exc
     finally:
         await browser.close()

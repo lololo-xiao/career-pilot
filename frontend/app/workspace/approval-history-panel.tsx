@@ -5,8 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "./api";
 import {
   ApprovalHistoryRequestCoordinator,
+  approvalScopeLabel,
   approvalStatePresentation,
   effectiveApprovalState,
+  effectiveApprovalUsability,
   mergeApprovalHistory,
   parseApprovalHistoryPage,
   parseSessionAccountId,
@@ -148,8 +150,9 @@ function ApprovalHistoryPanelBody({ accountId }: { accountId: string }) {
       <div className={styles.list}>
         {items.map((item) => {
           const state = effectiveApprovalState(item, now);
-          const presentation = approvalStatePresentation(state, item.usable);
-          const badgeClass = state === "approved" && !item.usable ? "recorded" : state;
+          const effectiveUsable = effectiveApprovalUsability(item, now);
+          const presentation = approvalStatePresentation(state, effectiveUsable);
+          const badgeClass = state === "approved" && !effectiveUsable ? "recorded" : state;
           return (
             <article className={styles.record} key={item.id}>
               <header>
@@ -167,7 +170,7 @@ function ApprovalHistoryPanelBody({ accountId }: { accountId: string }) {
 
               <div className={styles.authorization}>
                 <div>
-                  <h4>{item.usable ? "Authorizes" : "Recorded scope"}</h4>
+                  <h4>{approvalScopeLabel(effectiveUsable)}</h4>
                   <p>{item.authorization.effect}</p>
                 </div>
                 <div>

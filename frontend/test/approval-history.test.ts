@@ -4,9 +4,11 @@ import test from "node:test";
 
 import {
   ApprovalHistoryRequestCoordinator,
+  approvalScopeLabel,
   approvalStateCopy,
   approvalStatePresentation,
   effectiveApprovalState,
+  effectiveApprovalUsability,
   mergeApprovalHistory,
   parseApprovalHistoryPage,
   parseSessionAccountId,
@@ -176,6 +178,14 @@ test("expires approved and pending records locally without changing terminal sta
   const approved = parsed.items[0];
   assert.equal(effectiveApprovalState(approved, Date.parse("2026-07-19T12:29:00Z")), "approved");
   assert.equal(effectiveApprovalState(approved, Date.parse("2026-07-19T12:30:00Z")), "expired");
+  assert.equal(effectiveApprovalUsability(approved, Date.parse("2026-07-19T12:30:00Z")), false);
+  const expiredPresentation = approvalStatePresentation(
+    effectiveApprovalState(approved, Date.parse("2026-07-19T12:30:00Z")),
+    effectiveApprovalUsability(approved, Date.parse("2026-07-19T12:30:00Z")),
+  );
+  assert.equal(expiredPresentation.label, "Expired");
+  assert.match(expiredPresentation.copy, /authorizes no action/);
+  assert.equal(approvalScopeLabel(false), "Recorded scope");
   assert.equal(
     effectiveApprovalState({ ...approved, state: "consumed" }, Date.parse("2027-01-01T00:00:00Z")),
     "consumed",

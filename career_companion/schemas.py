@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StrictBool, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 
 class ClaimStatus(StrEnum):
@@ -193,6 +203,107 @@ class FormPreviewRequest(BaseModel):
         field_ids = [field.field_id for field in self.fields]
         if len(set(field_ids)) != len(field_ids):
             raise ValueError("Form field IDs must be unique")
+        return self
+
+
+FormSelector = Annotated[
+    str,
+    Field(min_length=1, max_length=1000),
+]
+FormFieldValue = Annotated[
+    str,
+    Field(max_length=10_000),
+]
+FormArtifactId = Annotated[
+    str,
+    Field(min_length=1, max_length=64),
+]
+
+
+def normalize_form_fill_url(value: str) -> str:
+    if any(ord(character) < 32 or ord(character) > 126 for character in value):
+        raise ValueError("Application URLs must contain printable ASCII characters only")
+    if any(character.isspace() for character in value) or "\\" in value:
+        raise ValueError("Application URLs cannot contain whitespace or backslashes")
+    if re.search(r"%(?![0-9A-Fa-f]{2})", value):
+        raise ValueError("Application URLs contain an invalid percent escape")
+    parts = urlsplit(value)
+    try:
+        hostname = (parts.hostname or "").rstrip(".").casefold()
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError("Application URL host or port is invalid") from exc
+    scheme = parts.scheme.casefold()
+    if scheme not in {"http", "https"} or not hostname:
+        raise ValueError(
+            "A valid credential-free HTTP or HTTPS application URL is required"
+        )
+    if "%" in hostname or re.fullmatch(r"[a-z0-9.:-]+", hostname) is None:
+        raise ValueError("Application URL hosts must use an unambiguous ASCII form")
+    for segment in parts.path.split("/"):
+        dot_normalized = re.sub(r"%2e", ".", segment, flags=re.IGNORECASE)
+        if dot_normalized in {".", ".."}:
+            raise ValueError("Application URLs cannot contain dot path segments")
+    if re.search(r"%5c", parts.path, flags=re.IGNORECASE):
+        raise ValueError("Application URL paths cannot encode backslashes")
+    rendered_host = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = (scheme == "http" and port == 80) or (
+        scheme == "https" and port == 443
+    )
+    if port is not None and not default_port:
+        rendered_host = f"{rendered_host}:{port}"
+    if parts.username is not None:
+        userinfo = parts.username
+        if parts.password is not None:
+            userinfo = f"{userinfo}:{parts.password}"
+        rendered_host = f"{userinfo}@{rendered_host}"
+    return urlunsplit(
+        (scheme, rendered_host, parts.path or "/", parts.query, "")
+    )
+
+
+class FormFillRequest(BaseModel):
+    """The one canonical request shape shared by approval and browser use."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    application_id: Annotated[str, Field(min_length=1, max_length=64)]
+    url: Annotated[str, Field(min_length=1, max_length=2000)]
+    fields: dict[FormSelector, FormFieldValue] = Field(default_factory=dict)
+    files: dict[FormSelector, FormArtifactId] = Field(default_factory=dict)
+    headless: StrictBool = False
+
+    @field_validator("application_id", "url", mode="before")
+    @classmethod
+    def normalize_scalar(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("url")
+    @classmethod
+    def normalize_url(cls, value: str) -> str:
+        return normalize_form_fill_url(value)
+
+    @field_validator("fields", "files", mode="before")
+    @classmethod
+    def normalize_selectors(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized: dict[object, object] = {}
+        for selector, field_value in value.items():
+            normalized_selector = selector.strip() if isinstance(selector, str) else selector
+            if normalized_selector in normalized:
+                raise ValueError("Form selectors must be unique after normalization")
+            normalized[normalized_selector] = field_value
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_control_count(self) -> "FormFillRequest":
+        if len(self.fields) + len(self.files) > 100:
+            raise ValueError("At most 100 controls may be filled at once")
+        if set(self.fields).intersection(self.files):
+            raise ValueError(
+                "A selector cannot be both a value field and an attachment field"
+            )
         return self
 
 
