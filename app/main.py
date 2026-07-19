@@ -167,6 +167,7 @@ from career_companion.services.mcp_probe import (
     create_probe_intent,
     latest_probe_summaries,
     mcp_probe_manager,
+    public_probe_disclosure,
     record_probe_result,
     resolve_probe_intent,
     server_configuration_digest,
@@ -1033,7 +1034,7 @@ def create_mcp_probe_intent(
             payload = {
                 "approval_id": approval.id,
                 "expires_at": approval.expires_at,
-                "disclosure": approval.preview,
+                "disclosure": public_probe_disclosure(approval.preview),
             }
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

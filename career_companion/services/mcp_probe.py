@@ -25,15 +25,18 @@ from mcp.os.win32.utilities import (
     get_windows_executable_command,
     terminate_windows_process_tree,
 )
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from career_companion.database import ApprovalRecord, AuditEventRecord, MCPServerRecord
 from career_companion.hermes import _SAFE_PARENT_ENV
 from career_companion.paths import CompanionPaths
 from career_companion.services.approvals import (
+    _request_validated_mcp_probe_approval,
+    consume_approval,
+    decide_approval,
+    has_current_consumer_validation,
     payload_digest,
-    request_approval,
 )
 from career_companion.services.audit import record_audit
 from career_companion.services.mcp_servers import (
@@ -81,6 +84,19 @@ _PROBE_STATUSES = {
     "timed_out",
     "unreachable",
 }
+_PUBLIC_DISCLOSURE_KEYS = (
+    "transport",
+    "target",
+    "target_label",
+    "bound_target_note",
+    "operations",
+    "risk",
+    "timeout_seconds",
+    "launches_subprocess",
+    "network_possible",
+    "configuration_will_change",
+    "server_side_effects_possible",
+)
 
 
 class MCPProbeConflict(RuntimeError):
@@ -200,17 +216,24 @@ def probe_disclosure(server: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def public_probe_disclosure(preview: Any) -> dict[str, Any]:
+    """Return only disclosure fields allowed by the strict public response schema."""
+
+    if not isinstance(preview, dict):
+        raise ValueError("Stored MCP probe disclosure is invalid")
+    return {key: preview[key] for key in _PUBLIC_DISCLOSURE_KEYS if key in preview}
+
+
 def create_probe_intent(
     session: Session,
     row: MCPServerRecord,
 ) -> ApprovalRecord:
     server = mcp_server_json(row)
-    return request_approval(
+    return _request_validated_mcp_probe_approval(
         session,
-        MCP_PROBE_ACTION,
         _probe_approval_payload(server),
         probe_disclosure(server),
-        ttl_minutes=MCP_PROBE_INTENT_TTL_MINUTES,
+        MCP_PROBE_INTENT_TTL_MINUTES,
     )
 
 
@@ -226,6 +249,10 @@ def resolve_probe_intent(
     expected_digest = payload_digest(_probe_approval_payload(server))
     if approval.payload_digest != expected_digest:
         raise MCPProbeConflict("The MCP server changed. Review a new connection disclosure.")
+    if not has_current_consumer_validation(approval.preview, MCP_PROBE_ACTION):
+        raise MCPProbeConflict(
+            "This MCP probe approval is not valid for the current consumer. Review it again."
+        )
     now = datetime.now(UTC)
     expires_at = approval.expires_at
     if expires_at.tzinfo is None:
@@ -238,57 +265,30 @@ def resolve_probe_intent(
 
     resolved_decision = approval.decision
     if resolved_decision == "pending":
-        decided = session.execute(
-            update(ApprovalRecord)
-            .where(
-                ApprovalRecord.id == approval_id,
-                ApprovalRecord.action_type == MCP_PROBE_ACTION,
-                ApprovalRecord.payload_digest == expected_digest,
-                ApprovalRecord.decision == "pending",
-                ApprovalRecord.expires_at > now,
-            )
-            .values(decision=decision, decided_at=now, updated_at=now)
-            .execution_options(synchronize_session=False)
-        )
-        if decided.rowcount == 1:
-            resolved_decision = decision
-            record_audit(
-                session,
-                f"approval.{decision}",
-                subject_type="approval",
-                subject_id=approval.id,
-                payload={"action_type": MCP_PROBE_ACTION},
-            )
-        else:
-            session.expire(approval)
-            session.refresh(approval)
-            resolved_decision = approval.decision
+        try:
+            approval = decide_approval(session, approval_id, decision)
+        except ValueError:
+            session.expire_all()
+            approval = session.get(ApprovalRecord, approval_id)
+            if approval is None:
+                raise LookupError("MCP probe approval not found") from None
+        resolved_decision = approval.decision
     if resolved_decision != decision:
         raise MCPProbeConflict("The MCP probe approval has already been decided.")
 
     if decision == "denied":
         return False
-    consumed = session.execute(
-        update(ApprovalRecord)
-        .where(
-            ApprovalRecord.id == approval_id,
-            ApprovalRecord.action_type == MCP_PROBE_ACTION,
-            ApprovalRecord.payload_digest == expected_digest,
-            ApprovalRecord.decision == "approved",
-            ApprovalRecord.expires_at > now,
+    try:
+        consume_approval(
+            session,
+            MCP_PROBE_ACTION,
+            _probe_approval_payload(server),
+            approval_id=approval_id,
         )
-        .values(decision="consumed", decided_at=now, updated_at=now)
-        .execution_options(synchronize_session=False)
-    )
-    if consumed.rowcount != 1:
-        raise MCPProbeConflict("The MCP probe approval has already been used.")
-    record_audit(
-        session,
-        "approval.consumed",
-        subject_type="approval",
-        subject_id=approval.id,
-        payload={"action_type": MCP_PROBE_ACTION},
-    )
+    except PermissionError as exc:
+        raise MCPProbeConflict(
+            "The MCP probe approval has already been used or is no longer valid."
+        ) from exc
     return True
 
 

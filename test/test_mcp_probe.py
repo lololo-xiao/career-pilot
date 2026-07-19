@@ -26,6 +26,15 @@ from app.schemas import MCPProbeResultResponse
 from career_companion.database import ApprovalRecord, AuditEventRecord, MCPServerRecord
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
+from career_companion.services import approvals as approval_service
+from career_companion.services.approval_history import list_approval_history
+from career_companion.services.approvals import (
+    AUTHORIZATION_SNAPSHOT_KEY,
+    CONSUMER_VALIDATION_MARKER_KEY,
+    CONSUMER_VALIDATION_VERSIONS,
+    current_consumer_validation_marker,
+    decide_approval,
+)
 from career_companion.services.mcp_probe import (
     MCPProbeConfigurationError,
     MCPProbeBusy,
@@ -174,6 +183,158 @@ def test_probe_approval_rejects_a_changed_server_snapshot(
     with account_session(probe_paths) as session:
         with pytest.raises(MCPProbeConflict, match="changed"):
             resolve_probe_intent(session, approval_id, changed, "approved")
+
+
+@pytest.mark.parametrize("marker_kind", ["missing", "wrong"])
+def test_probe_rejects_missing_or_wrong_server_owned_validation_marker(
+    probe_paths: CompanionPaths,
+    marker_kind: str,
+) -> None:
+    with account_session(probe_paths) as session:
+        row = session.get(MCPServerRecord, "probe-fixture")
+        assert row is not None
+        server = mcp_server_json(row)
+        approval = create_probe_intent(session, row)
+        preview = dict(approval.preview)
+        snapshot = dict(preview[AUTHORIZATION_SNAPSHOT_KEY])
+        if marker_kind == "missing":
+            snapshot.pop(CONSUMER_VALIDATION_MARKER_KEY)
+        else:
+            snapshot[CONSUMER_VALIDATION_MARKER_KEY] = {
+                "consumer": "mcp.probe",
+                "version": 999,
+            }
+        preview[AUTHORIZATION_SNAPSHOT_KEY] = snapshot
+        approval.preview = preview
+        approval_id = approval.id
+
+    with account_session(probe_paths) as session:
+        with pytest.raises(MCPProbeConflict, match="current consumer"):
+            resolve_probe_intent(session, approval_id, server, "approved")
+    with account_session(probe_paths) as session:
+        approval = session.get(ApprovalRecord, approval_id)
+        assert approval is not None and approval.decision == "pending"
+
+
+def test_probe_marker_rotation_invalidates_old_intents_and_marks_new_ones(
+    probe_paths: CompanionPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with account_session(probe_paths) as session:
+        row = session.get(MCPServerRecord, "probe-fixture")
+        assert row is not None
+        server = mcp_server_json(row)
+        old = create_probe_intent(session, row)
+        decide_approval(session, old.id, "approved")
+        old_id = old.id
+        old_item = list_approval_history(session)["items"][0]
+        assert old_item["id"] == old_id
+        assert old_item["usable"] is True
+
+    monkeypatch.setattr(
+        approval_service,
+        "CONSUMER_VALIDATION_VERSIONS",
+        {
+            "application.form_fill": CONSUMER_VALIDATION_VERSIONS[
+                "application.form_fill"
+            ],
+            "mcp.probe": CONSUMER_VALIDATION_VERSIONS["mcp.probe"] + 1,
+        },
+    )
+    with account_session(probe_paths) as session:
+        old_item = list_approval_history(session)["items"][0]
+        assert old_item["id"] == old_id
+        assert old_item["usable"] is False
+        with pytest.raises(MCPProbeConflict, match="current consumer"):
+            resolve_probe_intent(session, old_id, server, "approved")
+        row = session.get(MCPServerRecord, "probe-fixture")
+        assert row is not None
+        current = create_probe_intent(session, row)
+        decide_approval(session, current.id, "approved")
+        assert current.preview[AUTHORIZATION_SNAPSHOT_KEY][
+            CONSUMER_VALIDATION_MARKER_KEY
+        ] == {"consumer": "mcp.probe", "version": 2}
+        items = {item["id"]: item for item in list_approval_history(session)["items"]}
+        assert items[old_id]["usable"] is False
+        assert items[current.id]["usable"] is True
+
+
+def test_exact_probe_id_selects_the_requested_identical_payload_approval(
+    probe_paths: CompanionPaths,
+) -> None:
+    with account_session(probe_paths) as session:
+        row = session.get(MCPServerRecord, "probe-fixture")
+        assert row is not None
+        server = mcp_server_json(row)
+        first = create_probe_intent(session, row)
+        second = create_probe_intent(session, row)
+        decide_approval(session, first.id, "approved")
+        decide_approval(session, second.id, "approved")
+        first_id = first.id
+        second_id = second.id
+
+    with account_session(probe_paths) as session:
+        assert resolve_probe_intent(session, first_id, server, "approved") is True
+
+    with account_session(probe_paths) as session:
+        first = session.get(ApprovalRecord, first_id)
+        second = session.get(ApprovalRecord, second_id)
+        assert first is not None and first.decision == "consumed"
+        assert second is not None and second.decision == "approved"
+
+
+def test_repeating_the_same_probe_denial_is_idempotent(
+    probe_paths: CompanionPaths,
+) -> None:
+    with account_session(probe_paths) as session:
+        row = session.get(MCPServerRecord, "probe-fixture")
+        assert row is not None
+        server = mcp_server_json(row)
+        approval_id = create_probe_intent(session, row).id
+
+    for _ in range(2):
+        with account_session(probe_paths) as session:
+            assert resolve_probe_intent(session, approval_id, server, "denied") is False
+
+    with account_session(probe_paths) as session:
+        approval = session.get(ApprovalRecord, approval_id)
+        assert approval is not None and approval.decision == "denied"
+        denied_audits = session.scalars(
+            select(AuditEventRecord).where(
+                AuditEventRecord.subject_id == approval_id,
+                AuditEventRecord.event_type == "approval.denied",
+            )
+        ).all()
+        assert len(denied_audits) == 1
+
+
+def test_probe_history_shows_safe_context_and_never_runtime_configuration(
+    probe_paths: CompanionPaths,
+) -> None:
+    secret = "MCP_HISTORY_SECRET_91f3"
+    with account_session(probe_paths) as session:
+        row = session.get(MCPServerRecord, "probe-fixture")
+        assert row is not None
+        row.config = {
+            **row.config,
+            "description": f"untrusted description {secret}",
+            "args": [str(MCP_FIXTURE), f"--token={secret}"],
+            "environment": {"TOKEN": secret},
+        }
+        approval = create_probe_intent(session, row)
+        decide_approval(session, approval.id, "approved")
+        item = list_approval_history(session)["items"][0]
+
+    assert item["usable"] is True
+    assert item["request_summary"] is None
+    assert item["authorization"]["title"] == "Check one saved MCP connection"
+    assert item["authorization"]["context"] == [
+        {"label": "Server", "value": "probe-fixture"},
+        {"label": "Transport", "value": "Local command (stdio)"},
+    ]
+    serialized = json.dumps(item, default=str)
+    assert secret not in serialized
+    assert str(MCP_FIXTURE) not in serialized
 
 
 def test_probe_disclosure_binds_hidden_target_components_without_leaking_them() -> None:
@@ -975,7 +1136,15 @@ def test_probe_api_requires_review_and_never_reconfigures_the_agent(probe_client
         "MCP tools/list (up to 4 paginated requests)",
     ]
     assert intent["disclosure"]["configuration_will_change"] is False
+    assert AUTHORIZATION_SNAPSHOT_KEY not in intent["disclosure"]
     assert calls == []
+
+    with account_session(paths) as session:
+        pending = session.get(ApprovalRecord, intent["approval_id"])
+        assert pending is not None
+        assert pending.preview[AUTHORIZATION_SNAPSHOT_KEY][
+            CONSUMER_VALIDATION_MARKER_KEY
+        ] == current_consumer_validation_marker("mcp.probe")
 
     result_response = client.post(
         f"/settings/mcp/api-probe/probe-intents/{intent['approval_id']}/decision",
@@ -1087,7 +1256,7 @@ def test_cancelled_probe_releases_account_and_global_capacity(
 
 
 def test_denied_probe_never_calls_the_manager(probe_client) -> None:
-    client, _paths, runtime, monkeypatch = probe_client
+    client, paths, runtime, monkeypatch = probe_client
 
     async def forbidden_probe(*_args, **_kwargs):
         pytest.fail("a denied probe must never execute")
@@ -1102,6 +1271,15 @@ def test_denied_probe_never_calls_the_manager(probe_client) -> None:
     assert result.json()["executed"] is False
     assert result.json()["checked_at"] is None
     assert runtime.invalidated == []
+    with account_session(paths) as session:
+        item = list_approval_history(session)["items"][0]
+    assert item["id"] == intent["approval_id"]
+    assert item["state"] == "denied"
+    assert item["usable"] is False
+    assert item["authorization"]["context"] == [
+        {"label": "Server", "value": "api-probe"},
+        {"label": "Transport", "value": "Local command (stdio)"},
+    ]
 
 
 def test_changed_configuration_suppresses_all_discovery_output(probe_client) -> None:

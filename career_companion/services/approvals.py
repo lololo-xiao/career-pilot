@@ -31,7 +31,10 @@ MAX_APPROVAL_SUMMARY_CHARACTERS = 280
 AUTHORIZATION_SNAPSHOT_KEY = "_careerpilot_authorization_v1"
 CONSUMER_VALIDATION_MARKER_KEY = "consumer_validation"
 CONSUMER_VALIDATION_VERSIONS: Mapping[str, int] = MappingProxyType(
-    {"application.form_fill": 1}
+    {
+        "application.form_fill": 1,
+        "mcp.probe": 1,
+    }
 )
 
 
@@ -121,6 +124,21 @@ APPROVAL_ACTIONS: Mapping[str, ApprovalActionDefinition] = MappingProxyType(
                 "Calling an MCP write tool in the current product",
                 *_COMMON_SINGLE_USE_LIMITS,
             ),
+        ),
+        "mcp.probe": ApprovalActionDefinition(
+            title="Check one saved MCP connection",
+            effect=(
+                "Launch or contact the exact saved MCP server once to initialize it "
+                "and list up to four pages of tool metadata."
+            ),
+            not_authorized=(
+                "Calling any MCP tool",
+                "Reading MCP prompts or resources",
+                "Starting OAuth or changing saved configuration",
+                "Using a different server configuration",
+                *_COMMON_SINGLE_USE_LIMITS,
+            ),
+            consumer_enabled=True,
         ),
     }
 )
@@ -257,6 +275,15 @@ def _authorization_snapshot(
         files = payload.get("files")
         snapshot["field_count"] = len(fields) if isinstance(fields, dict) else 0
         snapshot["attachment_count"] = len(files) if isinstance(files, dict) else 0
+    elif action_type == "mcp.probe":
+        server = payload.get("server")
+        if isinstance(server, dict):
+            server_name = server.get("name")
+            if isinstance(server_name, str) and 1 <= len(server_name) <= 80:
+                snapshot["server_name"] = server_name
+            transport = server.get("transport")
+            if transport in {"stdio", "http"}:
+                snapshot["mcp_transport"] = transport
     marker = current_consumer_validation_marker(action_type)
     if consumer_validated and marker is not None:
         snapshot[CONSUMER_VALIDATION_MARKER_KEY] = marker
@@ -303,7 +330,7 @@ def _require_known_action(action_type: str) -> ApprovalActionDefinition:
     return definition
 
 
-def request_approval(
+def _request_approval(
     session: Session,
     action_type: str,
     payload: dict[str, Any],
@@ -311,13 +338,13 @@ def request_approval(
     ttl_minutes: int = 30,
     *,
     paths: CompanionPaths | None = None,
+    consumer_validated: bool = False,
 ) -> ApprovalRecord:
     _require_known_action(action_type)
     if not 1 <= ttl_minutes <= MAX_APPROVAL_TTL_MINUTES:
         raise ValueError(
             f"Approval TTL must be between 1 and {MAX_APPROVAL_TTL_MINUTES} minutes"
         )
-    consumer_validated = False
     if action_type == "application.form_fill":
         if paths is None:
             raise ValueError("Form-fill approval validation requires account paths")
@@ -347,6 +374,45 @@ def request_approval(
         payload={"action_type": action_type, "payload_digest": approval.payload_digest},
     )
     return approval
+
+
+def request_approval(
+    session: Session,
+    action_type: str,
+    payload: dict[str, Any],
+    preview: dict[str, Any],
+    ttl_minutes: int = 30,
+    *,
+    paths: CompanionPaths | None = None,
+) -> ApprovalRecord:
+    """Create a public approval request without trusting consumer-validation claims."""
+
+    return _request_approval(
+        session,
+        action_type,
+        payload,
+        preview,
+        ttl_minutes,
+        paths=paths,
+    )
+
+
+def _request_validated_mcp_probe_approval(
+    session: Session,
+    payload: dict[str, Any],
+    preview: dict[str, Any],
+    ttl_minutes: int,
+) -> ApprovalRecord:
+    """Issue the marker reserved for the saved-server probe intent service."""
+
+    return _request_approval(
+        session,
+        "mcp.probe",
+        payload,
+        preview,
+        ttl_minutes,
+        consumer_validated=True,
+    )
 
 
 def decide_approval(session: Session, approval_id: str, decision: str) -> ApprovalRecord:
@@ -392,7 +458,13 @@ def decide_approval(session: Session, approval_id: str, decision: str) -> Approv
     return approval
 
 
-def consume_approval(session: Session, action_type: str, payload: dict[str, Any]) -> ApprovalRecord:
+def consume_approval(
+    session: Session,
+    action_type: str,
+    payload: dict[str, Any],
+    *,
+    approval_id: str | None = None,
+) -> ApprovalRecord:
     definition = _require_known_action(action_type)
     if not definition.consumer_enabled:
         raise PermissionError("This approval action has no enabled consumer")
@@ -402,6 +474,10 @@ def consume_approval(session: Session, action_type: str, payload: dict[str, Any]
     if marker is None:
         raise PermissionError("This approval consumer has no current validation marker")
     digest = payload_digest(payload)
+    if approval_id is not None and (
+        not isinstance(approval_id, str) or not 1 <= len(approval_id) <= 64
+    ):
+        raise PermissionError("A valid exact approval ID is required")
     now = datetime.now(UTC)
     marker_consumer = ApprovalRecord.preview[AUTHORIZATION_SNAPSHOT_KEY][
         CONSUMER_VALIDATION_MARKER_KEY
@@ -423,15 +499,18 @@ def consume_approval(session: Session, action_type: str, payload: dict[str, Any]
         == "integer",
         marker_version == marker["version"],
     )
+    candidate_conditions = [
+        ApprovalRecord.action_type == action_type,
+        ApprovalRecord.payload_digest == digest,
+        ApprovalRecord.decision == "approved",
+        ApprovalRecord.expires_at > now,
+        *current_marker,
+    ]
+    if approval_id is not None:
+        candidate_conditions.append(ApprovalRecord.id == approval_id)
     candidate_id = (
         select(ApprovalRecord.id)
-        .where(
-            ApprovalRecord.action_type == action_type,
-            ApprovalRecord.payload_digest == digest,
-            ApprovalRecord.decision == "approved",
-            ApprovalRecord.expires_at > now,
-            *current_marker,
-        )
+        .where(*candidate_conditions)
         .order_by(ApprovalRecord.created_at.desc(), ApprovalRecord.id.desc())
         .limit(1)
         .scalar_subquery()
@@ -448,15 +527,18 @@ def consume_approval(session: Session, action_type: str, payload: dict[str, Any]
         .execution_options(synchronize_session=False)
     ).scalar_one_or_none()
     if consumed_id is None:
+        expired_conditions = [
+            ApprovalRecord.action_type == action_type,
+            ApprovalRecord.payload_digest == digest,
+            ApprovalRecord.decision == "approved",
+            ApprovalRecord.expires_at <= now,
+            *current_marker,
+        ]
+        if approval_id is not None:
+            expired_conditions.append(ApprovalRecord.id == approval_id)
         expired = session.scalar(
             select(ApprovalRecord.id)
-            .where(
-                ApprovalRecord.action_type == action_type,
-                ApprovalRecord.payload_digest == digest,
-                ApprovalRecord.decision == "approved",
-                ApprovalRecord.expires_at <= now,
-                *current_marker,
-            )
+            .where(*expired_conditions)
             .limit(1)
         )
         if expired is not None:

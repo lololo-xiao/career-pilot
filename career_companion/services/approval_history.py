@@ -102,10 +102,16 @@ def _snapshot_context(row: ApprovalRecord) -> list[dict[str, str]]:
     if not isinstance(snapshot, dict) or snapshot.get("action_type") != row.action_type:
         return []
     context: list[dict[str, str]] = []
-    values = (
+    values = [
         ("Target", snapshot.get("target_hostname"), 253),
         ("Application", snapshot.get("application_id"), 64),
-    )
+        ("Server", snapshot.get("server_name"), 80),
+    ]
+    transport = snapshot.get("mcp_transport")
+    if transport == "stdio":
+        values.append(("Transport", "Local command (stdio)", 80))
+    elif transport == "http":
+        values.append(("Transport", "Remote endpoint (HTTP)", 80))
     for label, value, maximum in values:
         if isinstance(value, str) and 1 <= len(value) <= maximum:
             sanitized = sanitize_approval_summary(value)
@@ -149,7 +155,7 @@ def _history_item(row: ApprovalRecord, now: datetime) -> dict[str, Any]:
         effect = definition.effect
         not_authorized = definition.not_authorized
     summary = None
-    if isinstance(row.preview, dict):
+    if row.action_type != "mcp.probe" and isinstance(row.preview, dict):
         summary = sanitize_approval_summary(row.preview.get("summary"))
     return {
         "id": row.id,

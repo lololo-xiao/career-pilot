@@ -327,6 +327,80 @@ def test_request_rules_are_bounded_and_snapshot_is_server_owned(tmp_path) -> Non
             )
 
 
+def test_generic_api_cannot_mint_or_spoof_a_usable_mcp_probe_approval(
+    approval_client,
+) -> None:
+    secret = "MCP_GENERIC_SPOOF_SECRET_7a2f"
+    payload = {
+        "operation": "mcp.probe",
+        "version": 1,
+        "server": {
+            "name": "spoofed-server",
+            "transport": "stdio",
+            "description": f"untrusted {secret}",
+            "command": f"/private/{secret}/server",
+            "args": [f"--token={secret}"],
+            "url": f"https://example.test/private/{secret}?token={secret}",
+            "environment": {"TOKEN": secret},
+        },
+    }
+    response = approval_client.post(
+        "/api/v1/approvals",
+        json={
+            "action_type": "mcp.probe",
+            "payload": payload,
+            "preview": {
+                "summary": f"attacker-controlled {secret}",
+                AUTHORIZATION_SNAPSHOT_KEY: {
+                    "action_type": "mcp.probe",
+                    CONSUMER_VALIDATION_MARKER_KEY: {
+                        "consumer": "mcp.probe",
+                        "version": CONSUMER_VALIDATION_VERSIONS["mcp.probe"],
+                    },
+                },
+            },
+            "consumer_validated": True,
+        },
+    )
+
+    assert response.status_code == 200
+    created = response.json()
+    snapshot = created["preview"][AUTHORIZATION_SNAPSHOT_KEY]
+    assert snapshot == {
+        "action_type": "mcp.probe",
+        "server_name": "spoofed-server",
+        "mcp_transport": "stdio",
+    }
+    approval_id = created["id"]
+    decided = approval_client.post(
+        f"/api/v1/approvals/{approval_id}/decision",
+        json={"decision": "approved"},
+    )
+    assert decided.status_code == 200
+
+    paths = CompanionPaths.discover().scoped_to("account-a")
+    with account_session(paths) as session:
+        with pytest.raises(PermissionError, match="matching approval"):
+            consume_approval(
+                session,
+                "mcp.probe",
+                payload,
+                approval_id=approval_id,
+            )
+        history = list_approval_history(session)
+
+    item = history["items"][0]
+    assert item["id"] == approval_id
+    assert item["state"] == "approved"
+    assert item["usable"] is False
+    assert item["request_summary"] is None
+    assert item["authorization"]["context"] == [
+        {"label": "Server", "value": "spoofed-server"},
+        {"label": "Transport", "value": "Local command (stdio)"},
+    ]
+    assert secret not in json.dumps(history, default=str)
+
+
 def test_form_fill_approval_hashes_the_shared_normalized_defaulted_payload(
     approval_client,
 ) -> None:
@@ -967,7 +1041,9 @@ def test_action_registry_covers_every_declared_external_action() -> None:
         "calendar.create",
         "notification.send",
         "mcp.write",
+        "mcp.probe",
     }
     assert [name for name, item in APPROVAL_ACTIONS.items() if item.consumer_enabled] == [
-        "application.form_fill"
+        "application.form_fill",
+        "mcp.probe",
     ]
