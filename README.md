@@ -59,7 +59,7 @@ tailoring, interview practice, and preview-only form assistance.
 | Job queue | ✅ Ready | Manual/CSV import, URL deduplication, deterministic ranking, filters, and visible score reasons |
 | Application pipeline | ✅ Ready | Detailed stages, next actions, status history, follow-ups, artifact versions, and explicit manual-submission confirmation |
 | Tailoring | 🟡 Partial | Draft/PDF/version-approval foundations exist; cited evidence snapshots, unsupported-gap handling, and retry/concurrency safety are being hardened before this is meetup-ready |
-| Agent resources | ✅ Ready | Visible built-in skills, editable user memories and skills, guarded create/edit/remove flows |
+| Agent resources | ✅ Ready | Visible read-only built-ins, editable user resources, four curated preview-before-install skill starters, strict single-file skill import, and explicit user-skill export |
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
 | Revision safety | 🟡 Partial | Skill/rubric proposals support evaluation, quarantine, activation, and rollback. Explicit supported memory corrections become inactive review drafts; existing active evaluated memory is used at runtime |
 | Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, track, approve, or archive an explicit scored selection; dedicated guided discovery and tailoring orchestration remain unfinished |
@@ -71,6 +71,16 @@ tailoring, interview practice, and preview-only form assistance.
 
 **Legend:** ✅ usable in the current local build · 🟡 real foundation with incomplete
 orchestration/UX · ⬜ not implemented yet
+
+Selecting a starter or importing one regular UTF-8 `SKILL.md` file (64 KiB maximum)
+creates a browser preview only. A separate **Install skill** action uses the existing guarded
+resource API; name conflicts stay in preview for renaming and never overwrite built-in or
+user-owned skills. Strict imports accept canonical names up to 64 characters and
+descriptions up to 1,024 characters without angle brackets. Export is available only for a
+selected user-owned skill and downloads
+only its exact saved `SKILL.md` content under a deterministic Markdown filename. CareerPilot
+adds no credentials, workspace paths, or hidden response metadata to that file. Exact export
+does not redact anything the user intentionally saved inside the skill content.
 
 ## What to show in a meetup
 
@@ -229,7 +239,7 @@ npm run build
 ```
 
 The current reproducible safe backend audit passes **677 backend tests** with **6
-platform-specific skips**, plus **25 frontend unit tests**. Two offline package-contract
+platform-specific skips**, plus **38 frontend unit tests**. Two offline package-contract
 checks were not run because the available sandbox could not access their required
 package/cache runtime; they are not included in the passing count. The offline
 evaluator validates **25 strong, partial, and mismatch cases**; frontend lint, the
@@ -321,8 +331,9 @@ into a genuinely proactive job-search agent.
 
 - [ ] Add connection health checks and tool discovery for MCP servers.
 - [ ] Add guided OAuth for selected Gmail/Calendar/Drive connectors.
-- [ ] Add curated, installable job-search skill templates.
-- [ ] Support safe import/export of user-owned skills, rubrics, and memories.
+- [x] Add four curated, preview-before-install job-search skill templates.
+- [x] Add bounded single-file import and exact-content export for user-owned skills.
+- [ ] Extend safe import/export to user-owned rubrics and memories.
 - [ ] Add per-tool budgets, rate limits, and richer audit views.
 - [ ] Publish the extension contract without exposing protected core policy.
 
@@ -349,6 +360,7 @@ before it reaches `main`:
 | `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
 | `tailoring-drafts` | 🟡 Corrections required | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Fix status bypass, partial/round-trip migrations, and stored-source confirmation; then re-review |
 | `form-fill-workspace` | ✅ Integrated | Persistent evidence-bound local preview; no browser or external mutation | Add a secure Windows storage backend, then design a separately confirmed external fill phase |
+| `skill-starter-library` | 🟡 Ready for review | Four concise job-search starters, preview-only strict import, guarded explicit install, and exact user-skill export; no backend or runtime-policy changes | Review the scoped feature commit and integrate it without the lane-local package cache |
 
 Each lane starts with an explicit interface contract. Database migrations stay owned by
 one lane at a time, and integration uses small reviewed commits instead of a shared mutable

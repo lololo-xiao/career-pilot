@@ -1816,6 +1816,14 @@ footer p {
   color: var(--green);
 }
 
+.agent-resource-tabs button:disabled,
+.agent-resource-list > button:disabled,
+.skill-library-options button:disabled,
+.skill-library input[type="file"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .agent-resource-tabs span {
   background: #eef0ec;
   border-radius: 999px;
@@ -1827,9 +1835,16 @@ footer p {
 .agent-resource-layout,
 .mcp-settings-layout {
   display: grid;
-  grid-template-columns: minmax(145px, 0.48fr) minmax(0, 1.52fr);
   margin: 1rem -1.4rem -1.4rem;
   min-height: 470px;
+}
+
+.agent-resource-layout {
+  grid-template-columns: minmax(210px, 0.68fr) minmax(0, 1.32fr);
+}
+
+.mcp-settings-layout {
+  grid-template-columns: minmax(145px, 0.48fr) minmax(0, 1.52fr);
 }
 
 .agent-resource-list,
@@ -1912,6 +1927,112 @@ footer p {
   padding: 0.5rem;
 }
 
+.skill-library {
+  border-bottom: 1px solid var(--line);
+  margin: -0.1rem -0.1rem 0.45rem;
+  padding: 0.25rem 0.1rem 0.85rem;
+}
+
+.skill-library-heading > span {
+  color: var(--green);
+  font-size: 0.5rem;
+  font-weight: 850;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.skill-library-heading h3 {
+  font-size: 0.76rem;
+  margin: 0.18rem 0 0;
+}
+
+.skill-library-heading p {
+  color: #71807b;
+  font-size: 0.55rem;
+  line-height: 1.45;
+  margin: 0.25rem 0 0.6rem;
+}
+
+.skill-library-options {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.skill-library-options button {
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.55rem 0.6rem;
+  text-align: left;
+}
+
+.skill-library-options button:hover,
+.skill-library-options button.is-selected {
+  background: white;
+  border-color: rgba(23, 107, 85, 0.42);
+}
+
+.skill-library-options button:focus-visible,
+.skill-import-control:focus-within {
+  box-shadow: 0 0 0 3px rgba(23, 107, 85, 0.1);
+  outline: 2px solid var(--green);
+  outline-offset: 1px;
+}
+
+.skill-library-options strong {
+  font-size: 0.61rem;
+  line-height: 1.35;
+}
+
+.skill-library-options small {
+  color: #7b8782;
+  font-size: 0.48rem;
+  margin-top: 0.16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-import-control {
+  color: var(--ink-soft);
+  display: block;
+  font-size: 0.55rem;
+  font-weight: 800;
+  margin-top: 0.7rem;
+}
+
+.skill-library input[type="file"] {
+  color: var(--ink-soft);
+  font-size: 0.5rem;
+  margin-top: 0.3rem;
+  max-width: 100%;
+}
+
+.skill-library input[type="file"]::file-selector-button {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--green);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  margin-right: 0.35rem;
+  padding: 0.38rem 0.45rem;
+}
+
+.skill-import-limit {
+  color: #7b8782;
+  display: block;
+  font-size: 0.47rem;
+  line-height: 1.4;
+  margin-top: 0.35rem;
+}
+
 .agent-resource-editor,
 .mcp-settings-editor {
   min-width: 0;
@@ -1952,6 +2073,44 @@ footer p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-resource-editor-heading > .agent-resource-heading-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: row;
+  gap: 0.55rem;
+}
+
+.skill-preview-metadata {
+  background: #f7f7f3;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 0.48rem;
+  margin: 0 0 0.8rem;
+  padding: 0.65rem 0.7rem;
+}
+
+.skill-preview-metadata > div {
+  display: grid;
+  gap: 0.25rem;
+  grid-template-columns: minmax(95px, 0.32fr) minmax(0, 1fr);
+}
+
+.skill-preview-metadata dt {
+  color: var(--ink-soft);
+  font-size: 0.52rem;
+  font-weight: 850;
+}
+
+.skill-preview-metadata dd {
+  color: var(--ink);
+  font-size: 0.58rem;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .agent-resource-editor > label,
@@ -2023,6 +2182,27 @@ footer p {
   line-height: 1.45;
   margin: 0;
   max-width: 310px;
+}
+
+.skill-preview-validation {
+  background: rgba(178, 74, 52, 0.08);
+  border: 1px solid rgba(178, 74, 52, 0.2);
+  border-radius: 8px;
+  color: #8b3d2d;
+  font-size: 0.56rem;
+  line-height: 1.45;
+  margin: 0.65rem 0 0;
+  padding: 0.55rem 0.65rem;
+}
+
+.skill-export-boundary {
+  background: rgba(23, 107, 85, 0.06);
+  border-left: 3px solid rgba(23, 107, 85, 0.35);
+  color: #62736d;
+  font-size: 0.54rem;
+  line-height: 1.5;
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
 }
 
 .agent-resource-actions .auth-action,
@@ -2403,6 +2583,16 @@ footer p {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .skill-library {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 0.1rem 0.1rem 0.85rem;
+  }
+
+  .skill-library-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .agent-resource-list .agent-resource-new,
   .mcp-settings-list .agent-resource-new {
     grid-column: 1 / -1;
@@ -2421,6 +2611,10 @@ footer p {
   .mcp-settings-heading {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .skill-preview-metadata > div {
+    grid-template-columns: 1fr;
   }
 
   .agent-resource-actions .auth-action,
