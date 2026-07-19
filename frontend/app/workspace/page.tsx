@@ -20,12 +20,13 @@ import type {
   MatchResponse,
 } from "../types";
 import { ApplicationSummary } from "./application-summary";
+import { ApprovalHistoryPanel } from "./approval-history-panel";
+import { parseApprovalHistoryPage } from "./approval-history";
 import { API_BASE_URL, apiRequest, openArtifact } from "./api";
 import { FormPreviewPanel } from "./form-preview-panel";
 import { reconcileFormPreviews } from "./form-preview";
 import type {
   Application,
-  Approval,
   CandidateProfile,
   CompanionSettings,
   FormPreview,
@@ -273,7 +274,8 @@ export default function WorkspacePage() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [routes, setRoutes] = useState<ModelRoute[]>([]);
   const [revisions, setRevisions] = useState<Revision[]>([]);
-  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+  const [approvalHistoryAsOf, setApprovalHistoryAsOf] = useState("");
   const [formPreviews, setFormPreviews] = useState<Record<string, FormPreview>>({});
   const [settings, setSettings] = useState<CompanionSettings | null>(null);
   const [activeGroundedFit, setActiveGroundedFit] = useState<MatchResponse | null>(null);
@@ -286,24 +288,26 @@ export default function WorkspacePage() {
       ).then((sessionList) => apiRequest<ConversationSession>(
         `/companion/sessions/${encodeURIComponent(sessionList.active_session_id)}`,
       ));
-      const [jobRows, applicationRows, profileRow, routeRows, revisionRows, approvalRows, previewRows, settingsRow, activeConversation] =
+      const [jobRows, applicationRows, profileRow, routeRows, revisionRows, approvalHistoryRow, previewRows, settingsRow, activeConversation] =
         await Promise.all([
           apiRequest<Job[]>("/api/v1/jobs"),
           apiRequest<Application[]>("/api/v1/applications"),
           apiRequest<CandidateProfile | null>("/api/v1/onboarding/profile"),
           apiRequest<ModelRoute[]>("/api/v1/model-routes"),
           apiRequest<Revision[]>("/api/v1/revisions"),
-          apiRequest<Approval[]>("/api/v1/approvals"),
+          apiRequest<unknown>("/api/v1/approvals/history?limit=1"),
           apiRequest<Record<string, FormPreview>>("/api/v1/applications/form-previews"),
           apiRequest<CompanionSettings>("/api/v1/settings"),
           activeConversationRequest,
         ]);
+      const approvalHistory = parseApprovalHistoryPage(approvalHistoryRow);
       setJobs(jobRows);
       setApplications(applicationRows);
       setProfile(normalizeProfile(profileRow ?? EMPTY_PROFILE));
       setRoutes(routeRows);
       setRevisions(revisionRows);
-      setApprovals(approvalRows);
+      setPendingApprovalCount(approvalHistory.pendingCount);
+      setApprovalHistoryAsOf(approvalHistory.asOf);
       setFormPreviews((current) => reconcileFormPreviews(current, previewRows, true));
       setSettings(settingsRow);
       setActiveGroundedFit(activeConversation.match_report);
@@ -423,8 +427,8 @@ export default function WorkspacePage() {
             <Overview
               activeGroundedFit={activeGroundedFit}
               applications={applications}
-              approvals={approvals}
               jobs={jobs}
+              pendingApprovalCount={pendingApprovalCount}
               profile={profile}
               settings={settings}
               setTab={setActiveTab}
@@ -460,7 +464,8 @@ export default function WorkspacePage() {
           {activeTab === "controls" ? (
             <ControlsPanel
               key={routes.map((route) => `${route.name}:${route.provider}:${route.model}:${route.reasoning_effort}:${route.cost_budget_usd}`).join("|")}
-              approvals={approvals}
+              accountId={user.id}
+              approvalRefreshKey={approvalHistoryAsOf}
               refresh={refresh}
               revisions={revisions}
               routes={routes}
@@ -477,8 +482,8 @@ export default function WorkspacePage() {
 function Overview({
   activeGroundedFit,
   applications,
-  approvals,
   jobs,
+  pendingApprovalCount,
   profile,
   settings,
   setTab,
@@ -486,8 +491,8 @@ function Overview({
 }: {
   activeGroundedFit: MatchResponse | null;
   applications: Application[];
-  approvals: Approval[];
   jobs: Job[];
+  pendingApprovalCount: number;
   profile: CandidateProfile;
   settings: CompanionSettings | null;
   setTab: (tab: WorkspaceTab) => void;
@@ -496,7 +501,6 @@ function Overview({
   const activeApplications = applications.filter(
     (item) => !["offer", "rejected", "withdrawn"].includes(item.status),
   );
-  const pendingApprovals = approvals.filter((item) => item.decision === "pending");
   const verifiedClaims = [...profile.claims, ...profile.work_authorization].filter(
     (claim) => claim.status === "verified",
   ).length;
@@ -627,9 +631,9 @@ function Overview({
           </article>
         </div>
       </div>
-      {pendingApprovals.length ? (
+      {pendingApprovalCount ? (
         <div className="workspace-notice">
-          <strong>{pendingApprovals.length} action{pendingApprovals.length === 1 ? "" : "s"} waiting for approval</strong>
+          <strong>{pendingApprovalCount} action{pendingApprovalCount === 1 ? "" : "s"} waiting for approval</strong>
           <span>Nothing external proceeds just because a model suggested it.</span>
           <button onClick={() => setTab("controls")} type="button">Review</button>
         </div>
@@ -1529,14 +1533,16 @@ function ApplicationsPanel({
 }
 
 function ControlsPanel({
-  approvals,
+  accountId,
+  approvalRefreshKey,
   refresh,
   revisions,
   routes,
   setError,
   settings,
 }: {
-  approvals: Approval[];
+  accountId: string;
+  approvalRefreshKey: string;
   refresh: (quiet?: boolean) => Promise<void>;
   revisions: Revision[];
   routes: ModelRoute[];
@@ -1594,7 +1600,7 @@ function ControlsPanel({
         </div>
       </div>
       <div className="workspace-grid-two workspace-control-grid">
-        <div className="workspace-card"><div className="workspace-card-heading"><div><h2>Approval history</h2><p>Approvals are payload-bound, expiring, and single-use.</p></div></div><div className="workspace-history">{approvals.slice().reverse().map((approval) => <div key={approval.id}><div><strong>{approval.action_type.replaceAll(".", " ")}</strong><span>{approval.decision}</span></div><small>Expires {new Date(approval.expires_at).toLocaleString()}</small></div>)}{!approvals.length ? <p>No external actions have requested approval.</p> : null}</div></div>
+        <ApprovalHistoryPanel accountId={accountId} refreshKey={approvalRefreshKey} />
         <div className="workspace-card"><div className="workspace-card-heading"><div><h2>Evolution history</h2><p>Only memory, user-owned skills, and rubrics can evolve.</p></div></div><div className="workspace-history">{revisions.slice().reverse().map((revision) => <div key={revision.id}><div><strong>{revision.kind}: {revision.name} v{revision.version}</strong><span>{revision.status}</span></div><small>{revision.diff || "No diff summary"} · {revision.author}</small>{revision.status === "active" ? <button disabled={busyId === revision.id} onClick={() => void revisionAction(revision.id, "rollback")} type="button">Roll back</button> : null}</div>)}{!revisions.length ? <p>No learned changes yet. Evaluated improvements will appear here.</p> : null}</div></div>
       </div>
     </section>

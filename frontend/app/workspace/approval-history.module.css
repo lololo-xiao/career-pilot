@@ -1,0 +1,272 @@
+.panel {
+  min-width: 0;
+}
+
+.heading {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.heading h2,
+.heading p {
+  margin-bottom: 0.25rem;
+  margin-top: 0;
+}
+
+.explainer {
+  background: #eef3ef;
+  border-radius: 12px;
+  color: #334b41;
+  font-size: 0.75rem;
+  margin: 0.9rem 0 0;
+  padding: 0.8rem;
+}
+
+.status {
+  color: #718078;
+  font-size: 0.65rem;
+  min-height: 1.5rem;
+  padding: 0.55rem 0 0.2rem;
+}
+
+.error {
+  align-items: center;
+  background: #f8e9e5;
+  border: 1px solid #eccbc2;
+  border-radius: 12px;
+  color: #783f35;
+  display: flex;
+  font-size: 0.72rem;
+  gap: 0.75rem;
+  justify-content: space-between;
+  margin: 0.4rem 0;
+  padding: 0.75rem;
+}
+
+.list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.record {
+  border: 1px solid #dde4df;
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.record header {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+}
+
+.record header > div {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.record header h3 {
+  font-size: 0.92rem;
+  margin: 0;
+}
+
+.record header > strong {
+  color: #50665c;
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
+.badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.58rem;
+  font-weight: 850;
+  justify-self: start;
+  letter-spacing: 0.04em;
+  padding: 0.25rem 0.48rem;
+  text-transform: uppercase;
+}
+
+.pending { background: #f4e8c9; color: #765918; }
+.approved { background: #dceee3; color: #286044; }
+.recorded { background: #e2e7ee; color: #43576f; }
+.consumed { background: #e2e7ee; color: #43576f; }
+.denied,
+.expired { background: #eee7e4; color: #77564e; }
+
+.stateCopy {
+  font-size: 0.7rem;
+  margin: 0.55rem 0 0;
+}
+
+.bindingSummary {
+  color: #536960;
+  font-size: 0.64rem;
+  margin: 0.35rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.bindingSummary code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.authorization {
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.8rem;
+}
+
+.authorization > div {
+  background: #f8faf8;
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.authorization h4,
+.summary strong {
+  color: #4b6258;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.authorization p,
+.authorization li,
+.summary p,
+.summary small {
+  color: #52665d;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.authorization p {
+  margin: 0.35rem 0 0;
+}
+
+.authorization ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1rem;
+}
+
+.context {
+  display: grid;
+  gap: 0.45rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0.8rem 0 0;
+}
+
+.context > div {
+  border-left: 2px solid #cddbd3;
+  min-width: 0;
+  padding-left: 0.55rem;
+}
+
+.context dt {
+  color: #718078;
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.context dd {
+  color: #344a40;
+  font-size: 0.68rem;
+  margin: 0.15rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.summary {
+  border-top: 1px solid #e3e7e4;
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+}
+
+.summary p {
+  margin: 0.3rem 0 0.2rem;
+}
+
+.summary small {
+  display: block;
+}
+
+.technical {
+  border-top: 1px solid #e3e7e4;
+  margin-top: 0.8rem;
+  padding-top: 0.7rem;
+}
+
+.technical summary {
+  color: #466052;
+  cursor: pointer;
+  font-size: 0.66rem;
+  font-weight: 750;
+}
+
+.technical dl {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.7rem 0 0;
+}
+
+.technical dl > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.technical dt {
+  color: #718078;
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+
+.technical dd {
+  color: #40564c;
+  font-size: 0.64rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.technical code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: normal;
+}
+
+.loadMore {
+  margin-top: 0.85rem;
+  width: 100%;
+}
+
+.runtimeNote,
+.empty {
+  color: #718078;
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+
+.runtimeNote {
+  border-top: 1px solid #e3e7e4;
+  margin: 1rem 0 0;
+  padding-top: 0.8rem;
+}
+
+.empty {
+  display: grid;
+  gap: 0.25rem;
+  padding: 1rem 0;
+}
+
+@media (max-width: 720px) {
+  .authorization,
+  .context {
+    grid-template-columns: 1fr;
+  }
+
+  .record header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
