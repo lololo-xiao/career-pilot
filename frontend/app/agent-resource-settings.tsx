@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import {
   agentAssetNameMaxLength,
@@ -16,6 +16,15 @@ import {
   renameSkillPreview,
   type SkillPreviewDraft,
 } from "./skill-library";
+import {
+  createSettingsDraftHydration,
+  createSettingsReadController,
+  initialRecoverableReadState,
+  isAgentAssetSettingsResponse,
+  nextReadGeneration,
+  recoverableReadReducer,
+  startRecoverableSettingsRead,
+} from "./settings-recovery";
 import type {
   AgentAsset,
   AgentAssetKind,
@@ -48,6 +57,16 @@ function memoryTemplate(name: string): string {
 
 export function AgentResourceSettings({ apiBaseUrl }: AgentResourceSettingsProps) {
   const [settings, setSettings] = useState<AgentAssetSettingsResponse | null>(null);
+  const [loadRetry, setLoadRetry] = useState(0);
+  const [loadController] = useState(
+    () => createSettingsReadController("resources"),
+  );
+  const [draftHydration] = useState(createSettingsDraftHydration);
+  const [loadState, dispatchLoad] = useReducer(
+    recoverableReadReducer<AgentAssetSettingsResponse>,
+    undefined,
+    () => initialRecoverableReadState<AgentAssetSettingsResponse>(),
+  );
   const [kind, setKind] = useState<AgentAssetKind>("memory");
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -111,43 +130,46 @@ export function AgentResourceSettings({ apiBaseUrl }: AgentResourceSettingsProps
   }
 
   useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const response = await fetch(`${apiBaseUrl}/settings/agent-resources`, {
-          credentials: "include",
-        });
-        if (!response.ok) {
-          throw new Error(await readError(response, "Agent files could not load."));
-        }
-        const payload = (await response.json()) as AgentAssetSettingsResponse;
-        if (!active) return;
+    const abortController = new AbortController();
+    const read = startRecoverableSettingsRead({
+      apiBaseUrl,
+      controller: loadController,
+      fallback: "Agent files could not load.",
+      onFailure(error, generation) {
+        dispatchLoad({ type: "failure", generation, error });
+      },
+      onStart(generation) {
+        dispatchLoad({ type: "start", generation });
+      },
+      onSuccess(payload, generation) {
         setSettings(payload);
-        const first = payload.memories[0] ?? null;
-        if (first) {
-          setCreating(false);
-          setSelectedName(first.name);
-          setDraftName(first.name);
-          setDraftContent(first.content);
-        } else {
-          const name = "new-memory";
-          setKind("memory");
-          setCreating(true);
-          setSelectedName(null);
-          setDraftName(name);
-          setDraftContent(memoryTemplate(name));
-        }
-      } catch (caughtError) {
-        if (active) {
-          setError(caughtError instanceof Error ? caughtError.message : "Agent files could not load.");
-        }
-      }
-    }
-    void load();
+        draftHydration.hydrate(() => {
+          const first = payload.memories[0] ?? null;
+          if (first) {
+            setCreating(false);
+            setSelectedName(first.name);
+            setDraftName(first.name);
+            setDraftContent(first.content);
+          } else {
+            const name = "new-memory";
+            setKind("memory");
+            setCreating(true);
+            setSelectedName(null);
+            setDraftName(name);
+            setDraftContent(memoryTemplate(name));
+          }
+        });
+        dispatchLoad({ type: "success", generation, data: payload });
+      },
+      signal: abortController.signal,
+      validate: isAgentAssetSettingsResponse,
+    });
+    void read.completion;
     return () => {
-      active = false;
+      abortController.abort();
+      loadController.invalidate(read.ticket);
     };
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, draftHydration, loadController, loadRetry]);
 
   function switchKind(nextKind: AgentAssetKind) {
     setKind(nextKind);
@@ -297,10 +319,14 @@ export function AgentResourceSettings({ apiBaseUrl }: AgentResourceSettingsProps
   const validName = isValidAgentAssetDraftName(kind, draftName, creating);
 
   return (
-    <section className="auth-panel agent-resource-panel" aria-labelledby="agent-resource-title">
+    <section
+      className="auth-panel agent-resource-panel"
+      id="settings-step-resources"
+      aria-labelledby="agent-resource-title"
+    >
       <div className="auth-panel-heading">
         <span className="eyebrow">Agent workspace</span>
-        <h2 id="agent-resource-title">Memories and skills, in plain sight</h2>
+        <h2 id="agent-resource-title" tabIndex={-1}>Memories and skills, in plain sight</h2>
         <p>
           Review exactly what Pilot carries forward. Your files are editable; product-owned
           skills stay visible and read-only.
@@ -308,10 +334,10 @@ export function AgentResourceSettings({ apiBaseUrl }: AgentResourceSettingsProps
       </div>
 
       <div className="agent-resource-tabs" role="tablist" aria-label="Agent file type">
-        <button aria-selected={kind === "memory"} className={kind === "memory" ? "is-active" : ""} disabled={saving} onClick={() => switchKind("memory")} role="tab" type="button">
+        <button aria-selected={kind === "memory"} className={kind === "memory" ? "is-active" : ""} disabled={saving || !settings} onClick={() => switchKind("memory")} role="tab" type="button">
           Memories <span>{settings?.memories.length ?? 0}</span>
         </button>
-        <button aria-selected={kind === "skill"} className={kind === "skill" ? "is-active" : ""} disabled={saving} onClick={() => switchKind("skill")} role="tab" type="button">
+        <button aria-selected={kind === "skill"} className={kind === "skill" ? "is-active" : ""} disabled={saving || !settings} onClick={() => switchKind("skill")} role="tab" type="button">
           Skills <span>{settings?.skills.length ?? 0}</span>
         </button>
       </div>
@@ -437,9 +463,27 @@ export function AgentResourceSettings({ apiBaseUrl }: AgentResourceSettingsProps
             )}
           </div>
         </div>
-      ) : !error ? <p className="settings-loading">Loading agent files…</p> : null}
+      ) : loadState.status === "loading" ? (
+        <p className="settings-loading" role="status">Loading agent files…</p>
+      ) : null}
 
       {notice ? <div className="capability-notice" role="status">{notice}</div> : null}
+      {loadState.error ? (
+        <div className="settings-recovery-error" role="alert">
+          <div>
+            <strong>Agent workspace unavailable</strong>
+            <span>{loadState.error} Your selected file, edits, and skill preview are preserved.</span>
+          </div>
+          <button
+            className="secondary-action"
+            disabled={loadState.status === "loading"}
+            onClick={() => setLoadRetry(nextReadGeneration)}
+            type="button"
+          >
+            {loadState.status === "loading" ? "Retrying…" : "Retry memories & skills"}
+          </button>
+        </div>
+      ) : null}
       {error ? <div className="auth-error" role="alert"><strong>Agent workspace</strong><span>{error}</span></div> : null}
     </section>
   );

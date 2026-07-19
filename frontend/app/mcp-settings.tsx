@@ -1,7 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 
+import {
+  createSettingsDraftHydration,
+  createSettingsReadController,
+  initialRecoverableReadState,
+  isMCPSettingsResponse,
+  nextReadGeneration,
+  recoverableReadReducer,
+  startRecoverableSettingsRead,
+} from "./settings-recovery";
 import type { MCPServerSettings, MCPSettingsResponse } from "./types";
 
 
@@ -67,6 +76,16 @@ function parseEnvironment(value: string): Record<string, string> {
 
 export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
   const [settings, setSettings] = useState<MCPSettingsResponse | null>(null);
+  const [loadRetry, setLoadRetry] = useState(0);
+  const [loadController] = useState(
+    () => createSettingsReadController("mcp"),
+  );
+  const [draftHydration] = useState(createSettingsDraftHydration);
+  const [loadState, dispatchLoad] = useReducer(
+    recoverableReadReducer<MCPSettingsResponse>,
+    undefined,
+    () => initialRecoverableReadState<MCPSettingsResponse>(),
+  );
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<MCPServerSettings>(emptyServer());
@@ -104,26 +123,41 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
   }
 
   useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const response = await fetch(`${apiBaseUrl}/settings/mcp`, { credentials: "include" });
-        if (!response.ok) throw new Error(await readError(response, "MCP settings could not load."));
-        const payload = (await response.json()) as MCPSettingsResponse;
-        if (!active) return;
+    const abortController = new AbortController();
+    const read = startRecoverableSettingsRead({
+      apiBaseUrl,
+      controller: loadController,
+      fallback: "MCP settings could not load.",
+      onFailure(error, generation) {
+        dispatchLoad({ type: "failure", generation, error });
+      },
+      onStart(generation) {
+        dispatchLoad({ type: "start", generation });
+      },
+      onSuccess(payload, generation) {
         setSettings(payload);
-        const first = payload.servers.find((server) => server.name === "linkedin-search") ?? payload.servers[0];
-        if (first) loadDraft(first);
-        else loadDraft(emptyServer(), true);
-      } catch (caughtError) {
-        if (active) setError(caughtError instanceof Error ? caughtError.message : "MCP settings could not load.");
-      }
-    }
-    void load();
+        draftHydration.hydrate(() => {
+          const first = payload.servers.find((server) => server.name === "linkedin-search") ?? payload.servers[0];
+          const initial = first ?? emptyServer();
+          setCreating(!first);
+          setSelectedName(first?.name ?? null);
+          setDraft({ ...initial, environment: { ...initial.environment } });
+          setArgs(listText(initial.args));
+          setTools(listText(initial.tool_allowlist));
+          setForwardedEnvironment(listText(initial.forwarded_environment));
+          setEnvironment(environmentText(initial.environment));
+        });
+        dispatchLoad({ type: "success", generation, data: payload });
+      },
+      signal: abortController.signal,
+      validate: isMCPSettingsResponse,
+    });
+    void read.completion;
     return () => {
-      active = false;
+      abortController.abort();
+      loadController.invalidate(read.ticket);
     };
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, draftHydration, loadController, loadRetry]);
 
   async function save() {
     setSaving(true);
@@ -192,11 +226,15 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
   const canSave = validName && Boolean(draft.display_name.trim()) && (!draft.enabled || Boolean(parseList(tools).length));
 
   return (
-    <section className="auth-panel mcp-settings-panel" aria-labelledby="mcp-settings-title">
+    <section
+      className="auth-panel mcp-settings-panel"
+      id="settings-step-mcp"
+      aria-labelledby="mcp-settings-title"
+    >
       <div className="auth-panel-heading mcp-settings-heading">
         <div>
           <span className="eyebrow">MCP connections</span>
-          <h2 id="mcp-settings-title">Choose the outside tools Pilot can see</h2>
+          <h2 id="mcp-settings-title" tabIndex={-1}>Choose the outside tools Pilot can see</h2>
           <p>Every server is local configuration with an explicit tool allowlist. Stdio servers run commands on this device.</p>
         </div>
         <span className={enabledCount ? "mcp-count is-ready" : "mcp-count"}>{enabledCount} enabled</span>
@@ -267,9 +305,27 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
             </div>
           </div>
         </div>
-      ) : !error ? <p className="settings-loading">Loading MCP settings…</p> : null}
+      ) : loadState.status === "loading" ? (
+        <p className="settings-loading" role="status">Loading MCP settings…</p>
+      ) : null}
 
       {notice ? <div className="capability-notice" role="status">{notice}</div> : null}
+      {loadState.error ? (
+        <div className="settings-recovery-error" role="alert">
+          <div>
+            <strong>MCP settings unavailable</strong>
+            <span>{loadState.error} Your selected server and unsaved configuration are preserved.</span>
+          </div>
+          <button
+            className="secondary-action"
+            disabled={loadState.status === "loading"}
+            onClick={() => setLoadRetry(nextReadGeneration)}
+            type="button"
+          >
+            {loadState.status === "loading" ? "Retrying…" : "Retry MCP"}
+          </button>
+        </div>
+      ) : null}
       {error ? <div className="auth-error" role="alert"><strong>MCP settings</strong><span>{error}</span></div> : null}
     </section>
   );

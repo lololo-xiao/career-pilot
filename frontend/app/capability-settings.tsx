@@ -1,7 +1,15 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useReducer, useState } from "react";
 
+import {
+  createSettingsReadController,
+  initialRecoverableReadState,
+  isCapabilitySettingsResponse,
+  nextReadGeneration,
+  recoverableReadReducer,
+  startRecoverableSettingsRead,
+} from "./settings-recovery";
 import type {
   CapabilityGroup,
   CapabilitySettingsResponse,
@@ -69,38 +77,45 @@ function CapabilityCard({ group }: { group: CapabilityGroup }) {
 
 export function CapabilitySettings({ apiBaseUrl, refreshKey = 0 }: CapabilitySettingsProps) {
   const [settings, setSettings] = useState<CapabilitySettingsResponse | null>(null);
+  const [loadRetry, setLoadRetry] = useState(0);
+  const [loadController] = useState(
+    () => createSettingsReadController("capabilities"),
+  );
+  const [loadState, dispatchLoad] = useReducer(
+    recoverableReadReducer<CapabilitySettingsResponse>,
+    undefined,
+    () => initialRecoverableReadState<CapabilitySettingsResponse>(),
+  );
   const [searchKey, setSearchKey] = useState("");
   const [savingSearch, setSavingSearch] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    let active = true;
-    async function loadSettings() {
-      try {
-        const response = await fetch(`${apiBaseUrl}/settings/capabilities`, {
-          credentials: "include",
-        });
-        if (!response.ok) {
-          throw new Error(await readError(response, "Capabilities could not load."));
-        }
-        const payload = (await response.json()) as CapabilitySettingsResponse;
-        if (active) setSettings(payload);
-      } catch (caughtError) {
-        if (active) {
-          setError(
-            caughtError instanceof Error
-              ? caughtError.message
-              : "Capabilities could not load.",
-          );
-        }
-      }
-    }
-    void loadSettings();
+    const abortController = new AbortController();
+    const read = startRecoverableSettingsRead({
+      apiBaseUrl,
+      controller: loadController,
+      fallback: "Capabilities could not load.",
+      onFailure(error, generation) {
+        dispatchLoad({ type: "failure", generation, error });
+      },
+      onStart(generation) {
+        dispatchLoad({ type: "start", generation });
+      },
+      onSuccess(payload, generation) {
+        setSettings(payload);
+        dispatchLoad({ type: "success", generation, data: payload });
+      },
+      signal: abortController.signal,
+      validate: isCapabilitySettingsResponse,
+    });
+    void read.completion;
     return () => {
-      active = false;
+      abortController.abort();
+      loadController.invalidate(read.ticket);
     };
-  }, [apiBaseUrl, refreshKey]);
+  }, [apiBaseUrl, loadController, loadRetry, refreshKey]);
 
   const enabledGroups = useMemo(
     () => settings?.groups.filter((group) => group.state === "enabled").length ?? 0,
@@ -166,10 +181,14 @@ export function CapabilitySettings({ apiBaseUrl, refreshKey = 0 }: CapabilitySet
   }
 
   return (
-    <section className="auth-panel capability-panel" aria-labelledby="capability-title">
+    <section
+      className="auth-panel capability-panel"
+      id="settings-step-capabilities"
+      aria-labelledby="capability-title"
+    >
       <div className="auth-panel-heading">
         <span className="eyebrow">Pilot capabilities</span>
-        <h2 id="capability-title">See exactly what Pilot can use</h2>
+        <h2 id="capability-title" tabIndex={-1}>See exactly what Pilot can use</h2>
         <p>
           Ready means available now. Limited tools pause for your approval, and
           anything off stays outside Pilot’s reach.
@@ -303,9 +322,27 @@ export function CapabilitySettings({ apiBaseUrl, refreshKey = 0 }: CapabilitySet
             </div>
           </section>
         </>
-      ) : !error ? <p className="settings-loading">Loading capabilities…</p> : null}
+      ) : loadState.status === "loading" ? (
+        <p className="settings-loading" role="status">Loading capabilities…</p>
+      ) : null}
 
       {notice ? <div className="capability-notice" role="status">{notice}</div> : null}
+      {loadState.error ? (
+        <div className="settings-recovery-error" role="alert">
+          <div>
+            <strong>Capability review unavailable</strong>
+            <span>{loadState.error} Loaded capability data and any search key draft are preserved.</span>
+          </div>
+          <button
+            className="secondary-action"
+            disabled={loadState.status === "loading"}
+            onClick={() => setLoadRetry(nextReadGeneration)}
+            type="button"
+          >
+            {loadState.status === "loading" ? "Retrying…" : "Retry capabilities"}
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <div className="auth-error" role="alert">
           <strong>Capability settings unavailable</strong>

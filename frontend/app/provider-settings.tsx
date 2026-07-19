@@ -1,7 +1,21 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useReducer, useRef, useState } from "react";
 
+import {
+  createSettingsReadController,
+  initialRecoverableReadState,
+  isProviderSettingsResponse,
+  nextReadGeneration,
+  recoverableReadReducer,
+  startRecoverableSettingsRead,
+} from "./settings-recovery";
+import {
+  createCodexAttemptStorageLifecycle,
+  isCodexLoginStartResponse,
+  type CodexAttemptStorageBinding,
+  type CodexAttemptStorageLifecycle,
+} from "./provider-login-storage";
 import type {
   AuthSessionResponse,
   AuthUser,
@@ -14,8 +28,13 @@ import type {
 
 interface ProviderSettingsProps {
   apiBaseUrl: string;
-  user: AuthUser;
+  user: AuthUser | null;
   onUpdated: (user: AuthUser) => void;
+}
+
+interface ProviderCodexState {
+  attemptsByUser: Record<string, CodexLoginStartResponse | null>;
+  storageBinding: CodexAttemptStorageBinding | null;
 }
 
 async function readError(response: Response, fallback: string): Promise<string> {
@@ -30,83 +49,112 @@ export function ProviderSettings({
   user,
   onUpdated,
 }: ProviderSettingsProps) {
-  const storageKey = `careerpilot_codex_login_attempt:${user.id}`;
+  const activeUserId = user?.id ?? null;
   const [settings, setSettings] = useState<ProviderSettingsResponse | null>(null);
+  const [loadRetry, setLoadRetry] = useState(0);
+  const [loadController] = useState(
+    () => createSettingsReadController("providers"),
+  );
+  const [loadState, dispatchLoad] = useReducer(
+    recoverableReadReducer<ProviderSettingsResponse>,
+    undefined,
+    () => initialRecoverableReadState<ProviderSettingsResponse>(),
+  );
   const [apiKey, setApiKey] = useState("");
   const [apiKeyLoading, setApiKeyLoading] = useState(false);
-  const [codexLoading, setCodexLoading] = useState(false);
+  const [codexStartingUserId, setCodexStartingUserId] =
+    useState<string | null>(null);
   const [actionProvider, setActionProvider] = useState<ProviderMethod | null>(null);
-  const [codexAttempt, setCodexAttempt] =
-    useState<CodexLoginStartResponse | null>(null);
+  const [codexState, setCodexState] = useState<ProviderCodexState>({
+    attemptsByUser: {},
+    storageBinding: null,
+  });
+  const codexAttempt = activeUserId
+    ? codexState.attemptsByUser[activeUserId] ?? null
+    : null;
+  const codexLoading = Boolean(activeUserId)
+    && (
+      Boolean(codexAttempt)
+      || codexStartingUserId === activeUserId
+    );
+  const storageLifecycleRef = useRef<CodexAttemptStorageLifecycle | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loginWindowRef = useRef<Window | null>(null);
 
   useEffect(() => {
-    let active = true;
-    async function loadSettings() {
-      try {
-        const response = await fetch(`${apiBaseUrl}/settings/providers`, {
-          credentials: "include",
-        });
-        if (!response.ok) {
-          throw new Error(await readError(response, "Provider settings could not load."));
-        }
-        const payload = (await response.json()) as ProviderSettingsResponse;
-        if (active) setSettings(payload);
-      } catch (caughtError) {
-        if (active) {
-          setError(
-            caughtError instanceof Error
-              ? caughtError.message
-              : "Provider settings could not load.",
-          );
-        }
-      }
-    }
-    void loadSettings();
+    const abortController = new AbortController();
+    const read = startRecoverableSettingsRead({
+      apiBaseUrl,
+      controller: loadController,
+      fallback: "Provider settings could not load.",
+      onFailure(error, generation) {
+        dispatchLoad({ type: "failure", generation, error });
+      },
+      onStart(generation) {
+        dispatchLoad({ type: "start", generation });
+      },
+      onSuccess(payload, generation) {
+        setSettings(payload);
+        dispatchLoad({ type: "success", generation, data: payload });
+      },
+      signal: abortController.signal,
+      validate: isProviderSettingsResponse,
+    });
+    void read.completion;
     return () => {
-      active = false;
+      abortController.abort();
+      loadController.invalidate(read.ticket);
     };
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, loadController, loadRetry]);
 
   useEffect(() => {
     let active = true;
+    if (!activeUserId) {
+      window.queueMicrotask(() => {
+        if (!active) return;
+        setCodexState((current) => ({
+          ...current,
+          storageBinding: null,
+        }));
+      });
+      return () => {
+        active = false;
+      };
+    }
+    const lifecycle = storageLifecycleRef.current
+      ?? createCodexAttemptStorageLifecycle(window.sessionStorage);
+    storageLifecycleRef.current = lifecycle;
+    const binding = lifecycle.bind(activeUserId);
     window.queueMicrotask(() => {
       if (!active) return;
-      try {
-        const rawAttempt = window.sessionStorage.getItem(storageKey);
-        if (!rawAttempt) return;
-        const attempt = JSON.parse(rawAttempt) as CodexLoginStartResponse;
-        if (attempt.expires_at > Date.now() / 1000) {
-          setCodexAttempt(attempt);
-          setCodexLoading(true);
-        } else {
-          window.sessionStorage.removeItem(storageKey);
-        }
-      } catch {
-        window.sessionStorage.removeItem(storageKey);
-      }
+      setCodexState((current) => ({
+        attemptsByUser: {
+          ...current.attemptsByUser,
+          [activeUserId]: binding?.attempt ?? null,
+        },
+        storageBinding: binding,
+      }));
+      setCopied(false);
     });
     return () => {
       active = false;
     };
-  }, [storageKey]);
+  }, [activeUserId]);
 
   useEffect(() => {
-    try {
-      if (codexAttempt) {
-        window.sessionStorage.setItem(storageKey, JSON.stringify(codexAttempt));
-      } else {
-        window.sessionStorage.removeItem(storageKey);
-      }
-    } catch {
-      // The active tab still retains the attempt if session storage is unavailable.
-    }
-  }, [codexAttempt, storageKey]);
+    if (
+      !activeUserId
+      || codexState.storageBinding?.userId !== activeUserId
+      || !storageLifecycleRef.current
+    ) return;
+    const attempt = codexState.attemptsByUser[activeUserId] ?? null;
+    storageLifecycleRef.current.persist(codexState.storageBinding, attempt);
+  }, [activeUserId, codexState]);
 
   useEffect(() => {
-    if (!codexAttempt) return;
+    if (!codexAttempt || !activeUserId) return;
+    const attemptUserId = activeUserId;
     let active = true;
     let timer: number | undefined;
 
@@ -126,8 +174,13 @@ export function ProviderSettings({
         if (payload.status === "completed" && payload.user) {
           loginWindowRef.current?.close();
           loginWindowRef.current = null;
-          setCodexAttempt(null);
-          setCodexLoading(false);
+          setCodexState((current) => ({
+            ...current,
+            attemptsByUser: {
+              ...current.attemptsByUser,
+              [attemptUserId]: null,
+            },
+          }));
           setSettings((current) => current ? {
             active_provider: "codex",
             connections: current.connections.map((connection) =>
@@ -148,8 +201,13 @@ export function ProviderSettings({
         if (payload.status === "failed" || payload.status === "expired") {
           loginWindowRef.current?.close();
           loginWindowRef.current = null;
-          setCodexAttempt(null);
-          setCodexLoading(false);
+          setCodexState((current) => ({
+            ...current,
+            attemptsByUser: {
+              ...current.attemptsByUser,
+              [attemptUserId]: null,
+            },
+          }));
           setError(
             payload.error ??
               (payload.status === "expired"
@@ -163,8 +221,13 @@ export function ProviderSettings({
         if (!active) return;
         loginWindowRef.current?.close();
         loginWindowRef.current = null;
-        setCodexAttempt(null);
-        setCodexLoading(false);
+        setCodexState((current) => ({
+          ...current,
+          attemptsByUser: {
+            ...current.attemptsByUser,
+            [attemptUserId]: null,
+          },
+        }));
         setError(
           caughtError instanceof Error
             ? caughtError.message
@@ -178,10 +241,14 @@ export function ProviderSettings({
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [apiBaseUrl, codexAttempt, onUpdated]);
+  }, [activeUserId, apiBaseUrl, codexAttempt, onUpdated]);
 
   async function connectApiKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!activeUserId) {
+      setError("Wait for the local session to finish loading before connecting a key.");
+      return;
+    }
     setError(null);
     setApiKeyLoading(true);
     try {
@@ -218,6 +285,10 @@ export function ProviderSettings({
   }
 
   async function selectProvider(provider: ProviderMethod) {
+    if (!activeUserId) {
+      setError("Wait for the local session to finish loading before changing connections.");
+      return;
+    }
     setError(null);
     setActionProvider(provider);
     try {
@@ -252,6 +323,10 @@ export function ProviderSettings({
   }
 
   async function disconnectProvider(provider: ProviderMethod) {
+    if (!activeUserId) {
+      setError("Wait for the local session to finish loading before removing connections.");
+      return;
+    }
     setError(null);
     setActionProvider(provider);
     try {
@@ -262,7 +337,8 @@ export function ProviderSettings({
       if (!response.ok) {
         throw new Error(await readError(response, "This connection could not be removed."));
       }
-      setSettings((await response.json()) as ProviderSettingsResponse);
+      const nextSettings = (await response.json()) as ProviderSettingsResponse;
+      setSettings(nextSettings);
       const sessionResponse = await fetch(`${apiBaseUrl}/local/session`);
       const session = (await sessionResponse.json()) as AuthSessionResponse;
       if (session.user) onUpdated(session.user);
@@ -278,9 +354,14 @@ export function ProviderSettings({
   }
 
   async function startCodexLogin() {
+    if (!activeUserId) {
+      setError("Wait for the local session to finish loading before connecting ChatGPT.");
+      return;
+    }
+    const actionUserId = activeUserId;
     setError(null);
     setCopied(false);
-    setCodexLoading(true);
+    setCodexStartingUserId(actionUserId);
     try {
       const response = await fetch(`${apiBaseUrl}/settings/providers/codex/start`, {
         method: "POST",
@@ -291,9 +372,24 @@ export function ProviderSettings({
           await readError(response, "CareerPilot could not start ChatGPT login."),
         );
       }
-      setCodexAttempt((await response.json()) as CodexLoginStartResponse);
+      const payload = (await response.json()) as unknown;
+      if (!isCodexLoginStartResponse(payload)) {
+        throw new Error("CareerPilot returned an invalid ChatGPT login attempt.");
+      }
+      setCodexState((current) => ({
+        ...current,
+        attemptsByUser: {
+          ...current.attemptsByUser,
+          [actionUserId]: payload,
+        },
+      }));
+      setCodexStartingUserId((current) =>
+        current === actionUserId ? null : current
+      );
     } catch (caughtError) {
-      setCodexLoading(false);
+      setCodexStartingUserId((current) =>
+        current === actionUserId ? null : current
+      );
       setError(
         caughtError instanceof Error
           ? caughtError.message
@@ -320,12 +416,20 @@ export function ProviderSettings({
 
   async function cancelCodexLogin() {
     const attempt = codexAttempt;
+    if (!activeUserId || !attempt) return;
     loginWindowRef.current?.close();
     loginWindowRef.current = null;
-    setCodexAttempt(null);
-    setCodexLoading(false);
+    setCodexState((current) => ({
+      ...current,
+      attemptsByUser: {
+        ...current.attemptsByUser,
+        [activeUserId]: null,
+      },
+    }));
+    setCodexStartingUserId((current) =>
+      current === activeUserId ? null : current
+    );
     setCopied(false);
-    if (!attempt) return;
     try {
       const response = await fetch(
         `${apiBaseUrl}/settings/providers/codex/attempts/${attempt.attempt_id}`,
@@ -347,10 +451,14 @@ export function ProviderSettings({
   const key = settings?.connections.find((item) => item.provider === "api_key");
 
   return (
-    <section className="auth-panel settings-panel" aria-labelledby="provider-title">
+    <section
+      className="auth-panel settings-panel"
+      id="settings-step-ai"
+      aria-labelledby="provider-title"
+    >
       <div className="auth-panel-heading">
         <span className="eyebrow">AI connection</span>
-        <h2 id="provider-title">Choose how CareerPilot runs</h2>
+        <h2 id="provider-title" tabIndex={-1}>Choose how CareerPilot runs</h2>
         <p>
           This powers Pilot’s conversations and fit checks. A connection is required
           before the local workspace can use AI features.
@@ -402,7 +510,13 @@ export function ProviderSettings({
               </button>
               <div className="device-code-status">
                 <small>Keep this page open. Connection continues after approval.</small>
-                <button type="button" onClick={() => void cancelCodexLogin()}>Cancel</button>
+                <button
+                  disabled={!activeUserId}
+                  type="button"
+                  onClick={() => void cancelCodexLogin()}
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           ) : (
@@ -411,7 +525,7 @@ export function ProviderSettings({
                 <button
                   className="auth-action auth-action-dark"
                   type="button"
-                  disabled={actionProvider !== null || codexLoading}
+                  disabled={!activeUserId || actionProvider !== null || codexLoading}
                   onClick={() => void selectProvider("codex")}
                 >
                   {actionProvider === "codex" ? "Selecting…" : "Use this connection"}
@@ -421,7 +535,7 @@ export function ProviderSettings({
                 <button
                   className="auth-action secondary-action"
                   type="button"
-                  disabled={actionProvider !== null || codexLoading}
+                  disabled={!activeUserId || !settings || actionProvider !== null || codexLoading}
                   onClick={() => void startCodexLogin()}
                 >
                   {codexLoading ? "Starting…" : codex?.connected ? "Reconnect" : "Connect ChatGPT"}
@@ -431,7 +545,7 @@ export function ProviderSettings({
                 <button
                   className="text-action danger-action"
                   type="button"
-                  disabled={actionProvider !== null}
+                  disabled={!activeUserId || actionProvider !== null}
                   onClick={() => void disconnectProvider("codex")}
                 >
                   Remove
@@ -471,13 +585,13 @@ export function ProviderSettings({
                 autoComplete="off"
                 spellCheck={false}
                 placeholder="sk-…"
-                disabled={apiKeyLoading || codexLoading}
+                disabled={!settings || apiKeyLoading || codexLoading}
                 onChange={(event) => setApiKey(event.target.value)}
               />
               <button
                 className="auth-action auth-action-light"
                 type="submit"
-                disabled={apiKeyLoading || codexLoading || apiKey.trim().length < 20}
+                disabled={!activeUserId || !settings || apiKeyLoading || codexLoading || apiKey.trim().length < 20}
               >
                 {apiKeyLoading ? "Verifying…" : key?.connected ? "Replace" : "Connect key"}
               </button>
@@ -489,7 +603,7 @@ export function ProviderSettings({
                 <button
                   className="auth-action auth-action-dark"
                   type="button"
-                  disabled={actionProvider !== null}
+                  disabled={!activeUserId || actionProvider !== null}
                   onClick={() => void selectProvider("api_key")}
                 >
                   {actionProvider === "api_key" ? "Selecting…" : "Use this connection"}
@@ -498,7 +612,7 @@ export function ProviderSettings({
               <button
                 className="text-action danger-action"
                 type="button"
-                disabled={actionProvider !== null}
+                disabled={!activeUserId || actionProvider !== null}
                 onClick={() => void disconnectProvider("api_key")}
               >
                 Remove
@@ -508,7 +622,25 @@ export function ProviderSettings({
         </div>
       </article>
 
-      {!settings && !error ? <p className="settings-loading">Loading connections…</p> : null}
+      {!settings && loadState.status === "loading" ? (
+        <p className="settings-loading" role="status">Loading connections…</p>
+      ) : null}
+      {loadState.error ? (
+        <div className="settings-recovery-error" role="alert">
+          <div>
+            <strong>Connections unavailable</strong>
+            <span>{loadState.error} Any key you typed is still here.</span>
+          </div>
+          <button
+            className="secondary-action"
+            disabled={loadState.status === "loading"}
+            onClick={() => setLoadRetry(nextReadGeneration)}
+            type="button"
+          >
+            {loadState.status === "loading" ? "Retrying…" : "Retry connections"}
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <div className="auth-error" role="alert">
           <strong>Connection unavailable</strong>
