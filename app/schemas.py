@@ -529,8 +529,83 @@ class MCPServerSettingsResponse(MCPServerSettingsRequest):
     command_available: bool | None = None
 
 
+MCPProbeStatus = Literal[
+    "configuration_issue",
+    "denied",
+    "policy_blocked",
+    "protocol_error",
+    "ready",
+    "ready_no_tools",
+    "timed_out",
+    "unreachable",
+]
+
+
+class MCPProbeLastStatus(StrictModel):
+    status: MCPProbeStatus
+    checked_at: datetime
+    latency_ms: int = Field(ge=0, le=60_000)
+    discovered_count: int = Field(ge=0, le=128)
+
+
 class MCPSettingsResponse(StrictModel):
     servers: list[MCPServerSettingsResponse]
+    probe_statuses: dict[str, MCPProbeLastStatus] = Field(default_factory=dict)
+
+
+class MCPProbeDisclosure(StrictModel):
+    transport: MCPTransport
+    target: str = Field(min_length=1, max_length=2_048)
+    target_label: str = Field(min_length=1, max_length=80)
+    bound_target_note: str = Field(min_length=1, max_length=500)
+    operations: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        min_length=3,
+        max_length=3,
+    )
+    risk: str = Field(min_length=1, max_length=1_000)
+    timeout_seconds: int = Field(ge=1, le=10)
+    launches_subprocess: StrictBool
+    network_possible: StrictBool
+    configuration_will_change: StrictBool
+    server_side_effects_possible: StrictBool
+
+
+class MCPProbeIntentResponse(StrictModel):
+    approval_id: str = Field(min_length=36, max_length=36)
+    expires_at: datetime
+    disclosure: MCPProbeDisclosure
+
+
+class MCPProbeDecisionRequest(StrictModel):
+    decision: Literal["approved", "denied"]
+
+
+class MCPDiscoveredTool(StrictModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(max_length=1_000)
+    allowed: StrictBool
+    selectable: StrictBool
+    policy_reason: str | None = Field(default=None, max_length=300)
+
+
+class MCPProbeResultResponse(StrictModel):
+    executed: StrictBool
+    status: MCPProbeStatus
+    message: str = Field(min_length=1, max_length=500)
+    checked_at: datetime | None = None
+    latency_ms: int = Field(ge=0, le=60_000)
+    truncated: StrictBool
+    stale_configuration: StrictBool
+    discovered_tools: list[MCPDiscoveredTool] = Field(max_length=128)
+    allowed_present: list[Annotated[str, Field(min_length=1, max_length=160)]] = Field(
+        max_length=128
+    )
+    allowed_missing: list[Annotated[str, Field(min_length=1, max_length=160)]] = Field(
+        max_length=128
+    )
+    discovered_not_allowed: list[
+        Annotated[str, Field(min_length=1, max_length=160)]
+    ] = Field(max_length=128)
 
 
 class AgentReasoningEffortOption(StrictModel):

@@ -1,17 +1,28 @@
 "use client";
 
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
+import {
+  createMCPProbeCompletionGuard,
+  reconcileMCPToolDraft,
+} from "./mcp-discovery";
 import {
   createSettingsDraftHydration,
   createSettingsReadController,
   initialRecoverableReadState,
+  isMCPProbeIntent,
+  isMCPProbeResult,
   isMCPSettingsResponse,
   nextReadGeneration,
   recoverableReadReducer,
   startRecoverableSettingsRead,
 } from "./settings-recovery";
-import type { MCPServerSettings, MCPSettingsResponse } from "./types";
+import type {
+  MCPProbeIntent,
+  MCPProbeResult,
+  MCPServerSettings,
+  MCPSettingsResponse,
+} from "./types";
 
 
 interface MCPSettingsProps {
@@ -74,6 +85,22 @@ function parseEnvironment(value: string): Record<string, string> {
   return result;
 }
 
+const PROBE_STATUS_LABELS: Record<MCPProbeResult["status"], string> = {
+  configuration_issue: "Needs setup",
+  denied: "Cancelled",
+  policy_blocked: "Blocked safely",
+  protocol_error: "Protocol issue",
+  ready: "Ready",
+  ready_no_tools: "Ready · no tools",
+  timed_out: "Timed out",
+  unreachable: "Unreachable",
+};
+
+function formattedProbeTime(value: string): string {
+  const timestamp = new Date(value);
+  return Number.isNaN(timestamp.valueOf()) ? "previously" : timestamp.toLocaleString();
+}
+
 export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
   const [settings, setSettings] = useState<MCPSettingsResponse | null>(null);
   const [loadRetry, setLoadRetry] = useState(0);
@@ -96,14 +123,52 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [probeGuard] = useState(createMCPProbeCompletionGuard);
+  const probeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const probeAbortRef = useRef<AbortController | null>(null);
+  const [probeIntent, setProbeIntent] = useState<MCPProbeIntent | null>(null);
+  const [probeResult, setProbeResult] = useState<MCPProbeResult | null>(null);
+  const [probeStage, setProbeStage] = useState<"intent" | "probe" | null>(null);
 
   const selected = useMemo(
     () => settings?.servers.find((server) => server.name === selectedName) ?? null,
     [selectedName, settings],
   );
   const enabledCount = settings?.servers.filter((server) => server.enabled).length ?? 0;
+  const draftToolNames = useMemo(() => new Set(parseList(tools)), [tools]);
+  const lastProbe = selectedName ? settings?.probe_statuses[selectedName] ?? null : null;
+  const allowedPresentTools = probeResult?.discovered_tools.filter((tool) => tool.allowed && tool.selectable) ?? [];
+  const newDiscoveredTools = probeResult?.discovered_tools.filter((tool) => !tool.allowed) ?? [];
+  const probeTargetIsSaved = useMemo(() => {
+    if (!selected || creating || draft.transport !== selected.transport) return false;
+    try {
+      return (
+        (draft.command?.trim() || null) === selected.command
+        && (draft.url?.trim() || null) === selected.url
+        && JSON.stringify(parseList(args)) === JSON.stringify(selected.args)
+        && JSON.stringify(parseList(forwardedEnvironment)) === JSON.stringify(selected.forwarded_environment)
+        && JSON.stringify(parseEnvironment(environment)) === JSON.stringify(selected.environment)
+      );
+    } catch {
+      return false;
+    }
+  }, [args, creating, draft.command, draft.transport, draft.url, environment, forwardedEnvironment, selected]);
+
+  function invalidateProbe() {
+    probeGuard.invalidate();
+    probeAbortRef.current?.abort();
+    probeAbortRef.current = null;
+    setProbeIntent(null);
+    setProbeResult(null);
+    setProbeStage(null);
+  }
+
+  function restoreProbeFocus() {
+    window.requestAnimationFrame(() => probeTriggerRef.current?.focus());
+  }
 
   function loadDraft(server: MCPServerSettings, isCreating = false) {
+    invalidateProbe();
     setCreating(isCreating);
     setSelectedName(isCreating ? null : server.name);
     setDraft({ ...server, environment: { ...server.environment } });
@@ -156,10 +221,14 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
     return () => {
       abortController.abort();
       loadController.invalidate(read.ticket);
+      probeGuard.invalidate();
+      probeAbortRef.current?.abort();
+      probeAbortRef.current = null;
     };
-  }, [apiBaseUrl, draftHydration, loadController, loadRetry]);
+  }, [apiBaseUrl, draftHydration, loadController, loadRetry, probeGuard]);
 
   async function save() {
+    invalidateProbe();
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -203,6 +272,7 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
 
   async function remove() {
     if (!selected || !window.confirm(`Remove ${selected.display_name}?`)) return;
+    invalidateProbe();
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -220,6 +290,123 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function beginProbe() {
+    if (!selected || creating) return;
+    invalidateProbe();
+    const ticket = probeGuard.begin(selected.name);
+    const abortController = new AbortController();
+    probeAbortRef.current = abortController;
+    setProbeStage("intent");
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/settings/mcp/${encodeURIComponent(selected.name)}/probe-intents`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+          signal: abortController.signal,
+        },
+      );
+      if (!response.ok) {
+        throw new Error(await readError(response, "Connection review could not be prepared."));
+      }
+      const payload: unknown = await response.json();
+      if (!isMCPProbeIntent(payload)) {
+        throw new Error("Connection review returned an invalid response.");
+      }
+      probeGuard.commit(ticket, () => setProbeIntent(payload));
+    } catch (caughtError) {
+      if (caughtError instanceof DOMException && caughtError.name === "AbortError") return;
+      probeGuard.commit(ticket, () => {
+        setError(caughtError instanceof Error ? caughtError.message : "Connection review could not be prepared.");
+      });
+    } finally {
+      probeGuard.commit(ticket, () => {
+        if (probeAbortRef.current === abortController) probeAbortRef.current = null;
+        setProbeStage(null);
+      });
+    }
+  }
+
+  async function decideProbe(decision: "approved" | "denied") {
+    if (!selected || !probeIntent) return;
+    const reviewedIntent = probeIntent;
+    const ticket = probeGuard.begin(selected.name);
+    const abortController = new AbortController();
+    probeAbortRef.current?.abort();
+    probeAbortRef.current = abortController;
+    setProbeStage("probe");
+    setError(null);
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/settings/mcp/${encodeURIComponent(selected.name)}/probe-intents/${encodeURIComponent(reviewedIntent.approval_id)}/decision`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+          signal: abortController.signal,
+        },
+      );
+      if (!response.ok) {
+        throw new Error(await readError(response, "Connection check could not finish."));
+      }
+      const payload: unknown = await response.json();
+      if (!isMCPProbeResult(payload)) {
+        throw new Error("Connection check returned an invalid response.");
+      }
+      probeGuard.commit(ticket, () => {
+        setProbeIntent(null);
+        restoreProbeFocus();
+        if (decision === "denied") {
+          setProbeResult(null);
+          setNotice("Connection check cancelled. Nothing was launched or contacted.");
+          return;
+        }
+        setProbeResult(payload);
+        const checkedAt = payload.checked_at;
+        if (payload.executed && checkedAt && !payload.stale_configuration) {
+          setSettings((current) => current ? {
+            ...current,
+            probe_statuses: {
+              ...current.probe_statuses,
+              [selected.name]: {
+                status: payload.status,
+                checked_at: checkedAt,
+                latency_ms: payload.latency_ms,
+                discovered_count: payload.discovered_tools.length,
+              },
+            },
+          } : current);
+        }
+      });
+    } catch (caughtError) {
+      if (caughtError instanceof DOMException && caughtError.name === "AbortError") return;
+      probeGuard.commit(ticket, () => {
+        setProbeIntent(null);
+        restoreProbeFocus();
+        setError(caughtError instanceof Error ? caughtError.message : "Connection check could not finish.");
+      });
+    } finally {
+      probeGuard.commit(ticket, () => {
+        if (probeAbortRef.current === abortController) probeAbortRef.current = null;
+        setProbeStage(null);
+      });
+    }
+  }
+
+  function reconcileTool(toolName: string, include: boolean) {
+    setTools((current) => reconcileMCPToolDraft(current, toolName, include));
+    setNotice(
+      include
+        ? `${toolName} added to the draft allowlist. Save the server to apply it.`
+        : `${toolName} removed from the draft allowlist. Save the server to apply it.`,
+    );
   }
 
   const validName = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/.test(draft.name);
@@ -268,7 +455,26 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
                 <span>{draft.preset ? "Curated preset" : creating ? "New connection" : "Custom connection"}</span>
                 <strong>{draft.display_name}</strong>
               </div>
-              {!creating && selected ? <button className="text-action danger-action" disabled={saving} onClick={() => void remove()} type="button">Remove</button> : null}
+              {!creating && selected ? (
+                <div className="mcp-editor-controls">
+                  {lastProbe ? (
+                    <span className={`mcp-probe-badge is-${lastProbe.status}`} title={`Checked ${formattedProbeTime(lastProbe.checked_at)}`}>
+                      {PROBE_STATUS_LABELS[lastProbe.status]}
+                    </span>
+                  ) : null}
+                  <button
+                    className="secondary-action mcp-probe-start"
+                    disabled={saving || probeStage !== null || !probeTargetIsSaved}
+                    onClick={() => void beginProbe()}
+                    ref={probeTriggerRef}
+                    title={probeTargetIsSaved ? "Review and run one bounded connection check" : "Save connection changes before checking"}
+                    type="button"
+                  >
+                    {probeStage === "intent" ? "Preparing review…" : probeStage === "probe" ? "Checking…" : "Test saved connection"}
+                  </button>
+                  <button className="text-action danger-action" disabled={saving || probeStage !== null} onClick={() => void remove()} type="button">Remove</button>
+                </div>
+              ) : null}
             </div>
 
             {draft.warning ? <div className="mcp-risk-note"><strong>Before enabling</strong><p>{draft.warning}</p></div> : null}
@@ -281,23 +487,108 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
               </div>
             ) : null}
 
+            {probeResult ? (
+              <section
+                aria-atomic="true"
+                aria-live="polite"
+                className={`mcp-probe-result is-${probeResult.status}`}
+              >
+                <div className="mcp-probe-result-heading">
+                  <div>
+                    <span>Saved connection check</span>
+                    <strong>{PROBE_STATUS_LABELS[probeResult.status]}</strong>
+                  </div>
+                  <small>{probeResult.latency_ms} ms{probeResult.truncated ? " · bounded result truncated" : ""}</small>
+                </div>
+                <p>{probeResult.message}</p>
+                <div className="mcp-probe-groups">
+                  <section aria-labelledby="mcp-allowed-present-title">
+                    <h4 id="mcp-allowed-present-title">Allowed and present <span>{allowedPresentTools.length}</span></h4>
+                    {allowedPresentTools.length ? (
+                      <ul className="mcp-discovered-tools">
+                        {allowedPresentTools.map((tool, index) => (
+                          <li key={`${tool.name}-${index}`}>
+                            <div>
+                              <code>{tool.name}</code>
+                              <span className="mcp-untrusted-label">Untrusted server-reported description</span>
+                              <p>{tool.description || "No description reported."}</p>
+                            </div>
+                            <button className="secondary-action" onClick={() => reconcileTool(tool.name, false)} type="button">Remove from draft</button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : <p className="mcp-probe-empty-group">No allowed tools were reported.</p>}
+                  </section>
+
+                  <section aria-labelledby="mcp-new-tools-title">
+                    <h4 id="mcp-new-tools-title">New tools available <span>{newDiscoveredTools.length}</span></h4>
+                    {newDiscoveredTools.length ? (
+                      <ul className="mcp-discovered-tools">
+                        {newDiscoveredTools.map((tool, index) => {
+                          const included = draftToolNames.has(tool.name);
+                          return (
+                            <li key={`${tool.name}-${index}`}>
+                              <div>
+                                <code>{tool.name}</code>
+                                <span className="mcp-untrusted-label">Untrusted server-reported description</span>
+                                <p>{tool.description || "No description reported."}</p>
+                                {tool.policy_reason ? <small>{tool.policy_reason}</small> : null}
+                              </div>
+                              <button
+                                className="secondary-action"
+                                disabled={!tool.selectable}
+                                onClick={() => reconcileTool(tool.name, !included)}
+                                type="button"
+                              >
+                                {included ? "Remove from draft" : "Add to draft"}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : <p className="mcp-probe-empty-group">No new tools were reported.</p>}
+                  </section>
+
+                  <section aria-labelledby="mcp-allowed-missing-title">
+                    <h4 id="mcp-allowed-missing-title">Allowed but missing <span>{probeResult.allowed_missing.length}</span></h4>
+                    {probeResult.allowed_missing.length ? (
+                      <ul className="mcp-probe-missing">
+                        {probeResult.allowed_missing.map((toolName) => {
+                          const blockedClaim = probeResult.discovered_tools.find((tool) => tool.name === toolName && !tool.selectable);
+                          return (
+                            <li key={toolName}>
+                              <code>{toolName}</code>
+                              <span>{blockedClaim?.policy_reason ?? "The server did not report this exact allowed name."}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : <p className="mcp-probe-empty-group">Every allowed tool was reported.</p>}
+                  </section>
+                </div>
+                {probeResult.discovered_tools.length ? (
+                  <small className="mcp-probe-draft-note">Discovery never changes the saved allowlist. Review the draft, then choose Save server.</small>
+                ) : null}
+              </section>
+            ) : null}
+
             <div className="mcp-form-grid">
               <label>Name<input disabled={!creating || saving} maxLength={80} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") }))} spellCheck={false} value={draft.name} /></label>
               <label>Display name<input disabled={saving} maxLength={120} onChange={(event) => setDraft((current) => ({ ...current, display_name: event.target.value }))} value={draft.display_name} /></label>
               <label className="mcp-form-wide">Description<textarea disabled={saving} maxLength={1000} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} value={draft.description} /></label>
-              <label>Transport<select disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, transport: event.target.value as "stdio" | "http" }))} value={draft.transport}><option value="stdio">Local command (stdio)</option><option value="http">HTTP endpoint</option></select></label>
+              <label>Transport<select disabled={saving} onChange={(event) => { invalidateProbe(); setDraft((current) => ({ ...current, transport: event.target.value as "stdio" | "http" })); }} value={draft.transport}><option value="stdio">Local command (stdio)</option><option value="http">HTTP endpoint</option></select></label>
               <label className="mcp-toggle-label"><input checked={draft.enabled} disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} type="checkbox" /><span><strong>Enabled</strong><small>Pilot can launch and use this server.</small></span></label>
               {draft.transport === "stdio" ? (
                 <>
-                  <label>Command<input disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, command: event.target.value }))} placeholder="uvx" spellCheck={false} value={draft.command ?? ""} /></label>
-                  <label>Arguments<textarea disabled={saving} onChange={(event) => setArgs(event.target.value)} placeholder="One argument per line" spellCheck={false} value={args} /></label>
-                  <label className="mcp-form-wide">Non-secret environment values<textarea disabled={saving} onChange={(event) => setEnvironment(event.target.value)} placeholder="NAME=value" spellCheck={false} value={environment} /></label>
+                  <label>Command<input disabled={saving} onChange={(event) => { invalidateProbe(); setDraft((current) => ({ ...current, command: event.target.value })); }} placeholder="uvx" spellCheck={false} value={draft.command ?? ""} /></label>
+                  <label>Arguments<textarea disabled={saving} onChange={(event) => { invalidateProbe(); setArgs(event.target.value); }} placeholder="One argument per line" spellCheck={false} value={args} /></label>
+                  <label className="mcp-form-wide">Non-secret environment values<textarea disabled={saving} onChange={(event) => { invalidateProbe(); setEnvironment(event.target.value); }} placeholder="NAME=value" spellCheck={false} value={environment} /></label>
                 </>
               ) : (
-                <label className="mcp-form-wide">HTTPS endpoint<input disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, url: event.target.value }))} placeholder="https://mcp.example.com/mcp" spellCheck={false} value={draft.url ?? ""} /></label>
+                <label className="mcp-form-wide">HTTPS endpoint<input disabled={saving} onChange={(event) => { invalidateProbe(); setDraft((current) => ({ ...current, url: event.target.value })); }} placeholder="https://mcp.example.com/mcp" spellCheck={false} value={draft.url ?? ""} /></label>
               )}
               <label className="mcp-form-wide">Allowed tools<textarea disabled={saving} onChange={(event) => setTools(event.target.value)} placeholder="One exact tool name per line" spellCheck={false} value={tools} /><small>Required before a server can be enabled.</small></label>
-              <label className="mcp-form-wide">Forward existing environment variables<textarea disabled={saving} onChange={(event) => setForwardedEnvironment(event.target.value)} placeholder="VARIABLE_NAME (one per line)" spellCheck={false} value={forwardedEnvironment} /><small>Values are never returned to the browser or stored in this form.</small></label>
+              <label className="mcp-form-wide">Forward existing environment variables<textarea disabled={saving} onChange={(event) => { invalidateProbe(); setForwardedEnvironment(event.target.value); }} placeholder="VARIABLE_NAME (one per line)" spellCheck={false} value={forwardedEnvironment} /><small>Values are never returned to the browser or stored in this form.</small></label>
             </div>
             <div className="mcp-editor-actions">
               <p>Only add servers you trust. A local command has the same device access as the CareerPilot process.</p>
@@ -327,6 +618,65 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
         </div>
       ) : null}
       {error ? <div className="auth-error" role="alert"><strong>MCP settings</strong><span>{error}</span></div> : null}
+      {probeIntent ? (
+        <div className="mcp-probe-modal-backdrop">
+          <div
+            aria-describedby="mcp-probe-disclosure-risk"
+            aria-labelledby="mcp-probe-disclosure-title"
+            aria-modal="true"
+            className="mcp-probe-modal"
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && probeStage !== "probe") {
+                event.preventDefault();
+                void decideProbe("denied");
+              }
+              if (event.key === "Tab") {
+                const controls = Array.from(
+                  event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
+                );
+                const first = controls[0];
+                const last = controls.at(-1);
+                if (!first || !last) return;
+                if (event.shiftKey && document.activeElement === first) {
+                  event.preventDefault();
+                  last.focus();
+                } else if (!event.shiftKey && document.activeElement === last) {
+                  event.preventDefault();
+                  first.focus();
+                }
+              }
+            }}
+            role="dialog"
+          >
+            <span className="eyebrow">Manual one-time check</span>
+            <h3 id="mcp-probe-disclosure-title">Review what CareerPilot will do</h3>
+            <p id="mcp-probe-disclosure-risk">{probeIntent.disclosure.risk}</p>
+            <dl className="mcp-probe-disclosure">
+              <div>
+                <dt>{probeIntent.disclosure.target_label}</dt>
+                <dd>
+                  <code>{probeIntent.disclosure.target}</code>
+                  <small>{probeIntent.disclosure.bound_target_note}</small>
+                </dd>
+              </div>
+              <div><dt>Time limit</dt><dd>{probeIntent.disclosure.timeout_seconds} seconds</dd></div>
+              <div><dt>Configuration</dt><dd>Not changed by this check</dd></div>
+            </dl>
+            <div className="mcp-probe-operations">
+              <strong>Only these MCP methods and bounded request counts</strong>
+              <ol>{probeIntent.disclosure.operations.map((operation) => <li key={operation}>{operation}</li>)}</ol>
+              <small>No tool calls, prompts, resources, OAuth flow, retries, or background checks.</small>
+            </div>
+            <div aria-live="polite" className="mcp-probe-modal-actions">
+              <button autoFocus className="secondary-action" disabled={probeStage === "probe"} onClick={() => void decideProbe("denied")} type="button">Cancel</button>
+              <button className="auth-action" disabled={probeStage === "probe"} onClick={() => void decideProbe("approved")} type="button">
+                {probeStage === "probe" ? "Checking saved connection…" : "Run this check once"}
+              </button>
+            </div>
+            <small className="mcp-probe-expiry">This review expires {formattedProbeTime(probeIntent.expires_at)}.</small>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

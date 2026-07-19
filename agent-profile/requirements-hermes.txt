@@ -1,6 +1,9 @@
 # Hermes runs in a separate isolated environment because Hermes 0.18.2 pins an
 # OpenAI SDK version older than CareerPilot's application runtime.
 hermes-agent==0.18.2
+# MCP is an optional Hermes dependency. Pin it explicitly so a fresh native or
+# Docker installation can use the MCP configuration that CareerPilot renders.
+mcp==1.26.0
 # Hermes' gateway API-server adapter imports aiohttp, but the base package does
 # not declare it. Keep the adapter dependency aligned with Hermes' messaging
 # extra so first-run Pilot conversations can start the local gateway.

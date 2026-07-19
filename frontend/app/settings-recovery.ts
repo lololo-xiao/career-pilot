@@ -7,6 +7,8 @@ import type {
   CapabilityGroup,
   CapabilitySettingsResponse,
   MCPServerCapability,
+  MCPProbeIntent,
+  MCPProbeResult,
   MCPServerSettings,
   MCPSettingsResponse,
   ProviderConnection,
@@ -482,7 +484,124 @@ function isMCPServerSettings(value: unknown): value is MCPServerSettings {
 export function isMCPSettingsResponse(value: unknown): value is MCPSettingsResponse {
   return isRecord(value)
     && Array.isArray(value.servers)
-    && value.servers.every(isMCPServerSettings);
+    && value.servers.every(isMCPServerSettings)
+    && isRecord(value.probe_statuses)
+    && Object.values(value.probe_statuses).every((status) => (
+      isRecord(status)
+      && [
+        "configuration_issue",
+        "denied",
+        "policy_blocked",
+        "protocol_error",
+        "ready",
+        "ready_no_tools",
+        "timed_out",
+        "unreachable",
+      ].includes(String(status.status))
+      && typeof status.checked_at === "string"
+      && typeof status.latency_ms === "number"
+      && typeof status.discovered_count === "number"
+    ));
+}
+
+const MCP_PROBE_OPERATIONS = [
+  "MCP initialize",
+  "MCP initialized notification",
+  "MCP tools/list (up to 4 paginated requests)",
+] as const;
+
+const MCP_PROBE_STATUSES = [
+  "configuration_issue",
+  "denied",
+  "policy_blocked",
+  "protocol_error",
+  "ready",
+  "ready_no_tools",
+  "timed_out",
+  "unreachable",
+] as const;
+
+export function isMCPProbeIntent(value: unknown): value is MCPProbeIntent {
+  if (!isRecord(value) || !isRecord(value.disclosure)) return false;
+  const disclosure = value.disclosure;
+  const transport = disclosure.transport;
+  return typeof value.approval_id === "string"
+    && value.approval_id.length === 36
+    && typeof value.expires_at === "string"
+    && !Number.isNaN(Date.parse(value.expires_at))
+    && (transport === "http" || transport === "stdio")
+    && typeof disclosure.target === "string"
+    && disclosure.target.length > 0
+    && disclosure.target.length <= 2_048
+    && typeof disclosure.target_label === "string"
+    && disclosure.target_label.length > 0
+    && disclosure.target_label.length <= 80
+    && typeof disclosure.bound_target_note === "string"
+    && disclosure.bound_target_note.length > 0
+    && disclosure.bound_target_note.length <= 500
+    && Array.isArray(disclosure.operations)
+    && disclosure.operations.length === MCP_PROBE_OPERATIONS.length
+    && disclosure.operations.every(
+      (operation, index) => operation === MCP_PROBE_OPERATIONS[index],
+    )
+    && typeof disclosure.risk === "string"
+    && disclosure.risk.length > 0
+    && disclosure.risk.length <= 1_000
+    && disclosure.timeout_seconds === 10
+    && disclosure.launches_subprocess === (transport === "stdio")
+    && disclosure.network_possible === true
+    && disclosure.configuration_will_change === false
+    && disclosure.server_side_effects_possible === true;
+}
+
+function isMCPDiscoveredTool(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && value.name.length > 0
+    && value.name.length <= 160
+    && typeof value.description === "string"
+    && value.description.length <= 1_000
+    && typeof value.allowed === "boolean"
+    && typeof value.selectable === "boolean"
+    && isNullableString(value.policy_reason)
+    && (value.policy_reason === null || value.policy_reason.length <= 300);
+}
+
+function isBoundedToolNameArray(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length <= 128
+    && value.every((item) => (
+      typeof item === "string" && item.length > 0 && item.length <= 160
+    ));
+}
+
+export function isMCPProbeResult(value: unknown): value is MCPProbeResult {
+  if (!isRecord(value)) return false;
+  const status = String(value.status);
+  const denied = status === "denied";
+  return MCP_PROBE_STATUSES.includes(status as (typeof MCP_PROBE_STATUSES)[number])
+    && typeof value.executed === "boolean"
+    && value.executed === !denied
+    && typeof value.message === "string"
+    && value.message.length > 0
+    && value.message.length <= 500
+    && (
+      denied
+        ? value.checked_at === null
+        : typeof value.checked_at === "string" && !Number.isNaN(Date.parse(value.checked_at))
+    )
+    && typeof value.latency_ms === "number"
+    && Number.isInteger(value.latency_ms)
+    && value.latency_ms >= 0
+    && value.latency_ms <= 60_000
+    && typeof value.truncated === "boolean"
+    && typeof value.stale_configuration === "boolean"
+    && Array.isArray(value.discovered_tools)
+    && value.discovered_tools.length <= 128
+    && value.discovered_tools.every(isMCPDiscoveredTool)
+    && isBoundedToolNameArray(value.allowed_present)
+    && isBoundedToolNameArray(value.allowed_missing)
+    && isBoundedToolNameArray(value.discovered_not_allowed);
 }
 
 function isCapabilityGroup(value: unknown): value is CapabilityGroup {

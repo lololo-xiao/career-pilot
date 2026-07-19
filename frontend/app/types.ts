@@ -196,8 +196,68 @@ export interface MCPServerSettings {
   command_available: boolean | null;
 }
 
+export type MCPProbeStatus =
+  | "configuration_issue"
+  | "denied"
+  | "policy_blocked"
+  | "protocol_error"
+  | "ready"
+  | "ready_no_tools"
+  | "timed_out"
+  | "unreachable";
+
+export interface MCPProbeLastStatus {
+  status: MCPProbeStatus;
+  checked_at: string;
+  latency_ms: number;
+  discovered_count: number;
+}
+
 export interface MCPSettingsResponse {
   servers: MCPServerSettings[];
+  probe_statuses: Record<string, MCPProbeLastStatus>;
+}
+
+export interface MCPProbeDisclosure {
+  transport: "http" | "stdio";
+  target: string;
+  target_label: string;
+  bound_target_note: string;
+  operations: string[];
+  risk: string;
+  timeout_seconds: number;
+  launches_subprocess: boolean;
+  network_possible: boolean;
+  configuration_will_change: false;
+  server_side_effects_possible: true;
+}
+
+export interface MCPProbeIntent {
+  approval_id: string;
+  expires_at: string;
+  disclosure: MCPProbeDisclosure;
+}
+
+export interface MCPDiscoveredTool {
+  name: string;
+  description: string;
+  allowed: boolean;
+  selectable: boolean;
+  policy_reason: string | null;
+}
+
+export interface MCPProbeResult {
+  executed: boolean;
+  status: MCPProbeStatus;
+  message: string;
+  checked_at: string | null;
+  latency_ms: number;
+  truncated: boolean;
+  stale_configuration: boolean;
+  discovered_tools: MCPDiscoveredTool[];
+  allowed_present: string[];
+  allowed_missing: string[];
+  discovered_not_allowed: string[];
 }
 
 export interface CapabilitySettingsResponse {

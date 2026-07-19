@@ -5,7 +5,8 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import (
@@ -20,6 +21,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from app.auth import (
     AuthCredentialError,
@@ -106,6 +108,9 @@ from app.schemas import (
     MatchRequest,
     MatchResponse,
     MemoryRetrievalHistoryResponse,
+    MCPProbeDecisionRequest,
+    MCPProbeIntentResponse,
+    MCPProbeResultResponse,
     MCPServerSettingsRequest,
     MCPSettingsResponse,
     ParsedCVResponse,
@@ -152,8 +157,20 @@ from career_companion.services.mcp_servers import (
     delete_mcp_server,
     ensure_default_mcp_servers,
     list_mcp_servers,
+    mcp_server_json,
     synchronize_mcp_profile_config_from_session,
     upsert_mcp_server,
+)
+from career_companion.services.mcp_probe import (
+    MCPProbeBusy,
+    MCPProbeConflict,
+    create_probe_intent,
+    latest_probe_summaries,
+    mcp_probe_manager,
+    record_probe_result,
+    resolve_probe_intent,
+    server_configuration_digest,
+    server_revision,
 )
 from career_companion.services.memory_context import (
     MAX_RETRIEVAL_HISTORY_LIMIT,
@@ -867,7 +884,13 @@ def _mcp_settings(paths: CompanionPaths) -> MCPSettingsResponse:
     distribution = profile_distribution_directory()
     with account_session(paths) as session:
         servers = list_mcp_servers(session, distribution)
-    return MCPSettingsResponse.model_validate({"servers": servers})
+        rows = session.scalars(
+            select(MCPServerRecord).order_by(MCPServerRecord.name)
+        ).all()
+        probe_statuses = latest_probe_summaries(session, rows)
+    return MCPSettingsResponse.model_validate(
+        {"servers": servers, "probe_statuses": probe_statuses}
+    )
 
 
 @app.get(
@@ -986,6 +1009,173 @@ def read_mcp_settings(
 ) -> MCPSettingsResponse:
     _prevent_auth_caching(response)
     return _mcp_settings(paths)
+
+
+@app.post(
+    "/settings/mcp/{name}/probe-intents",
+    response_model=MCPProbeIntentResponse,
+)
+def create_mcp_probe_intent(
+    name: str,
+    response: Response,
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> MCPProbeIntentResponse:
+    """Create one short-lived review record without contacting the MCP server."""
+
+    _prevent_auth_caching(response)
+    try:
+        with account_session(paths) as session:
+            ensure_default_mcp_servers(session, profile_distribution_directory())
+            row = session.get(MCPServerRecord, name)
+            if row is None:
+                raise LookupError("MCP server not found")
+            approval = create_probe_intent(session, row)
+            payload = {
+                "approval_id": approval.id,
+                "expires_at": approval.expires_at,
+                "disclosure": approval.preview,
+            }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MCPProbeIntentResponse.model_validate(payload)
+
+
+def _denied_mcp_probe_result() -> MCPProbeResultResponse:
+    return MCPProbeResultResponse.model_validate(
+        {
+            "executed": False,
+            "status": "denied",
+            "message": "Connection check cancelled. Nothing was launched or contacted.",
+            "checked_at": None,
+            "latency_ms": 0,
+            "truncated": False,
+            "stale_configuration": False,
+            "discovered_tools": [],
+            "allowed_present": [],
+            "allowed_missing": [],
+            "discovered_not_allowed": [],
+        }
+    )
+
+
+def _resolve_mcp_probe_snapshot(
+    paths: CompanionPaths,
+    name: str,
+    approval_id: str,
+    decision: Literal["approved", "denied"],
+) -> tuple[dict[str, Any], str, str, bool]:
+    with account_session(paths) as session:
+        ensure_default_mcp_servers(session, profile_distribution_directory())
+        row = session.get(MCPServerRecord, name)
+        if row is None:
+            raise LookupError("MCP server not found")
+        server = mcp_server_json(row)
+        revision = server_revision(row)
+        snapshot_digest = server_configuration_digest(server)
+        should_execute = resolve_probe_intent(
+            session,
+            approval_id,
+            server,
+            decision,
+        )
+    return server, revision, snapshot_digest, should_execute
+
+
+@app.post(
+    "/settings/mcp/{name}/probe-intents/{approval_id}/decision",
+    response_model=MCPProbeResultResponse,
+)
+async def decide_mcp_probe_intent(
+    name: str,
+    approval_id: str,
+    request: MCPProbeDecisionRequest,
+    response: Response,
+    account: Annotated[AuthenticatedAccount, Depends(require_current_account)],
+    paths: Annotated[CompanionPaths, Depends(get_local_companion_paths)],
+) -> MCPProbeResultResponse:
+    """Consume one exact approval before the isolated discovery process starts."""
+
+    _prevent_auth_caching(response)
+    if request.decision == "denied":
+        try:
+            _server, _revision, _snapshot_digest, should_execute = (
+                _resolve_mcp_probe_snapshot(
+                    paths,
+                    name,
+                    approval_id,
+                    request.decision,
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MCPProbeConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if should_execute:
+            raise HTTPException(status_code=409, detail="Invalid MCP probe decision state")
+        return _denied_mcp_probe_result()
+
+    try:
+        lease = await mcp_probe_manager.reserve(account.user_id)
+    except MCPProbeBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+    async with lease:
+        try:
+            server, revision, snapshot_digest, should_execute = (
+                _resolve_mcp_probe_snapshot(
+                    paths,
+                    name,
+                    approval_id,
+                    request.decision,
+                )
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MCPProbeConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not should_execute:
+            raise HTTPException(status_code=409, detail="Invalid MCP probe decision state")
+        result = await lease.probe(paths, server)
+
+    result = {**result, "checked_at": datetime.now(UTC)}
+    with account_session(paths) as session:
+        current_row = session.get(MCPServerRecord, name)
+        stale = current_row is None
+        if current_row is not None:
+            try:
+                stale = (
+                    server_configuration_digest(mcp_server_json(current_row))
+                    != snapshot_digest
+                )
+            except ValueError:
+                stale = True
+        if stale:
+            result = {
+                **result,
+                "message": (
+                    "The server configuration changed during the check. "
+                    "Review and run a new check before changing the draft allowlist."
+                ),
+                "stale_configuration": True,
+                "discovered_tools": [],
+                "allowed_present": [],
+                "allowed_missing": [],
+                "discovered_not_allowed": [],
+            }
+        record_probe_result(
+            session,
+            name,
+            revision,
+            result,
+            stale_configuration=stale,
+        )
+    return MCPProbeResultResponse.model_validate(result)
 
 
 async def _apply_mcp_reconfiguration(

@@ -207,7 +207,11 @@ def test_release_runtime_versions_and_integrity_manifests_are_pinned(
         for line in (root / "agent-profile" / "requirements-hermes.txt").read_text().splitlines()
         if line and not line.startswith("#")
     ]
-    assert hermes_requirements == ["hermes-agent==0.18.2", "aiohttp==3.14.1"]
+    assert hermes_requirements == [
+        "hermes-agent==0.18.2",
+        "mcp==1.26.0",
+        "aiohttp==3.14.1",
+    ]
 
     executable = tmp_path / "chromium"
     executable.write_bytes(b"pinned browser executable")
