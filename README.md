@@ -275,7 +275,10 @@ into a genuinely proactive job-search agent.
 - [x] Explain deterministic queue score versus evidence-grounded 0–10 fit score.
 - [ ] Add multiple named CV/profile versions for different role families.
 - [ ] Add OCR for image-only and scanned PDFs.
-- [ ] Build the Interview Practice workspace with evidence-aware feedback.
+- [ ] Finish the Interview Practice workspace with evidence-aware feedback.
+- [ ] Close its acceptance blockers: stale cross-tab retries, unlocked canonical
+  reconciliation, incomplete request cancellation, restart-scoped cleanup lockout,
+  post-success refresh errors, browser-history reconciliation, and duplicate/orphaned labels.
 - [ ] Improve empty states, error recovery, accessibility, responsive layouts, and keyboard flow.
 - [x] Add a reusable, non-sensitive seeded demo workspace command.
 
@@ -284,7 +287,15 @@ into a genuinely proactive job-search agent.
 - [x] Expose Greenhouse/Lever discovery through Pilot.
 - [ ] Add a dedicated guided discovery experience to the primary UI.
 - [ ] Let Pilot orchestrate discover → deduplicate → rank → track → tailor in one conversation.
+- [ ] Finish the evidence-first tailoring pack with exactly three reviewed drafts and
+  prevent generic status overrides from bypassing artifact review.
+- [ ] Make tailoring migrations repair partial schemas, preserve the one-pack uniqueness
+  boundary, and define a safe live-data downgrade/upgrade policy.
+- [ ] Bind every tailoring claim to an intact stored source and explicit user-confirmation
+  provenance instead of trusting a client-declared `verified` label.
 - [x] Add a guided, deterministic local form-field preview from verified evidence and approved artifacts.
+- [ ] Add secure form-preview storage for Windows; unsupported platforms currently fail
+  closed before any file or database mutation.
 - [ ] Add a separately confirmed external fill phase around the existing guarded backend.
 - [ ] Surface approval history and explain exactly what each token authorizes.
 - [ ] Add safe daily/weekly search queues with a visible pause switch and budget.
@@ -334,9 +345,9 @@ before it reaches `main`:
 |---|---:|---|---|
 | `memory-runtime` | ✅ Integrated | Deterministic retrieval, citations, inspector, finite preference drafts, atomic rollback | Define retention before adding semantic retrieval |
 | `agent-orchestration` | ✅ Integrated | Discover → deduplicate → rank → track → approve/archive with an exact Pilot tool boundary | Extend the accepted authorization contract into dedicated downstream workflows |
-| `guided-practice` | 🟡 Adversarial review | First run, isolated interview practice, grounded feedback, and resilient UX | Close process-cleanup, Windows-path, cross-tab, and reconciliation races |
+| `guided-practice` | 🟡 Corrections required | First run, isolated interview practice, grounded feedback, and resilient UX | Close seven accepted concurrency, cancellation, history, cleanup, and accessibility findings; then re-review |
 | `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
-| `tailoring-drafts` | 🟡 In progress | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Complete implementation, full gates, and independent review |
+| `tailoring-drafts` | 🟡 Corrections required | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Fix status bypass, partial/round-trip migrations, and stored-source confirmation; then re-review |
 | `form-fill-workspace` | ✅ Integrated | Persistent evidence-bound local preview; no browser or external mutation | Add a secure Windows storage backend, then design a separately confirmed external fill phase |
 
 Each lane starts with an explicit interface contract. Database migrations stay owned by
