@@ -227,6 +227,8 @@ def normalize_form_fill_url(value: str) -> str:
         raise ValueError("Application URLs cannot contain whitespace or backslashes")
     if re.search(r"%(?![0-9A-Fa-f]{2})", value):
         raise ValueError("Application URLs contain an invalid percent escape")
+    if "#" in value:
+        raise ValueError("Application URLs cannot contain fragments")
     parts = urlsplit(value)
     try:
         hostname = (parts.hostname or "").rstrip(".").casefold()
@@ -270,7 +272,10 @@ class FormFillRequest(BaseModel):
     application_id: Annotated[str, Field(min_length=1, max_length=64)]
     url: Annotated[str, Field(min_length=1, max_length=2000)]
     fields: dict[FormSelector, FormFieldValue] = Field(default_factory=dict)
-    files: dict[FormSelector, FormArtifactId] = Field(default_factory=dict)
+    files: dict[FormSelector, FormArtifactId] = Field(
+        default_factory=dict,
+        max_length=10,
+    )
     headless: StrictBool = False
 
     @field_validator("application_id", "url", mode="before")

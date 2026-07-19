@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -38,7 +39,10 @@ from career_companion.services.approvals import (
     payload_digest,
     request_approval,
 )
-from career_companion.services.form_fill import canonical_form_fill_payload
+from career_companion.services.form_fill import (
+    FormFillRequestError,
+    canonical_form_fill_payload,
+)
 
 APPLICATION_ID = "00000000-0000-0000-0000-000000000001"
 ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
@@ -88,7 +92,8 @@ def _form_payload(label: str = "Ada") -> dict:
 def _seed_form_resources(session, paths: CompanionPaths) -> ArtifactRecord:
     paths.create()
     attachment = paths.workspace / "approved-resume.pdf"
-    attachment.write_bytes(b"approved resume")
+    approved_bytes = b"approved resume"
+    attachment.write_bytes(approved_bytes)
     job = JobRecord(
         id=JOB_ID,
         company="Example GmbH",
@@ -104,7 +109,7 @@ def _seed_form_resources(session, paths: CompanionPaths) -> ArtifactRecord:
         kind="cv",
         version=1,
         path=str(attachment),
-        sha256="a" * 64,
+        sha256=hashlib.sha256(approved_bytes).hexdigest(),
         approved=True,
     )
     session.add_all([job, application, artifact])
@@ -327,7 +332,7 @@ def test_form_fill_approval_hashes_the_shared_normalized_defaulted_payload(
 ) -> None:
     raw_payload = {
         "application_id": f"  {APPLICATION_ID}  ",
-        "url": "  HTTPS://JOBS.EXAMPLE.TEST:443/apply#review  ",
+        "url": "  HTTPS://JOBS.EXAMPLE.TEST:443/apply  ",
         "fields": {"  #name  ": "Ada"},
     }
 
@@ -387,6 +392,11 @@ def test_form_fill_approval_hashes_the_shared_normalized_defaulted_payload(
             "fields": {" #target ": "Ada"},
             "files": {"#target": ARTIFACT_ID},
         },
+        {
+            "application_id": APPLICATION_ID,
+            "url": "https://jobs.example.test/apply",
+            "files": {f"#file-{index}": ARTIFACT_ID for index in range(11)},
+        },
     ],
 )
 def test_form_fill_approval_rejects_missing_extra_coerced_or_ambiguous_payloads(
@@ -412,6 +422,8 @@ def test_form_fill_approval_rejects_missing_extra_coerced_or_ambiguous_payloads(
         "https://jobs.example.test/a/../apply",
         "https://jobs.example.test/%2e%2e/apply",
         "https://jobs.example.test/apply%zz",
+        "https://jobs.example.test/apply#review",
+        "https://jobs.example.test/apply#different",
     ],
 )
 def test_form_fill_url_contract_rejects_whatwg_ambiguous_destinations(
@@ -428,6 +440,38 @@ def test_form_fill_url_contract_rejects_whatwg_ambiguous_destinations(
     with account_session(paths) as session:
         assert session.scalar(select(func.count(ApprovalRecord.id))) == 0
         assert session.scalar(select(func.count(AuditEventRecord.id))) == 0
+
+
+def test_form_fill_fragment_variants_never_enter_the_digest_contract() -> None:
+    canonical_payloads = []
+    for fragment in ("review", "different"):
+        with pytest.raises(FormFillRequestError, match="strict schema"):
+            canonical_payloads.append(
+                canonical_form_fill_payload(
+                    {
+                        "application_id": APPLICATION_ID,
+                        "url": f"https://jobs.example.test/apply#{fragment}",
+                    }
+                )
+            )
+
+    assert canonical_payloads == []
+
+
+@pytest.mark.parametrize("fragment", ["review", "different"])
+def test_browser_fill_boundary_rejects_fragments_with_422(
+    approval_client,
+    fragment,
+) -> None:
+    response = approval_client.post(
+        "/api/v1/browser/fill",
+        json={
+            "application_id": APPLICATION_ID,
+            "url": f"https://jobs.example.test/apply#{fragment}",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
