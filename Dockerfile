@@ -70,4 +70,4 @@ RUN python -c "from app.retrieval import _get_local_embedder; _get_local_embedde
 
 EXPOSE 8000
 
-CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

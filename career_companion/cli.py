@@ -72,7 +72,13 @@ def start_command(args: argparse.Namespace) -> int:
 
     if not args.no_open and web_directory is not None:
         webbrowser.open(origin)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        proxy_headers=False,
+    )
     return 0
 
 

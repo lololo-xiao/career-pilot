@@ -12,6 +12,8 @@ from career_companion.persistence import clear_factory_cache, session_factory_fo
 from career_companion.services import discovery
 from career_companion.services.discovery import (
     DiscoveryError,
+    MAX_DESCRIPTION_CHARACTERS,
+    MAX_PUBLIC_FEED_BYTES,
     discover_greenhouse,
     parse_greenhouse_jobs,
     parse_lever_jobs,
@@ -129,9 +131,21 @@ def test_public_discovery_rejects_unsafe_identifier_before_network(
 
 
 def test_public_discovery_hides_transport_failure_details(monkeypatch) -> None:
+    class FailingStream:
+        def __init__(self, url: str):
+            self.url = url
+
+        async def __aenter__(self):
+            request = httpx.Request("GET", self.url)
+            raise httpx.ConnectError("secret resolver detail", request=request)
+
+        async def __aexit__(self, *_args):
+            return None
+
     class FailingClient:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            assert kwargs["follow_redirects"] is False
+            assert kwargs["trust_env"] is False
 
         async def __aenter__(self):
             return self
@@ -139,10 +153,9 @@ def test_public_discovery_hides_transport_failure_details(monkeypatch) -> None:
         async def __aexit__(self, *_args):
             return None
 
-        async def get(self, url, *, params):
+        def stream(self, _method, url, *, params):
             del params
-            request = httpx.Request("GET", url)
-            raise httpx.ConnectError("secret resolver detail", request=request)
+            return FailingStream(url)
 
     monkeypatch.setattr(discovery.httpx, "AsyncClient", FailingClient)
 
@@ -158,3 +171,117 @@ def test_public_discovery_hides_transport_failure_details(monkeypatch) -> None:
 def test_provider_parser_rejects_unexpected_top_level_payload() -> None:
     with pytest.raises(DiscoveryError, match="unexpected public job-feed response"):
         parse_lever_jobs("example", {"postings": []})
+
+
+def test_provider_parser_bounds_descriptions_and_rejects_credential_urls() -> None:
+    jobs = parse_greenhouse_jobs(
+        "example",
+        {
+            "jobs": [
+                {
+                    "title": "Bounded role",
+                    "content": f"<p>{'x' * (MAX_DESCRIPTION_CHARACTERS + 20)}</p>",
+                    "absolute_url": "https://boards.greenhouse.io/example/jobs/1",
+                },
+                {
+                    "title": "Credential URL",
+                    "content": "Must not be returned",
+                    "absolute_url": (
+                        "https://candidate:secret@boards.greenhouse.io/example/jobs/2"
+                    ),
+                },
+                {
+                    "title": "Oversized URL",
+                    "content": "Must not be returned",
+                    "absolute_url": "https://example.test/" + ("a" * 2_000),
+                },
+            ]
+        },
+    )
+
+    assert len(jobs) == 1
+    assert len(jobs[0].spec.description) == MAX_DESCRIPTION_CHARACTERS
+    assert jobs[0].spec.source_url.username is None
+    assert jobs[0].spec.source_url.password is None
+    assert len(str(jobs[0].spec.source_url)) <= 2_000
+
+
+def test_public_discovery_streams_with_fail_closed_client_settings(
+    monkeypatch,
+) -> None:
+    real_async_client = httpx.AsyncClient
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "boards-api.greenhouse.io"
+        return httpx.Response(200, json={"jobs": []})
+
+    def client_factory(**kwargs):
+        captured.update(kwargs)
+        return real_async_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(discovery.httpx, "AsyncClient", client_factory)
+
+    assert asyncio.run(discover_greenhouse("example")) == []
+    assert captured["follow_redirects"] is False
+    assert captured["trust_env"] is False
+
+
+def test_public_discovery_rejects_oversized_stream_before_json_decode(
+    monkeypatch,
+) -> None:
+    real_async_client = httpx.AsyncClient
+
+    class OversizedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"["
+            yield b"x" * MAX_PUBLIC_FEED_BYTES
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=OversizedStream())
+
+    monkeypatch.setattr(
+        discovery.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(
+            transport=httpx.MockTransport(handler),
+            **kwargs,
+        ),
+    )
+
+    with pytest.raises(DiscoveryError, match="too large to preview safely"):
+        asyncio.run(discover_greenhouse("example"))
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "expected"),
+    [
+        (302, b"", "temporarily unavailable"),
+        (404, b"", "No public Greenhouse job feed was found"),
+        (200, b"not-json", "temporarily unavailable"),
+    ],
+)
+def test_public_discovery_returns_safe_redirect_404_and_malformed_errors(
+    monkeypatch,
+    status_code: int,
+    body: bytes,
+    expected: str,
+) -> None:
+    real_async_client = httpx.AsyncClient
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        headers = {"location": "https://redirect.invalid/private"} if status_code == 302 else {}
+        return httpx.Response(status_code, content=body, headers=headers)
+
+    monkeypatch.setattr(
+        discovery.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(
+            transport=httpx.MockTransport(handler),
+            **kwargs,
+        ),
+    )
+
+    with pytest.raises(DiscoveryError, match=expected) as caught:
+        asyncio.run(discover_greenhouse("example"))
+    assert "redirect.invalid" not in str(caught.value)

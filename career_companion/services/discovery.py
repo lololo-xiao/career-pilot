@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from datetime import date
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
@@ -13,6 +15,12 @@ from career_companion.schemas import Job, JobSpec
 DiscoveryProvider = Literal["greenhouse", "lever"]
 
 _COMPANY_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+MAX_PUBLIC_FEED_BYTES = 8 * 1024 * 1024
+MAX_DESCRIPTION_CHARACTERS = 50_000
+MAX_JOB_URL_CHARACTERS = 2_000
+MAX_JOB_TITLE_CHARACTERS = 500
+MAX_LOCATION_CHARACTERS = 500
+MAX_EMPLOYMENT_TYPE_CHARACTERS = 100
 
 
 class DiscoveryError(RuntimeError):
@@ -22,6 +30,31 @@ class DiscoveryError(RuntimeError):
 def plain_text(value: str) -> str:
     unescaped = html.unescape(value or "")
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", unescaped)).strip()
+
+
+def bounded_description(value: str) -> str:
+    return plain_text(value)[:MAX_DESCRIPTION_CHARACTERS]
+
+
+def safe_job_url(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate or len(candidate) > MAX_JOB_URL_CHARACTERS:
+        return None
+    try:
+        parts = urlsplit(candidate)
+        hostname = parts.hostname
+    except ValueError:
+        return None
+    if (
+        parts.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parts.username is not None
+        or parts.password is not None
+    ):
+        return None
+    return candidate
 
 
 def validate_company_identifier(value: str) -> str:
@@ -45,26 +78,32 @@ def parse_greenhouse_jobs(board_token: str, payload: Any) -> list[Job]:
         if not isinstance(item, dict):
             continue
         title = item.get("title")
-        source_url = item.get("absolute_url")
+        source_url = safe_job_url(item.get("absolute_url"))
         if not isinstance(title, str) or not title.strip():
             continue
-        if not isinstance(source_url, str) or not source_url.strip():
+        if source_url is None:
             continue
         location = item.get("location") or {}
+        safe_title = plain_text(title)[:MAX_JOB_TITLE_CHARACTERS]
+        if not safe_title:
+            continue
         location_name = location.get("name", "") if isinstance(location, dict) else ""
-        locations = (
-            [location_name.strip()]
-            if isinstance(location_name, str) and location_name.strip()
-            else []
+        safe_location = (
+            plain_text(location_name)[:MAX_LOCATION_CHARACTERS]
+            if isinstance(location_name, str)
+            else ""
         )
+        locations = [safe_location] if safe_location else []
         try:
             jobs.append(
                 Job(
                     spec=JobSpec(
-                        title=title.strip(),
+                        title=safe_title,
                         company=_company_name(identifier),
                         locations=locations,
-                        description=plain_text(str(item.get("content") or "")),
+                        description=bounded_description(
+                            str(item.get("content") or "")
+                        ),
                         posted_date=_parse_iso_date(item.get("updated_at")),
                         source_url=source_url,
                         source_type="greenhouse",
@@ -87,10 +126,13 @@ def parse_lever_jobs(company_slug: str, payload: Any) -> list[Job]:
         if not isinstance(item, dict):
             continue
         title = item.get("text")
-        source_url = item.get("hostedUrl")
+        source_url = safe_job_url(item.get("hostedUrl"))
         if not isinstance(title, str) or not title.strip():
             continue
-        if not isinstance(source_url, str) or not source_url.strip():
+        if source_url is None:
+            continue
+        safe_title = plain_text(title)[:MAX_JOB_TITLE_CHARACTERS]
+        if not safe_title:
             continue
         description_parts = [str(item.get("descriptionPlain") or "")]
         lists = item.get("lists") or []
@@ -107,21 +149,26 @@ def parse_lever_jobs(company_slug: str, payload: Any) -> list[Job]:
             item.get("categories") if isinstance(item.get("categories"), dict) else {}
         )
         location = categories.get("location", "")
-        locations = (
-            [location.strip()] if isinstance(location, str) and location.strip() else []
+        safe_location = (
+            plain_text(location)[:MAX_LOCATION_CHARACTERS]
+            if isinstance(location, str)
+            else ""
         )
+        locations = [safe_location] if safe_location else []
         commitment = categories.get("commitment", "unknown")
         employment_type = (
-            commitment.strip() if isinstance(commitment, str) else "unknown"
+            plain_text(commitment)[:MAX_EMPLOYMENT_TYPE_CHARACTERS]
+            if isinstance(commitment, str)
+            else "unknown"
         )
         try:
             jobs.append(
                 Job(
                     spec=JobSpec(
-                        title=title.strip(),
+                        title=safe_title,
                         company=_company_name(identifier),
                         locations=locations,
-                        description=plain_text(" ".join(description_parts)),
+                        description=bounded_description(" ".join(description_parts)),
                         employment_type=employment_type or "unknown",
                         source_url=source_url,
                         source_type="lever",
@@ -174,10 +221,37 @@ async def _read_public_feed(
     params: dict[str, str],
 ) -> Any:
     try:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            return response.json()
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            async with client.stream("GET", url, params=params) as response:
+                if response.is_redirect:
+                    raise DiscoveryError(
+                        f"The public {provider.title()} job feed is temporarily unavailable"
+                    )
+                response.raise_for_status()
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError:
+                        declared_length = 0
+                    if declared_length > MAX_PUBLIC_FEED_BYTES:
+                        raise DiscoveryError(
+                            f"The public {provider.title()} job feed is too large to preview safely"
+                        )
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > MAX_PUBLIC_FEED_BYTES:
+                        raise DiscoveryError(
+                            f"The public {provider.title()} job feed is too large to preview safely"
+                        )
+                    body.extend(chunk)
+                return json.loads(body)
+    except DiscoveryError:
+        raise
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             raise DiscoveryError(

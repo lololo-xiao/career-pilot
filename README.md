@@ -173,7 +173,7 @@ platform notes, and the Docker fallback.
 ```bash
 uv sync --dev --extra companion
 cp .env.example .env
-uv run fastapi dev
+uv run fastapi dev --no-proxy-headers
 ```
 
 In a second terminal:

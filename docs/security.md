@@ -7,7 +7,14 @@ loopback FastAPI process, not the language model.
 ## Enforced boundaries
 
 - The native server binds to loopback. Remote binding requires an explicit advanced CLI
-  override. Docker publishes only to `127.0.0.1`.
+  override. Docker publishes only to `127.0.0.1`. The native and Docker launch commands
+  disable proxy-header processing.
+- Public Greenhouse and Lever preview is restricted to a direct loopback peer. Requests
+  carrying client-identity forwarding headers are rejected rather than trusted. As a
+  result, this preview is unavailable through forwarding proxies, from Docker bridge
+  peers, or through alternate servers that cannot preserve a provable direct loopback
+  client; the rest of the local product does not gain a public-hosting or authentication
+  boundary from this check.
 - CareerPilot creates one stable local identity automatically; there is no product login
   boundary. The service must remain on loopback or behind trusted host-level access control.
   Unsafe browser methods are checked against the configured Origin and Fetch Metadata.

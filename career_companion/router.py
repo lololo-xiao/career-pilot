@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_companion_paths, get_companion_session
 from career_companion.config import load_config, public_settings
+from career_companion.guided_discovery_router import router as guided_discovery_router
 from career_companion.database import (
     ApplicationRecord,
     ApprovalRecord,
@@ -68,6 +69,7 @@ from career_companion.services.revisions import (
 from career_companion.services.tailoring import approve_artifact, generate_application_pack
 
 router = APIRouter(prefix="/api/v1", tags=["career-companion"])
+router.include_router(guided_discovery_router)
 SessionDep = Annotated[Session, Depends(get_companion_session)]
 PathsDep = Annotated[CompanionPaths, Depends(get_companion_paths)]
 

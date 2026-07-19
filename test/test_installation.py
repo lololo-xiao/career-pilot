@@ -12,7 +12,11 @@ from fastapi.testclient import TestClient
 
 from app.browser_security import browser_request_guard
 from app.static_frontend import mount_static_frontend
-from career_companion.cli import _configure_runtime_environment, setup_command
+from career_companion.cli import (
+    _configure_runtime_environment,
+    setup_command,
+    start_command,
+)
 from career_companion.config import load_config
 from career_companion.paths import CompanionPaths
 from career_companion.playwright_integrity import chromium_sha256
@@ -131,6 +135,49 @@ def test_runtime_configuration_does_not_change_default_path_layout(
     assert "CAREER_COMPANION_HOME" not in os.environ
 
 
+def test_start_disables_proxy_headers_even_when_environment_trusts_all(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    for name in (
+        "AUTH_DATABASE_PATH",
+        "CAREERPILOT_AUTH_SECRET",
+        "CAREERPILOT_INTERNAL_API_URL",
+        "FRONTEND_ORIGINS",
+        "LANGFUSE_TRACING_ENABLED",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CAREER_COMPANION_HOME", str(tmp_path / "companion"))
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    monkeypatch.setattr("career_companion.cli.frontend_build_directory", lambda: None)
+    monkeypatch.setattr("career_companion.cli.uvicorn.run", fake_run)
+
+    result = start_command(
+        Namespace(
+            host="0.0.0.0",
+            port=8787,
+            allow_remote=True,
+            no_open=True,
+            api_only=True,
+        )
+    )
+
+    assert result == 0
+    assert captured["args"]
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["host"] == "0.0.0.0"
+    assert kwargs["proxy_headers"] is False
+    assert "forwarded_allow_ips" not in kwargs
+    assert os.environ["FORWARDED_ALLOW_IPS"] == "*"
+
+
 def test_public_workspace_templates_are_generic_and_non_destructive(tmp_path) -> None:
     paths = CompanionPaths.at_root(tmp_path / "base").scoped_to("account-a")
     initialize_account_workspace(paths)
@@ -187,6 +234,7 @@ def test_release_files_are_sanitized_and_package_the_full_runtime() -> None:
     dockerfile = (root / "Dockerfile").read_text()
     for required in ("app", "career_companion", "job_pipeline", "agent-profile"):
         assert f"COPY {required} " in dockerfile
+    assert '"--no-proxy-headers"' in dockerfile
     for installer in (root / "install.sh", root / "install.ps1"):
         installer_text = installer.read_text()
         assert "scripts/static_ui_release.py" in installer_text

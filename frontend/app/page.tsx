@@ -1075,6 +1075,7 @@ export default function Home() {
         </button>
         <nav className="pilot-nav" aria-label="CareerPilot sections">
           <button className="is-active" type="button"><Icon name="home" /><span>Today</span></button>
+          <Link href="/discover"><Icon name="target" /><span>Discover jobs</span></Link>
           <Link href="/workspace"><Icon name="briefcase" /><span>Workspace</span></Link>
           <button type="button" disabled><Icon name="spark" /><span>Interview practice</span><small>Soon</small></button>
         </nav>

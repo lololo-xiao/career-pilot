@@ -110,6 +110,9 @@ fallback.
 
 Because the application has no product login boundary, keep it on loopback or behind a
 trusted host-level access control. Do not expose it directly to the public internet.
+The known-board public job preview additionally requires the API to observe an
+unforwarded loopback client. It is intentionally unavailable across the Docker bridge or
+through a forwarding proxy, even when the published browser and API ports remain local.
 
 ## Safe limitations
 
