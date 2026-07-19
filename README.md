@@ -42,10 +42,11 @@ flowchart LR
     LEARN -. improve future support .-> KNOW
 ```
 
-The workspace already covers most of this loop. Pilot now has a restricted conversational
-path for public discovery, deterministic ranking, explicit tracking, and scored-application
-decisions. The next milestone is extending that same evidence and approval contract through
-tailoring, interview practice, and preview-only form assistance.
+The workspace already covers most of this loop. Pilot and the dedicated guided UI can read
+one bounded public Greenhouse or Lever board, preview without selecting or storing anything,
+save only checked roles, rank them deterministically, and carry an explicit choice into the
+pipeline. The next milestone is extending that same evidence and approval contract through
+tailoring, interview practice, and scheduled search queues.
 
 ## What works today
 
@@ -53,6 +54,7 @@ tailoring, interview practice, and preview-only form assistance.
 |---|---:|---|
 | Pilot conversations | ✅ Ready | Persistent sessions, rename/delete, stored CV and role context, fit reports, model and reasoning controls |
 | Identity and personality | ✅ Ready | Custom name and SOUL notes mirrored to readable local files; protected safety policy remains read-only |
+| Guided setup and recovery | ✅ Ready | Five-step Settings navigator, six independently retryable reads, preserved loaded data and unsaved drafts, stale-response suppression, and account-bound Codex authorization attempts |
 | Career evidence | ✅ Ready | PDF/DOCX workspace import, editable claims, source excerpts, verification state, work authorization, languages |
 | Project evidence | ✅ Ready | Read-only local or public GitHub analysis, technologies, improvements, and interview questions |
 | Grounded fit | ✅ Ready | 0–10 fit report with demonstrated, adjacent, missing, requirements, actions, and unsupported-claim warnings |
@@ -62,7 +64,7 @@ tailoring, interview practice, and preview-only form assistance.
 | Agent resources | ✅ Ready | Visible read-only built-ins, editable user resources, four curated preview-before-install skill starters, strict single-file skill import, and explicit user-skill export |
 | MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
 | Revision safety | 🟡 Partial | Skill/rubric proposals support evaluation, quarantine, activation, and rollback. Explicit supported memory corrections become inactive review drafts; existing active evaluated memory is used at runtime |
-| Job discovery | 🟡 Partial | Pilot can discover public Greenhouse/Lever roles and save, rank, track, approve, or archive an explicit scored selection; dedicated guided discovery and tailoring orchestration remain unfinished |
+| Job discovery | ✅ Ready | Pilot plus a dedicated known-board UI can preview bounded public Greenhouse/Lever roles, start with zero selected or saved, persist only checked roles through canonical deduplication, then rank, track, approve, or archive an explicit selection |
 | Form assistance | 🟡 Partial | Pilot can create evidence-bound local field previews without opening a form on POSIX systems with secure directory-descriptor storage; it fails closed elsewhere. A guarded browser-fill backend exists separately and is not exposed to Pilot |
 | Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes. The privacy-safe inspector shows what was considered, not answer-level attribution; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
@@ -85,7 +87,7 @@ does not redact anything the user intentionally saved inside the skill content.
 ## What to show in a meetup
 
 The [HTML meetup deck](docs/meetup-slides.html) is a keyboard-controlled, printable
-12-slide story built from the real current interface. Open the file directly, or serve the
+13-slide story built from the real current interface. Open the file directly, or serve the
 repository so its current product screenshots resolve:
 
 ```bash
@@ -96,15 +98,17 @@ Then open `http://127.0.0.1:8080/docs/meetup-slides.html`.
 
 Recommended five-minute demo:
 
-1. Open Pilot and show its identity, persistent session, and working context.
-2. Ask whether one role is worth pursuing; open the grounded fit card.
-3. Show one demonstrated claim, one adjacent skill, and one honest gap.
-4. If the workspace was pre-warmed with a provider turn, open the memory inspector and show what Pilot considered without exposing prompts or identifiers; otherwise show its honest empty state and continue.
-5. Move through the evidence profile, ranked queue, and application stage, then end at the boundary: the workspace keeps preparation local and the user submits.
+1. Open Settings or Pilot and show the guided setup, identity, persistent session, and working context.
+2. Open `/discover`, preview one known public board, and point out that zero roles begin selected or saved.
+3. Check one role, then ask whether it is worth pursuing; open the grounded fit card.
+4. Show one demonstrated claim, one adjacent skill, one honest gap, and—if pre-warmed—the privacy-safe memory inspector.
+5. Move the role through the ranked queue and application stage with a visible next action.
+6. End at the boundary: CareerPilot keeps preparation local; the user reviews and submits.
 
 The credential-free seed supplies the profile, queue, application stages, and audit-safe
 story. It intentionally does not fabricate a provider-generated fit report, retrieval
-history, or artifact pack; pre-warm those optional steps or omit them from the live path.
+history, public provider response, or artifact pack; pre-warm those optional steps or use
+the deck's clearly labelled deterministic guided-discovery screenshot fallback.
 
 The deck supports `←` / `→`, `PageUp` / `PageDown`, `Home` / `End`, `F` for fullscreen,
 `N` for speaker notes, and `D` to open the default local product URL.
@@ -125,7 +129,7 @@ flowchart TB
     MATCH --> CHROMA[Ephemeral Chroma + local embeddings]
     MATCH --> REPORT[Strict report + citation checks]
     API --> APPROVAL[Scoped, expiring approval boundary]
-    APPROVAL --> FORM[Approved form fill only]
+    APPROVAL --> FORM[Separate guarded fill backend — not Pilot-exposed]
     FORM --> HUMAN[Human review and final submission]
 ```
 
@@ -235,15 +239,16 @@ uv run python -m scripts.demo_preflight
 cd frontend
 node --test test/*.test.ts
 npm run lint
+npx tsc --noEmit --allowImportingTsExtensions
 npm run build
 ```
 
-The current reproducible safe backend audit passes **677 backend tests** with **6
-platform-specific skips**, plus **38 frontend unit tests**. Two offline package-contract
-checks were not run because the available sandbox could not access their required
-package/cache runtime; they are not included in the passing count. The offline
-evaluator validates **25 strong, partial, and mismatch cases**; frontend lint, the
-production build, and demo preflight also pass.
+The current clean integrated audit passes **703 backend tests** with **6
+platform-specific skips**, plus **60 frontend unit tests**. The count includes the offline
+wheel/source-distribution contracts; those checks intentionally reject ignored local
+frontend dotenv files, so release verification runs from clean release inputs. The offline
+evaluator validates **25 strong, partial, and mismatch cases**; frontend lint, the compatible
+TypeScript check, and the Next.js 16.2.10 Turbopack production build also pass.
 
 One explicit provider-backed smoke test is available:
 
@@ -281,7 +286,7 @@ into a genuinely proactive job-search agent.
 
 - [x] Add a first-run checklist: connection → profile → target → first fit check.
 - [x] Give Pilot and Workspace one clear primary “next best action.”
-- [ ] Extend the primary next action and recovery guidance across every Settings screen.
+- [x] Add five-step Settings guidance with independently recoverable reads and preserved drafts.
 - [x] Explain deterministic queue score versus evidence-grounded 0–10 fit score.
 - [ ] Add multiple named CV/profile versions for different role families.
 - [ ] Add OCR for image-only and scanned PDFs.
@@ -295,7 +300,7 @@ into a genuinely proactive job-search agent.
 ### P1 — agent orchestration and safe automation
 
 - [x] Expose Greenhouse/Lever discovery through Pilot.
-- [ ] Add a dedicated guided discovery experience to the primary UI.
+- [x] Add a dedicated guided discovery experience to the primary UI.
 - [ ] Let Pilot orchestrate discover → deduplicate → rank → track → tailor in one conversation.
 - [ ] Finish the evidence-first tailoring pack with exactly three reviewed drafts and
   prevent generic status overrides from bypassing artifact review.
@@ -304,8 +309,9 @@ into a genuinely proactive job-search agent.
 - [ ] Bind every tailoring claim to an intact stored source and explicit user-confirmation
   provenance instead of trusting a client-declared `verified` label.
 - [x] Add a guided, deterministic local form-field preview from verified evidence and approved artifacts.
-- [ ] Add secure form-preview storage for Windows; unsupported platforms currently fail
-  closed before any file or database mutation.
+- [ ] Pass native Windows CI and integrate the independently reviewed secure Windows
+  form-preview storage candidate; current `main` still fails closed before any file or
+  database mutation on unsupported platforms.
 - [ ] Add a separately confirmed external fill phase around the existing guarded backend.
 - [ ] Surface approval history and explain exactly what each token authorizes.
 - [ ] Add safe daily/weekly search queues with a visible pause switch and budget.
@@ -356,11 +362,14 @@ before it reaches `main`:
 |---|---:|---|---|
 | `memory-runtime` | ✅ Integrated | Deterministic retrieval, citations, inspector, finite preference drafts, atomic rollback | Define retention before adding semantic retrieval |
 | `agent-orchestration` | ✅ Integrated | Discover → deduplicate → rank → track → approve/archive with an exact Pilot tool boundary | Extend the accepted authorization contract into dedicated downstream workflows |
-| `guided-practice` | 🟡 Corrections required | First run, isolated interview practice, grounded feedback, and resilient UX | Close seven accepted concurrency, cancellation, history, cleanup, and accessibility findings; then re-review |
+| `guided-settings` | ✅ Integrated | Five-step setup, independent recovery, draft preservation, stale-read suppression, and account-bound Codex attempts | Extend the same recovery clarity to future consequential-action screens |
+| `guided-discovery` | ✅ Integrated | Loopback-only known-board preview, bounded reads, zero default selection, checked canonical saves, and dedicated `/discover` UI | Orchestrate the accepted path into evidence-safe tailoring without broadening authority |
+| `guided-practice` | ⏸️ Preserved | First run, isolated interview practice, grounded feedback, and resilient UX | Resume only after explicit approval, then close seven accepted concurrency, cancellation, history, cleanup, and accessibility findings |
 | `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
-| `tailoring-drafts` | 🟡 Corrections required | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Fix status bypass, partial/round-trip migrations, and stored-source confirmation; then re-review |
-| `form-fill-workspace` | ✅ Integrated | Persistent evidence-bound local preview; no browser or external mutation | Add a secure Windows storage backend, then design a separately confirmed external fill phase |
-| `skill-starter-library` | 🟡 Ready for review | Four concise job-search starters, preview-only strict import, guarded explicit install, and exact user-skill export; no backend or runtime-policy changes | Review the scoped feature commit and integrate it without the lane-local package cache |
+| `tailoring-drafts` | ⏸️ Preserved | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Resume only after explicit approval, then fix status bypass, partial/round-trip migrations, and stored-source confirmation |
+| `form-fill-workspace` | ✅ Integrated | Persistent evidence-bound local preview on secure POSIX storage; no browser or external mutation | Accept a Windows backend only after native CI, then design a separately confirmed external fill phase |
+| `windows-preview-storage` | 🟡 Native CI required | Independently reviewed Windows no-follow temporary storage, atomic publish, cleanup, and conflict normalization | Run the mandatory `windows-latest` selection with zero skips before integration |
+| `skill-starter-library` | ✅ Integrated | Four concise job-search starters, preview-only strict import, guarded explicit install, and exact user-skill export | Evaluate additional user-owned extension types without weakening protected policy |
 
 Each lane starts with an explicit interface contract. Database migrations stay owned by
 one lane at a time, and integration uses small reviewed commits instead of a shared mutable
@@ -380,6 +389,7 @@ worktree.
 - `GET|PUT /settings/agent-identity` — persistent name and supplemental SOUL notes.
 - `GET /settings/agent-resources` — editable memories and visible skills.
 - `POST|PUT|DELETE /settings/agent-resources/{kind}/...` — guarded user resource changes.
+- `POST /api/v1/jobs/discover-public` — loopback-only bounded preview of one public Greenhouse or Lever board; stores zero jobs.
 - `GET|POST /companion/sessions` — list or create persistent sessions.
 - `GET|PUT|DELETE /companion/sessions/{id}` — restore, rename, or delete a session.
 - `PUT /companion/sessions/{id}/context` — persist CV, role, and fit context.
