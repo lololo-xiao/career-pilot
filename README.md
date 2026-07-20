@@ -60,15 +60,17 @@ tailoring, interview practice, and scheduled search queues.
 | Grounded fit | ✅ Ready | 0–10 fit report with demonstrated, adjacent, missing, requirements, actions, and unsupported-claim warnings |
 | Job queue | ✅ Ready | Manual/CSV import, URL deduplication, deterministic ranking, filters, and visible score reasons |
 | Application pipeline | ✅ Ready | Detailed stages, next actions, status history, follow-ups, artifact versions, and explicit manual-submission confirmation |
+| Approval records | ✅ Ready | Account-scoped, cursor-paginated records explain the exact action, request fingerprint, expiry, one-use state, and what each approval does not authorize |
 | Tailoring | 🟡 Partial | Draft/PDF/version-approval foundations exist; cited evidence snapshots, unsupported-gap handling, and retry/concurrency safety are being hardened before this is meetup-ready |
 | Agent resources | ✅ Ready | Visible read-only built-ins, editable user resources, four curated preview-before-install skill starters, strict single-file skill import, and explicit user-skill export |
-| MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists and disabled-by-default risky integrations |
+| MCP customization | ✅ Ready | Presets and custom stdio/HTTP servers with explicit tool allowlists, plus manual approval-gated checks that group allowed, new, and missing tool names without calling a tool or changing the saved allowlist |
 | Revision safety | 🟡 Partial | Skill/rubric proposals support evaluation, quarantine, activation, and rollback. Explicit supported memory corrections become inactive review drafts; existing active evaluated memory is used at runtime |
 | Job discovery | ✅ Ready | Pilot plus a dedicated known-board UI can preview bounded public Greenhouse/Lever roles, start with zero selected or saved, persist only checked roles through canonical deduplication, then rank, track, approve, or archive an explicit selection |
-| Form assistance | 🟡 Partial | Pilot can create evidence-bound local field previews without opening a form on POSIX systems with secure directory-descriptor storage; it fails closed elsewhere. A guarded browser-fill backend exists separately and is not exposed to Pilot |
+| Form assistance | 🟡 Partial | Pilot can create evidence-bound local field previews without opening a form on POSIX systems. The separate guarded fill backend enforces a normalized exact-request approval and revalidates the destination, controls, resources, and immutable attachment bytes before atomic one-use consumption, but it is not exposed to Pilot or user-ready |
 | Long-term memory | 🟡 Partial | Pilot performs bounded deterministic retrieval across active evaluated memories and recorded outcomes. The privacy-safe inspector shows what was considered, not answer-level attribution; semantic/vector retrieval is still planned |
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
-| Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install verification is still planned |
+| Backup and restore | ✅ Ready | A credential-free source-to-restore drill preserved the database, workspace, and a user skill while excluding credentials and requiring provider reconnection |
+| Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install and Docker verification are still planned |
 | Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
 
 **Legend:** ✅ usable in the current local build · 🟡 real foundation with incomplete
@@ -103,7 +105,15 @@ Recommended five-minute demo:
 3. Check one role, then ask whether it is worth pursuing; open the grounded fit card.
 4. Show one demonstrated claim, one adjacent skill, one honest gap, and—if pre-warmed—the privacy-safe memory inspector.
 5. Move the role through the ranked queue and application stage with a visible next action.
-6. End at the boundary: CareerPilot keeps preparation local; the user reviews and submits.
+6. Open **Approval records** and show the exact fingerprint, expiry, `0/1` or `1/1`
+   use state, and **Does not authorize** scope.
+7. End at the boundary: CareerPilot's source of truth stays local, disclosed provider,
+   discovery, and MCP checks can cross the network, and the user still reviews and submits.
+
+If a deterministic fixture is pre-warmed, an optional 30–40 second Settings segment can
+show the MCP **Test saved connection** review and its allowed/new/missing tool groups. Say
+that server-reported descriptions are untrusted, no tool is executed, and any allowlist
+change remains a draft until the user explicitly saves it.
 
 The credential-free seed supplies the profile, queue, application stages, and audit-safe
 story. It intentionally does not fabricate a provider-generated fit report, retrieval
@@ -137,6 +147,11 @@ Provider credentials are encrypted separately from career workflow data. Chroma 
 ephemeral per fit analysis and never becomes the durable profile store. LangGraph covers
 the meaningful retrieve/analyze/verify stages; identity handling, parsing, validation,
 approvals, and deterministic grounding checks remain plain Python.
+
+The durable career-data source of truth stays on the user's device. Provider calls, guided
+public-board discovery, enabled MCP servers, and an approved manual MCP connection check
+can cross the network through their disclosed, bounded paths; “local-first” does not mean
+that every optional capability is offline.
 
 Read the [architecture notes](docs/architecture.md) and
 [security model](docs/security.md) for the trust boundaries and tradeoffs.
@@ -213,6 +228,10 @@ CareerPilot is intentionally conservative around career claims and external acti
 - Final application submission, LinkedIn applications, employer messages, and connection
   requests are not autonomous actions.
 - Tool output, job pages, uploaded documents, email, and MCP responses are untrusted input.
+- A manual MCP connection check runs only the saved target's startup/initialize exchange
+  and up to four `tools/list` pages. Startup or initialize may itself have effects; the
+  check never sends `tools/call`, starts OAuth, runs in the background, or silently saves
+  a discovered allowlist.
 - Provider keys, local databases, uploaded documents, browser state, and generated
   artifacts must never be committed.
 
@@ -243,12 +262,13 @@ npx tsc --noEmit --allowImportingTsExtensions
 npm run build
 ```
 
-The current clean integrated audit passes **703 backend tests** with **6
-platform-specific skips**, plus **60 frontend unit tests**. The count includes the offline
-wheel/source-distribution contracts; those checks intentionally reject ignored local
-frontend dotenv files, so release verification runs from clean release inputs. The offline
-evaluator validates **25 strong, partial, and mismatch cases**; frontend lint, the compatible
-TypeScript check, and the Next.js 16.2.10 Turbopack production build also pass.
+The clean integrated audit at feature baseline `a5dae60` passes **827 backend tests** with
+**6 platform-specific skips**, plus **74 frontend unit tests**. Release-distribution checks
+intentionally reject ignored local frontend dotenv files, so the full packaging contract
+runs from a clean release-input worktree while leaving a developer's `.env.local`
+untouched. The offline evaluator validates **25 strong, partial, and mismatch cases**;
+frontend lint, the compatible TypeScript check, and the Next.js 16.2.10 production build
+also pass.
 
 One explicit provider-backed smoke test is available:
 
@@ -277,7 +297,9 @@ into a genuinely proactive job-search agent.
 - [ ] Verify a clean macOS install from the packaged path.
 - [ ] Verify clean Windows 11 and mainstream Linux installs.
 - [ ] Build and run the Docker fallback on a clean machine.
-- [ ] Complete a backup/restore drill with provider credentials excluded.
+- [x] Complete a credential-free backup/restore drill: the manifest records
+  `includes_credentials: false`, sentinel and credential data stayed absent, and the
+  database, workspace, and user skill restored with provider reconnection required.
 - [ ] Inspect one opt-in Langfuse trace and confirm privacy wording.
 - [ ] Rehearse the five-minute story with the seeded/screenshot fallback.
 - [x] Bundle a reproducibly verified static UI and reject stale, mixed-build, or tampered release artifacts.
@@ -313,7 +335,8 @@ into a genuinely proactive job-search agent.
   form-preview storage candidate; current `main` still fails closed before any file or
   database mutation on unsupported platforms.
 - [ ] Add a separately confirmed external fill phase around the existing guarded backend.
-- [ ] Surface approval history and explain exactly what each token authorizes.
+- [x] Surface bounded approval history and explain the exact fingerprint, expiry, one-use
+  state, and what each record does not authorize.
 - [ ] Add safe daily/weekly search queues with a visible pause switch and budget.
 - [ ] Draft follow-ups from recorded outcomes; never send without a user preview and approval.
 - [x] Capture submission and employer outcomes as structured learning signals.
@@ -335,8 +358,10 @@ into a genuinely proactive job-search agent.
 
 ### P2 — extensibility
 
-- [ ] Add connection health checks and tool discovery for MCP servers; native Windows
-  CI remains the release gate for actual Job Object attachment and descendant cleanup.
+- [x] Add manual approval-gated saved-connection checks and bounded MCP tool discovery;
+  discovery changes only the draft allowlist until an explicit save.
+- [ ] Run native Windows MCP containment CI and smoke one production connector; current
+  end-to-end discovery evidence uses the owned deterministic fixture only.
 - [ ] Add guided OAuth for selected Gmail/Calendar/Drive connectors.
 - [x] Add four curated, preview-before-install job-search skill templates.
 - [x] Add bounded single-file import and exact-content export for user-owned skills.
@@ -366,9 +391,11 @@ before it reaches `main`:
 | `guided-settings` | ✅ Integrated | Five-step setup, independent recovery, draft preservation, stale-read suppression, and account-bound Codex attempts | Extend the same recovery clarity to future consequential-action screens |
 | `guided-discovery` | ✅ Integrated | Loopback-only known-board preview, bounded reads, zero default selection, checked canonical saves, and dedicated `/discover` UI | Orchestrate the accepted path into evidence-safe tailoring without broadening authority |
 | `guided-practice` | ⏸️ Preserved | First run, isolated interview practice, grounded feedback, and resilient UX | Resume only after explicit approval, then close seven accepted concurrency, cancellation, history, cleanup, and accessibility findings |
-| `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, backup, and smoke tests | Rehearse clean macOS/Windows/Linux installs and the Docker fallback |
+| `release-hardening` | 🟡 Install rehearsal | Reproducible static bundle, installers, Docker, credential-free backup/restore, and smoke tests | Backup drill is proven; rehearse clean Windows/Linux installs and the Docker fallback |
 | `tailoring-drafts` | ⏸️ Preserved | Evidence-safe CV, cover-letter, and interview drafts from an approved saved role | Resume only after explicit approval, then fix status bypass, partial/round-trip migrations, and stored-source confirmation |
 | `form-fill-workspace` | ✅ Integrated | Persistent evidence-bound local preview on secure POSIX storage; no browser or external mutation | Accept a Windows backend only after native CI, then design a separately confirmed external fill phase |
+| `approval-history` | ✅ Integrated | Account-scoped bounded history, exact fingerprints, expiry, current-consumer markers, and atomic one-use decisions/consumption | Keep the guarded browser-fill backend separate from Pilot and user-facing submission |
+| `mcp-health-discovery` | ✅ Integrated | Manual exact-server review, bounded initialize/tool-name discovery, secret suppression, containment, and draft-only reconciliation | Prove native Windows Job Object containment and smoke a production connector |
 | `windows-preview-storage` | 🟡 Native CI required | Independently reviewed Windows no-follow temporary storage, atomic publish, cleanup, and conflict normalization | Run the mandatory `windows-latest` selection with zero skips before integration |
 | `skill-starter-library` | ✅ Integrated | Four concise job-search starters, preview-only strict import, guarded explicit install, and exact user-skill export | Evaluate additional user-owned extension types without weakening protected policy |
 
@@ -402,9 +429,12 @@ worktree.
 - `GET|POST /api/v1/jobs` plus discovery, import, and score routes — deduplicated job queue.
 - `GET|POST /api/v1/applications` plus status and artifact routes — pipeline and versioned materials.
 - `GET|POST /api/v1/applications/.../form-preview` — deterministic local-only field plans; no URL, selector, browser, upload, or submission surface.
+- `GET /api/v1/approvals/history` — bounded account-scoped approval records with exact request binding and one-use state.
+- `POST /api/v1/browser/fill` — separate guarded backend consumer; not exposed to Pilot and not a user-ready submission workflow.
 - `GET /api/v1/model-routes` and `PUT /api/v1/model-routes/{route_name}` — task-specific model and cost controls.
 - `GET|POST /api/v1/revisions`, `POST /{id}/evaluate`, and `POST /{id}/rollback` — reversible user-owned revisions.
 - `GET|POST /settings/mcp` and `PUT|DELETE /settings/mcp/{name}` — allowlisted MCP configuration.
+- `POST /settings/mcp/{name}/probe-intents` and `POST /settings/mcp/{name}/probe-intents/{approval_id}/decision` — review and run one bounded saved-connection check.
 - `/docs` — interactive OpenAPI documentation in development.
 
 </details>

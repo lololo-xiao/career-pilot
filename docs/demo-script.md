@@ -1,74 +1,124 @@
-# CareerPilot demo script
+# CareerPilot meetup demo script
 
-Target length: 3 minutes. Record a backup before the July 16 freeze.
+Target length: 5 minutes. The story is one role, one evidence-based decision, and one
+controlled next step. Keep the screenshot deck open as the fallback.
 
-## Storyboard
+## Live story
 
-**0:00–0:20 — Promise**
+### 0:00–0:35 — Meet Pilot
 
-“Candidates are told to tailor every application, but the pressure to match keywords can
-turn into invented experience. CareerPilot helps you tailor aggressively without making
-claims your evidence cannot support.”
+Open the local app at `http://127.0.0.1:8787/`.
 
-Show the landing page and point to “Evidence over embellishment.”
+“CareerPilot is a local-first job-search agent that remembers the work, has a personality,
+and helps carry a search forward—but it still has to show the evidence behind its advice.”
 
-**0:20–0:45 — Inputs**
+Point to the named Pilot, persistent sessions, visible model route, and current role context.
+Do not make a provider call unless a known-good result was pre-warmed before the meetup.
 
-Click **Load demo profile**. Briefly call out that the candidate has Python, RAG, Chroma,
-FastAPI, evaluation, Docker, Azure Container Apps, and mentoring evidence. The job prefers
-Kubernetes and LangGraph, which are intentionally absent from the profile.
+### 0:35–1:20 — Preview one known board
 
-**0:45–1:05 — Run**
+Open **Discover jobs** and use the deterministic demo source, or a previously verified
+Greenhouse/Lever board.
 
-Click **Run match analysis**.
+- The preview starts with zero roles selected and zero saved.
+- Check one fictional role deliberately.
+- Save only that role into the deduplicated queue.
 
-“Behind this button, FastAPI invokes a LangGraph workflow. Chroma retrieves relevant CV
-chunks, GPT-5.6 returns a strict report, and a deterministic guardrail verifies every
-citation before the UI can display it.”
+Say: “This bounded read can contact the named public job-board provider, but it does not
+send the candidate profile, score a role, create an application, or submit anything.”
 
-**1:05–2:15 — Explain the report**
+### 1:20–2:35 — Decide with evidence
 
-Start with the score and one-sentence summary. Then scroll through:
+Open the pre-warmed fit report and ask, “Is this worth pursuing?”
 
-1. A direct matched skill and its verbatim candidate quote.
-2. An adjacent skill, emphasizing that transferable is not equivalent.
-3. Kubernetes or another missing skill.
-4. A prioritized preparation action tied to that gap.
-5. The unsupported-claim warning—this is the product differentiator.
+Show only four things:
 
-Avoid reading every card. The story is the separation between supported, adjacent,
-missing, and dishonest-to-claim.
+1. One demonstrated requirement with its candidate quote.
+2. One adjacent skill, emphasizing that transferable is not equivalent.
+3. One honest gap such as Kubernetes.
+4. The unsupported-claim warning and a concrete preparation action.
 
-**2:15–2:40 — Evidence and operations**
+“CareerPilot can say that you are close without rewriting ‘close’ into ‘experienced.’”
 
-Show one Langfuse trace with the retriever, analysis/model, and grounding guardrail spans.
-Point out prompt/workflow versions, model latency, and token usage. If traces are not
-available, show the architecture diagram in `docs/architecture.md`.
+If a provider-backed report is unavailable, use `meetup-assets/fit-report.png`; do not run a
+paid call on stage just to fill time.
 
-**2:40–3:00 — Close**
+### 2:35–3:25 — Show the source of truth
 
-“CareerPilot does not write fiction about your career. It shows what you can defend,
-what is adjacent, and what to learn next. Tailor aggressively. Never invent experience.”
+Open **My profile**, then the ranked **Job queue**.
+
+Point out that imported evidence is reviewable, queue scores have visible reasons, and the
+0–10 fit report is a separate evidence-grounded judgment. Move the role to the appropriate
+application stage and show its next action. Decide and prepare honestly; do not promise
+finished evidence-safe tailoring while that lane remains gated.
+
+### 3:25–4:25 — Open the approval record
+
+Go to **Controls & memory → Approval records** and open the form-fill record.
+
+Show:
+
+- the exact action type and abbreviated SHA-256 request fingerprint;
+- the expiry time and `0/1` or `1/1` remaining-use state;
+- the recorded request summary; and
+- **Does not authorize**.
+
+Say: “This is an audit and explanation record, not a reusable password. The guarded backend
+accepts the exact approved request at most once before expiry. Pilot cannot use it to submit
+an application, and I will not trigger a browser fill in this demo.”
+
+### 4:25–5:00 — Close at the boundary
+
+“The durable career workspace stays on this device. Disclosed provider calls, public-board
+reads, and optional MCP checks can cross a bounded network path. Consequential external
+actions still need a specific approval, and final submission stays human.”
+
+End on the product promise: “Automate the search. Keep the truth.”
+
+## Optional 30–40 second MCP segment
+
+Use this only when the owned local fixture is already configured and tested.
+
+1. Open **Settings → Tools & MCP**.
+2. Select the disabled **Meetup local job catalog** fixture.
+3. Click **Test saved connection** and review the exact saved target.
+4. Choose **Run this check once**.
+5. Show the allowed, new, and missing tool-name groups, then leave the proposed allowlist as
+   an unsaved draft.
+
+Say: “This manual check starts the saved local process and performs MCP initialization plus
+at most four `tools/list` pages. Startup or initialization can itself have effects, so it
+still needs approval. CareerPilot does not call a discovered tool, start OAuth, run this in
+the background, trust server descriptions, or silently save the draft.”
 
 ## Recording checklist
 
-- Use a 16:9 browser window at 1920×1080 or 1440×810 and zoom to 100%.
-- Hide bookmarks, notifications, secrets, provider dashboards, and unrelated tabs.
-- Start from a fresh page and use the built-in demo inputs for repeatability.
-- Run one warm-up analysis before recording so the embedding model and services are warm.
-- Keep a successfully generated report open in a second tab as a fallback.
-- Record a separate 10-second architecture/Langfuse shot so it can be edited in cleanly.
-- Verify text is readable and audio has no clipping before recording the final take.
-- Never display `.env`, API keys, full personal CVs, or other candidates' trace data.
+- Use a 16:9 browser window at 1920×1080 or 1440×810 and 100% zoom.
+- Use the credential-free demo workspace; never show `.env`, API keys, personal CVs,
+  provider dashboards, or unrelated tabs.
+- Warm the local app, guided demo source, and screenshot fallbacks before recording.
+- Keep a successfully generated fit report open only if its provider call was explicitly
+  authorized and completed before the demo.
+- Keep optional Langfuse tracing disabled unless privacy wording and one opt-in trace were
+  reviewed in advance.
+- Create a fresh credential-free backup before the final recording. The restore drill itself
+  is already proven; provider credentials are intentionally absent and must be reconnected.
+- Verify text is readable, notifications are hidden, and the backup video plays offline.
 
 ## Pre-demo release gate
 
+Run without a paid model call:
+
 ```bash
 uv run python -m scripts.demo_preflight
-uv run python -m pytest -q
+uv run python -m pytest -p no:cacheprovider -q
 uv run python -m evals.run_evals
-cd frontend && npm run lint && npm run build
+cd frontend
+npm test
+npm run lint
+npx tsc --noEmit --allowImportingTsExtensions
+npm run build -- --webpack
 ```
 
-Then check the deployed `/health`, run the built-in sample end-to-end, open its Langfuse
-trace if enabled, and confirm the backup video plays without network access.
+Then verify the local loopback `/health`, open the seeded workspace, rehearse the exact
+five-minute path, and confirm the deck and screenshot fallback work without network access.

@@ -136,6 +136,8 @@
     .mini-shot { position: relative; min-height: 0; border-radius: 20px; overflow: hidden; border: 1px solid rgba(24,41,35,.16); box-shadow: 0 16px 46px rgba(23,61,50,.13); background: white; }
     .mini-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
     .mini-shot.resources img { object-position: 50% 60%; }
+    .mini-shot.approval img { object-position: 0 20%; transform: scale(1.2); transform-origin: 60% 40%; }
+    .mini-shot.mcp img { object-position: 100% 34%; transform: scale(1.25); transform-origin: 100% 34%; }
     .pipeline-copy { display: flex; flex-direction: column; justify-content: center; padding: 34px; background: rgba(255,255,255,.82); }
     .pipeline-copy h3 { margin: 8px 0 20px; font: 500 31px/1.08 var(--serif); }
     .pipeline-copy ul { margin: 0; padding-left: 20px; display: grid; gap: 13px; color: var(--muted); font-size: 15px; line-height: 1.4; }
@@ -295,11 +297,11 @@
         <article class="loop-step"><strong>02</strong><span>Discover</span><small>Roles from selected sources</small></article>
         <article class="loop-step"><strong>03</strong><span>Decide</span><small>Rank fit and expose gaps</small></article>
         <article class="loop-step"><strong>04</strong><span>Prepare</span><small>Tailor and rehearse honestly</small></article>
-        <article class="loop-step"><strong>05</strong><span>Approve</span><small>Human controls every external action</small></article>
+        <article class="loop-step"><strong>05</strong><span>Approve</span><small>Human controls every consequential external action</small></article>
         <article class="loop-step"><strong>06</strong><span>Learn</span><small>Outcomes improve future support</small></article>
       </div>
       <p class="loop-caption">Today: Pilot plus the guided UI can discover, rank, track, decide, and create an evidence-bound local field preview. Recoverable Settings and curated skills make that loop configurable.</p>
-      <aside class="speaker-notes" hidden>Walk left to right. Be explicit: bounded public discovery works both through Pilot and a dedicated preview-first screen. Settings now recovers each read independently, and the skill library previews before install. Local form preview is available on supported POSIX systems, but tailoring, practice, browser filling, and every external action remain separately controlled.</aside>
+      <aside class="speaker-notes" hidden>Walk left to right. Be explicit: bounded public discovery works both through Pilot and a dedicated preview-first screen. Settings now recovers each read independently, and the skill library previews before install. Local form preview is available on supported POSIX systems, but tailoring, practice, browser filling, and consequential external actions remain separately controlled.</aside>
     </section>
 
     <section class="slide" id="slide-4" data-title="Meet Pilot">
@@ -353,12 +355,12 @@
 
     <section class="slide" id="slide-7" data-title="Operating workspace">
       <div class="topline"><p class="kicker">Actual product · operating workspace</p><span class="tiny">From “maybe” to the next controlled action</span></div>
-      <h2>Rank the opportunities. Then carry each one through a visible pipeline.</h2>
+      <h2>Rank the opportunity. Then make the permission legible.</h2>
       <div class="side-by-side">
         <div class="mini-shot"><img src="meetup-assets/job-queue.png" alt="CareerPilot ranked job queue with score reasons" /><span class="caption-tag">Deterministic queue · reason for every score</span></div>
-        <div class="mini-shot pipeline-copy"><span class="tiny">SHIPPED WORKSPACE BOUNDARY</span><h3>Application tracking stays visible and human-controlled.</h3><ul><li>Detailed stages, status history, follow-ups, and outcomes</li><li>Versioned artifacts remain reviewable in the workspace</li><li>Pilot can track, approve, archive, and build a local evidence-bound preview on secure POSIX storage</li><li>No Pilot browser filling or submission; final submission is always manual</li></ul><p>The Windows storage candidate awaits native CI. Evidence-safe tailoring and interview practice remain gated lanes.</p></div>
+        <div class="mini-shot approval"><img src="meetup-assets/approval-records.png" alt="CareerPilot Approval records showing an exact request fingerprint, expiry, one-use state, and what the approval does not authorize" /><span class="caption-tag">Exact fingerprint · expiry · 0/1 or 1/1 use</span></div>
       </div>
-      <aside class="speaker-notes" hidden>Clarify that the queue score is deterministic prioritization, while the 0–10 fit report is evidence-grounded analysis. The first-run guide and Workspace now make that distinction explicit.</aside>
+      <aside class="speaker-notes" hidden>Clarify that the queue score is deterministic prioritization, while the 0–10 fit report is evidence-grounded analysis. Application stages, follow-ups, artifacts, and outcomes stay visible. Then open the approval record: it is an account-scoped audit explanation, not a replay password. Show the exact binding, expiry, remaining use, and “Does not authorize.” Do not trigger the guarded fill backend; Pilot cannot access it, it never submits, and external filling is not user-ready.</aside>
     </section>
 
     <section class="slide" id="slide-8" data-title="Guided discovery">
@@ -378,22 +380,22 @@
       <aside class="speaker-notes" hidden>This is the shipped production interface. The screenshot uses a deterministic local demo feed so the meetup does not depend on an external board. In the real path, the user names one public Greenhouse board token or Lever slug, previews a bounded result, checks roles deliberately, and saves through the canonical deduplication path. Stress that preview begins with zero selected and zero stored.</aside>
     </section>
 
-    <section class="slide" id="slide-9" data-title="Customization">
-      <div class="topline"><p class="kicker">Actual product · guided setup</p><span class="tiny">Not a fixed bot—a recoverable, user-owned agent workspace</span></div>
-      <h2>Personality, memories, skills, and outside tools are all visible.</h2>
+    <section class="slide" id="slide-9" data-title="Safe customization">
+      <div class="topline"><p class="kicker">Actual product · skills + MCP</p><span class="tiny">User-owned extensions with visible review boundaries</span></div>
+      <h2>Customize the agent without hiding the tool boundary.</h2>
       <div class="side-by-side">
-        <div class="mini-shot"><img src="meetup-assets/agent-customization.png" alt="CareerPilot five-step local Settings setup at the AI connection step" /><span class="caption-tag">Five guided steps · independent recovery</span></div>
         <div class="mini-shot resources"><img src="meetup-assets/agent-resources.png" alt="CareerPilot preview-first skill starter library" /><span class="caption-tag">Preview-first skills · explicit install</span></div>
+        <div class="mini-shot mcp"><img src="meetup-assets/mcp-health-discovery.png" alt="CareerPilot manual approval-gated MCP connection check showing allowed, new, and missing tool names" /><span class="caption-tag">Manual check · tool names only · draft not saved</span></div>
       </div>
       <div class="pill-row">
-        <span class="pill">Four curated starters</span><span class="pill">Bounded SKILL.md import</span><span class="pill">Exact user-skill export</span><span class="pill">MCP tool allowlists</span>
+        <span class="pill">Four curated starters</span><span class="pill">Bounded SKILL.md import</span><span class="pill">Exact user-skill export</span><span class="pill">Approval-gated MCP discovery</span>
       </div>
-      <aside class="speaker-notes" hidden>Say what “self-evolving” means today: skill and rubric proposals can be evaluated and rolled back; explicit supported memory corrections become inactive drafts for review. Existing active evaluated memory is retrieved with provenance. The inspector shows what was considered, not which source caused a particular sentence.</aside>
+      <aside class="speaker-notes" hidden>For skills, preview comes before install and user-owned files can be exported exactly. For the optional MCP fixture, say that the check is manual and bound to the exact saved server. It starts that target, performs initialize/initialized and at most four tools/list pages, and never sends tools/call. Server descriptions are untrusted and reconciliation changes only the unsaved draft. Startup or initialize may itself have effects, which is why the review is explicit. Then define “self-evolving” honestly: evaluated skill and rubric proposals can be rolled back; supported memory corrections become inactive drafts for review.</aside>
     </section>
 
     <section class="slide dark" id="slide-10" data-title="Safety architecture">
       <div class="topline"><p class="kicker">Architecture and trust</p><span class="tiny">Local by default · explicit at the boundary</span></div>
-      <h2>The system keeps work local. The user decides what leaves the device.</h2>
+      <h2>The source of truth stays local. Network paths stay visible and bounded.</h2>
       <div class="architecture" aria-label="CareerPilot architecture">
         <article class="arch-box"><span>Local source of truth</span><h3>Career workspace</h3><p>SQLite, CV evidence, jobs, applications, artifacts, conversations, revisions, audit events.</p></article>
         <div class="arch-arrow">→</div>
@@ -403,21 +405,21 @@
       </div>
       <div class="guardrails">
         <div class="guardrail"><strong>Truth boundary</strong><span>Fit reports separate demonstrated, adjacent, missing, and unsupported evidence.</span></div>
-        <div class="guardrail"><strong>Action boundary</strong><span>Preview and approve sensitive operations; tokens are scoped and expiring.</span></div>
+        <div class="guardrail"><strong>Action boundary</strong><span>Preview sensitive operations; durable records are exact, expiring, and single-use.</span></div>
         <div class="guardrail"><strong>Evolution boundary</strong><span>Skill/rubric revisions are evaluated; memory corrections remain inactive review drafts.</span></div>
       </div>
-      <aside class="speaker-notes" hidden>This slide answers “why local?” and “what can the agent do?” Avoid claiming public multi-user readiness; current deployment is deliberately device-local.</aside>
+      <aside class="speaker-notes" hidden>This slide answers “why local?” and “what can the agent do?” Provider calls, guided public-board discovery, and enabled or manually checked MCP servers can cross the network through disclosed paths. Avoid claiming offline-only behavior or public multi-user readiness; current deployment is deliberately device-local.</aside>
     </section>
 
     <section class="slide" id="slide-11" data-title="Roadmap">
       <div class="topline"><p class="kicker">Honest product status</p><span class="tiny">Ready now · next build · later scale</span></div>
       <h2>The guided workspace is real. The autonomous loop is the next product.</h2>
       <div class="roadmap-grid">
-        <article class="roadmap now"><small>Ready now</small><h3>Show this</h3><ul><li>Persistent Pilot sessions + SOUL</li><li>Evidence profile + grounded fit</li><li>Guided known-board discovery</li><li>Ranked queue + application history</li><li>Five-step Settings + safe recovery</li><li>Preview-first skill starter library</li></ul></article>
-        <article class="roadmap next"><small>Next</small><h3>Make it effortless</h3><ul><li>Semantic/vector memory retrieval</li><li>Cited evidence-safe tailoring</li><li>Native Windows preview verification</li><li>Interview practice workspace</li><li>Apply evaluated skills + rubrics</li><li>Approval history + action recovery</li></ul></article>
-        <article class="roadmap later"><small>Later</small><h3>Make it scalable</h3><ul><li>Safe scheduled search queues</li><li>Guided connector OAuth</li><li>Public hosting + multi-user auth</li><li>Postgres / vector retrieval</li><li>Retention and consent controls</li><li>Production observability + limits</li></ul></article>
+        <article class="roadmap now"><small>Ready now</small><h3>Show this</h3><ul><li>Persistent Pilot sessions + SOUL</li><li>Evidence profile + grounded fit</li><li>Guided known-board discovery</li><li>Ranked queue + application history</li><li>Exact, one-use Approval records</li><li>Preview-first skills + manual MCP checks</li></ul></article>
+        <article class="roadmap next"><small>Next</small><h3>Make it effortless</h3><ul><li>Cited evidence-safe tailoring</li><li>Interview practice workspace</li><li>Semantic/vector memory retrieval</li><li>Safe scheduled search queues</li><li>Apply evaluated skills + rubrics</li><li>Native Windows containment CI</li></ul></article>
+        <article class="roadmap later"><small>Later</small><h3>Make it scalable</h3><ul><li>Guided connector OAuth</li><li>Production connector smoke tests</li><li>Public hosting + multi-user auth</li><li>Postgres / vector retrieval</li><li>Retention and consent controls</li><li>Production observability + limits</li></ul></article>
       </div>
-      <aside class="speaker-notes" hidden>Be candid. Current cross-session retrieval is deterministic weighted-token matching, not semantic/vector search. Active evaluated memory is applied at runtime. Guided discovery and recoverable Settings are integrated. The secure Windows preview candidate passed local review but still requires native Windows CI before it can be accepted or integrated. Tailoring, practice, external fill, and runtime skill/rubric application are not done.</aside>
+      <aside class="speaker-notes" hidden>Be candid. Current cross-session retrieval is deterministic weighted-token matching, not semantic/vector search. Approval records and manual MCP discovery are integrated, but no production connector has been smoked and native Windows containment still needs CI. The secure Windows preview-storage candidate also remains isolated until native CI. Tailoring, practice, external fill, public hosting, and runtime skill/rubric application are not done.</aside>
     </section>
 
     <section class="slide peach" id="slide-12" data-title="Live demo">
@@ -431,13 +433,13 @@
         <div class="demo-steps">
           <article class="demo-step"><div><strong>Start with Pilot</strong><span>Show personality, sessions, and working context.</span></div><time>0:35</time></article>
           <article class="demo-step"><div><strong>Preview one public board</strong><span>Open guided discovery; emphasize zero selected and saved.</span></div><time>0:45</time></article>
-          <article class="demo-step"><div><strong>Ask: “Is this worth pursuing?”</strong><span>Open demonstrated, adjacent, and missing evidence.</span></div><time>1:20</time></article>
-          <article class="demo-step"><div><strong>Open the source of truth</strong><span>Show confirmed evidence and retrieval provenance.</span></div><time>0:55</time></article>
-          <article class="demo-step"><div><strong>Move it through the pipeline</strong><span>Show score reasons, status history, and the next controlled action.</span></div><time>0:55</time></article>
-          <article class="demo-step"><div><strong>End at the boundary</strong><span>“The workspace stays local; I review and submit.”</span></div><time>0:30</time></article>
+          <article class="demo-step"><div><strong>Ask: “Is this worth pursuing?”</strong><span>Open demonstrated, adjacent, and missing evidence.</span></div><time>1:15</time></article>
+          <article class="demo-step"><div><strong>Open the source of truth</strong><span>Show confirmed evidence and visible score reasons.</span></div><time>0:50</time></article>
+          <article class="demo-step"><div><strong>Move it through the pipeline</strong><span>Show status history and the next controlled action.</span></div><time>0:55</time></article>
+          <article class="demo-step"><div><strong>End on the approval record</strong><span>Show the exact fingerprint, expiry, 0/1 or 1/1 use, and “Does not authorize.”</span></div><time>0:40</time></article>
         </div>
       </div>
-      <aside class="speaker-notes" hidden>Keep screenshot fallbacks open. The guided-discovery screenshot uses a deterministic local feed; say so if you use it. Do not make a paid provider call unless the live smoke test passed before the meetup. The seed covers profile, queue, application stages, and the local safety story; it intentionally does not fabricate a fit report, retrieval history, or artifact pack. Clean Windows and Linux install rehearsals remain release gates.</aside>
+      <aside class="speaker-notes" hidden>Keep screenshot fallbacks open. The guided-discovery screenshot uses a deterministic local feed; say so if you use it. Do not make a paid provider call unless a live smoke was explicitly authorized and passed before the meetup. The seed covers profile, queue, application stages, and the local safety story; it intentionally does not fabricate a provider fit report, retrieval history, or artifact pack. Do not execute form fill. The optional MCP fixture segment adds 30–40 seconds and never calls a tool or saves its allowlist draft. Clean Windows and Linux install rehearsals remain release gates.</aside>
     </section>
 
     <section class="slide dark" id="slide-13" data-title="Closing">
