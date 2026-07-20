@@ -130,6 +130,22 @@ temporarily protects frontend dotenv files and restores them on every success or
 
 ## 4. Prepare and run the iOS Simulator build
 
+For ordinary local testing, one repository command now prepares the app, finds or boots
+an iPhone Simulator, builds and installs the native target, starts the project-local API,
+and launches CareerPilot:
+
+```bash
+./scripts/ios simulator
+```
+
+Keep that terminal open while testing; `Ctrl-C` stops a runtime started by the command.
+If a healthy runtime is already listening on port 8787, the command reuses it and returns
+after launching the app. For a quick repeat run after neither source nor native code has
+changed, use `./scripts/ios simulator --skip-prepare --skip-build`.
+
+The first simulator launch may still ask for the private backend URL. Enter
+`http://127.0.0.1:8787` once; the native client remembers it for later launches.
+
 From a fresh checkout, use:
 
 ```bash
@@ -161,15 +177,21 @@ In Xcode:
 3. click **Run** or press `Command-R`;
 4. wait for CareerPilot's first-launch server screen.
 
-Start the local runtime in another Terminal window with the private-mobile origin enabled:
+If you use Xcode directly instead of `./scripts/ios simulator`, start the project-local
+runtime in another Terminal window with the private-mobile origin enabled. Using the
+repository path avoids shell PATH problems:
 
 ```bash
-career-companion start --allow-remote --no-open
+.venv/bin/career-companion start --allow-remote --no-open --api-only
 ```
 
 For a Simulator on the same Mac, enter `http://127.0.0.1:8787`. The packaged client permits
 plain HTTP only for simulator loopback. Do not use this HTTP route on a physical device or
 expose port 8787 to a public interface.
+
+`--api-only` intentionally makes `http://127.0.0.1:8787/` return 404 because the native app
+already contains the interface. Use `http://127.0.0.1:8787/health` to check the API; a
+healthy response is `{"status":"ok"}`.
 
 ### Simulator acceptance test
 

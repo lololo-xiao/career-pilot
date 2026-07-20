@@ -13,6 +13,56 @@ def test_major_version_parses_node_and_xcode_output() -> None:
     assert ios_release._major_version("not a version", r"^v?(\d+)") is None
 
 
+def test_select_simulator_prefers_an_already_booted_iphone() -> None:
+    selected = ios_release._select_simulator(
+        {
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+                {
+                    "name": "iPhone 17 Pro",
+                    "udid": "new-shutdown",
+                    "state": "Shutdown",
+                    "isAvailable": True,
+                }
+            ],
+            "com.apple.CoreSimulator.SimRuntime.iOS-18-1": [
+                {
+                    "name": "iPhone 16",
+                    "udid": "existing-booted",
+                    "state": "Booted",
+                    "isAvailable": True,
+                }
+            ],
+        }
+    )
+
+    assert selected["udid"] == "existing-booted"
+
+
+def test_select_simulator_uses_newest_available_iphone() -> None:
+    selected = ios_release._select_simulator(
+        {
+            "com.apple.CoreSimulator.SimRuntime.iOS-18-1": [
+                {
+                    "name": "iPhone 16",
+                    "udid": "older",
+                    "state": "Shutdown",
+                    "isAvailable": True,
+                }
+            ],
+            "com.apple.CoreSimulator.SimRuntime.iOS-26-5": [
+                {
+                    "name": "iPhone 17 Pro",
+                    "udid": "newer",
+                    "state": "Shutdown",
+                    "isAvailable": True,
+                }
+            ],
+        }
+    )
+
+    assert selected["udid"] == "newer"
+
+
 def test_dotenv_files_are_hidden_and_restored_after_success(tmp_path: Path) -> None:
     frontend = tmp_path / "frontend"
     frontend.mkdir()

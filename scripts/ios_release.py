@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import platform
 import re
@@ -17,8 +18,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +33,8 @@ PLACEHOLDER_BUNDLE_ID = "com.careerpilot.app"
 MINIMUM_NODE_MAJOR = 22
 MINIMUM_XCODE_MAJOR = 26
 GIB = 1024**3
+DEFAULT_DEVELOPMENT_PORT = 8787
+DEVELOPMENT_DERIVED_DATA = Path("/private/tmp/careerpilot-ios-derived")
 FALLBACK_TOOL_DIRECTORIES = (
     Path("/opt/homebrew/bin"),
     Path("/usr/local/bin"),
@@ -439,6 +444,227 @@ def open_project() -> int:
     return 0
 
 
+def _runtime_version(runtime_identifier: str) -> tuple[int, ...]:
+    """Return a sortable version tuple from a CoreSimulator runtime identifier."""
+
+    suffix = runtime_identifier.rsplit("iOS-", maxsplit=1)[-1]
+    return tuple(int(component) for component in re.findall(r"\d+", suffix))
+
+
+def _select_simulator(
+    devices_by_runtime: dict[str, list[dict[str, object]]],
+) -> dict[str, str]:
+    """Prefer the already booted iPhone, then the newest available iPhone."""
+
+    candidates: list[dict[str, str]] = []
+    for runtime, devices in devices_by_runtime.items():
+        if ".iOS-" not in runtime:
+            continue
+        for device in devices:
+            name = device.get("name")
+            udid = device.get("udid")
+            state = device.get("state")
+            available = device.get("isAvailable", True)
+            if (
+                available is not True
+                or not isinstance(name, str)
+                or not name.startswith("iPhone")
+                or not isinstance(udid, str)
+                or not isinstance(state, str)
+            ):
+                continue
+            candidates.append(
+                {"runtime": runtime, "name": name, "udid": udid, "state": state}
+            )
+    if not candidates:
+        raise IOSReleaseError(
+            "No available iPhone Simulator was found. Install an iOS runtime in "
+            "Xcode Settings, then create an iPhone Simulator."
+        )
+
+    booted = [candidate for candidate in candidates if candidate["state"] == "Booted"]
+    choices = booted or candidates
+    return max(
+        choices,
+        key=lambda candidate: (
+            _runtime_version(candidate["runtime"]),
+            candidate["name"],
+        ),
+    )
+
+
+def _development_backend_healthy(port: int) -> bool:
+    request = Request(
+        f"http://127.0.0.1:{port}/health",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with urlopen(request, timeout=1.0) as response:  # noqa: S310 - fixed loopback URL
+            if response.status != 200:
+                return False
+            payload = json.load(response)
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "ok"
+
+
+def _stop_development_backend(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _start_development_backend(port: int) -> subprocess.Popen[bytes]:
+    print(f"\nStarting the project-local runtime at http://127.0.0.1:{port} ...", flush=True)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "career_companion.cli",
+            "start",
+            "--port",
+            str(port),
+            "--allow-remote",
+            "--no-open",
+            "--api-only",
+        ],
+        cwd=REPOSITORY_ROOT,
+        env=_tool_environment(),
+    )
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if _development_backend_healthy(port):
+            return process
+        return_code = process.poll()
+        if return_code is not None:
+            raise IOSReleaseError(
+                f"The local runtime stopped during startup with exit code {return_code}."
+            )
+        time.sleep(0.25)
+    _stop_development_backend(process)
+    raise IOSReleaseError(
+        f"The local runtime did not become healthy on port {port} within 20 seconds."
+    )
+
+
+def run_simulator(
+    *,
+    port: int,
+    install: bool,
+    skip_prepare: bool,
+    skip_build: bool,
+) -> int:
+    """Start the local runtime and launch the app in an available simulator."""
+
+    if platform.system() != "Darwin":
+        raise IOSReleaseError("The iOS Simulator workflow requires macOS.")
+    if not 1024 <= port <= 65535:
+        raise IOSReleaseError("The development backend port must be between 1024 and 65535.")
+
+    xcrun = _find_tool("xcrun")
+    xcodebuild = _find_tool("xcodebuild")
+    open_tool = Path("/usr/bin/open")
+    if xcrun is None or xcodebuild is None or not open_tool.is_file():
+        raise IOSReleaseError("Xcode command-line tools and Simulator are required.")
+
+    if not skip_prepare:
+        prepare(install=install, verify_reproducible=False)
+
+    simulator_result = _command_result(
+        [xcrun, "simctl", "list", "devices", "available", "--json"],
+        timeout=60,
+    )
+    if simulator_result.returncode:
+        raise IOSReleaseError(
+            "CoreSimulator could not list devices. Open Xcode and Simulator, then retry."
+        )
+    try:
+        simulator_payload = json.loads(simulator_result.stdout)
+        devices = simulator_payload["devices"]
+        if not isinstance(devices, dict):
+            raise TypeError
+    except (KeyError, TypeError, ValueError) as exc:
+        raise IOSReleaseError("CoreSimulator returned an invalid device list.") from exc
+    simulator = _select_simulator(devices)
+
+    _run_checked(
+        [open_tool, "-a", "Simulator", "--args", "-CurrentDeviceUDID", simulator["udid"]]
+    )
+    if simulator["state"] != "Booted":
+        _run_checked([xcrun, "simctl", "boot", simulator["udid"]])
+    _run_checked([xcrun, "simctl", "bootstatus", simulator["udid"], "-b"])
+
+    derived_data = DEVELOPMENT_DERIVED_DATA
+    if not skip_build:
+        _run_checked(
+            [
+                xcodebuild,
+                "-project",
+                IOS_PROJECT,
+                "-scheme",
+                "App",
+                "-configuration",
+                "Debug",
+                "-sdk",
+                "iphonesimulator",
+                "-destination",
+                f"platform=iOS Simulator,id={simulator['udid']}",
+                "-derivedDataPath",
+                derived_data,
+                "CODE_SIGNING_ALLOWED=NO",
+                "build",
+            ]
+        )
+
+    app_bundle = derived_data / "Build" / "Products" / "Debug-iphonesimulator" / "App.app"
+    if not app_bundle.is_dir():
+        raise IOSReleaseError(
+            "The simulator app bundle is missing. Retry without --skip-build."
+        )
+    bundle_identifier = _bundle_identifier()
+    if not bundle_identifier:
+        raise IOSReleaseError("Set appId in frontend/capacitor.config.ts before launching.")
+
+    _run_checked([xcrun, "simctl", "install", simulator["udid"], app_bundle])
+
+    backend_process: subprocess.Popen[bytes] | None = None
+    if _development_backend_healthy(port):
+        print(f"\nUsing the healthy runtime already listening on http://127.0.0.1:{port}.")
+    else:
+        backend_process = _start_development_backend(port)
+
+    try:
+        _run_checked(
+            [
+                xcrun,
+                "simctl",
+                "launch",
+                "--terminate-running-process",
+                simulator["udid"],
+                bundle_identifier,
+            ]
+        )
+        print(
+            f"\nCareerPilot is running on {simulator['name']} with "
+            f"http://127.0.0.1:{port}."
+        )
+        if backend_process is None:
+            return 0
+        print("Keep this terminal open while testing. Press Ctrl-C to stop the local runtime.")
+        try:
+            return backend_process.wait()
+        except KeyboardInterrupt:
+            return 130
+    finally:
+        if backend_process is not None:
+            _stop_development_backend(backend_process)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -464,6 +690,31 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also compile an unsigned iOS Simulator build with Xcode",
     )
+    simulator_parser = subparsers.add_parser(
+        "simulator",
+        help="Prepare, build, and launch the app with its local development runtime",
+    )
+    simulator_parser.add_argument(
+        "--port",
+        default=DEFAULT_DEVELOPMENT_PORT,
+        type=int,
+        help=f"Local API port (default: {DEFAULT_DEVELOPMENT_PORT})",
+    )
+    simulator_parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Run npm ci before preparing the native bundle",
+    )
+    simulator_parser.add_argument(
+        "--skip-prepare",
+        action="store_true",
+        help="Reuse the already synchronized web bundle",
+    )
+    simulator_parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Reuse the existing Xcode DerivedData app build",
+    )
     subparsers.add_parser("open", help="Open the synchronized project in Xcode")
     return parser
 
@@ -480,6 +731,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "verify":
             return verify(native=args.native)
+        if args.command == "simulator":
+            return run_simulator(
+                port=args.port,
+                install=args.install,
+                skip_prepare=args.skip_prepare,
+                skip_build=args.skip_build,
+            )
         return open_project()
     except (IOSReleaseError, OSError, subprocess.CalledProcessError) as exc:
         print(f"iOS release error: {exc}", file=sys.stderr)

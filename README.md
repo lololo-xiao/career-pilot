@@ -196,6 +196,13 @@ they are not embedded in the iOS bundle. The app asks for that private HTTPS ser
 first launch and uses native Safari for provider authorization plus the iOS share sheet for
 generated artifacts.
 
+For the local simulator loop, the repository can start or reuse the Python API, prepare and
+build the native target, install it, and launch the selected iPhone Simulator in one step:
+
+```bash
+./scripts/ios simulator
+```
+
 Start with the [iOS publishing playbook](docs/ios-publishing-playbook.md), then use the
 [technical iOS deployment guide](docs/ios-deployment.md) while building. The current
 single-user server must be reachable only through a private network or a trusted access

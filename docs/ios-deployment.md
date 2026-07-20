@@ -66,6 +66,16 @@ The recommended first-publisher command from the repository root is:
 ./scripts/ios open
 ```
 
+For the normal local simulator loop, use the combined launcher instead:
+
+```bash
+./scripts/ios simulator
+```
+
+It uses the repository's Python environment, starts or reuses the loopback API, builds and
+installs the app, and launches the selected iPhone Simulator. The API-only root returns 404
+by design; `/health` is the endpoint used for readiness.
+
 On later iterations, `./scripts/ios prepare` is sufficient unless the lockfile changed.
 The wrapper temporarily moves non-example frontend dotenv files into a private directory,
 restores them after success or failure, and verifies that the synchronized native bundle
