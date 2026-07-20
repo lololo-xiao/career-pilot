@@ -9,6 +9,7 @@ as a group of agents or as the entire product experience.
 ```mermaid
 sequenceDiagram
     actor User
+    participant iOS as Optional Capacitor iOS client
     participant UI as Next.js UI
     participant API as FastAPI
     participant Local as Automatic local identity
@@ -25,6 +26,10 @@ sequenceDiagram
     participant Trace as Langfuse
 
     User->>UI: Open loopback CareerPilot
+    opt Private iOS client
+        User->>iOS: Choose private HTTPS runtime
+        iOS->>API: Same static UI over capacitor://localhost
+    end
     UI->>API: GET /local/session
     API->>Local: Create or reuse stable device identity
     Local->>DB: Resolve encrypted provider state

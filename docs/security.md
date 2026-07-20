@@ -9,14 +9,21 @@ loopback FastAPI process, not the language model.
 - The native server binds to loopback. Remote binding requires an explicit advanced CLI
   override. Docker publishes only to `127.0.0.1`. The native and Docker launch commands
   disable proxy-header processing.
-- Public Greenhouse and Lever preview is restricted to a direct loopback peer. Requests
+- The Capacitor iOS target is a client for a private, single-user runtime; it does not move
+  the Python/Hermes trust boundary onto the phone. `--allow-remote` adds the exact
+  `capacitor://localhost` origin and permits known-board discovery from that origin, but
+  supplies no public identity boundary. The server must remain behind private network
+  access or an independently authenticated gateway and must never be published directly.
+- By default, public Greenhouse and Lever preview is restricted to a direct loopback peer. Requests
   carrying client-identity forwarding headers are rejected rather than trusted. As a
   result, this preview is unavailable through forwarding proxies, from Docker bridge
   peers, or through alternate servers that cannot preserve a provable direct loopback
   client; the rest of the local product does not gain a public-hosting or authentication
   boundary from this check.
 - CareerPilot creates one stable local identity automatically; there is no product login
-  boundary. The service must remain on loopback or behind trusted host-level access control.
+  boundary. An explicit private-mobile override accepts only the Capacitor iOS origin; it
+  is intended for the same privately reachable single-user runtime and is not authentication.
+  The service must remain on loopback or behind trusted host-level access control.
   Unsafe browser methods are checked against the configured Origin and Fetch Metadata.
 - Provider and optional web-search credentials are encrypted in the local store. Direct
   keys enter only the Hermes child environment; Codex authorization is written atomically

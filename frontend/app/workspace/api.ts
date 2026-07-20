@@ -1,6 +1,7 @@
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "";
+import { API_BASE_URL } from "../api-base-url";
+import { shareNativeBlob } from "../native-platform";
+
+export { API_BASE_URL };
 
 export async function apiRequest<T>(
   path: string,
@@ -36,7 +37,21 @@ export async function openArtifact(artifactId: string): Promise<void> {
       | null;
     throw new Error(payload?.detail ?? "Artifact could not be opened");
   }
-  const blobUrl = URL.createObjectURL(await response.blob());
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const encodedFilename = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const plainFilename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+  const fallbackFilename = plainFilename ?? `careerpilot-${artifactId}`;
+  let filename = encodedFilename ?? fallbackFilename;
+  if (encodedFilename) {
+    try {
+      filename = decodeURIComponent(encodedFilename);
+    } catch {
+      filename = fallbackFilename;
+    }
+  }
+  if (await shareNativeBlob(blob, filename, "CareerPilot document")) return;
+  const blobUrl = URL.createObjectURL(blob);
   window.open(blobUrl, "_blank", "noopener,noreferrer");
   window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
 }

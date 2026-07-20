@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,10 +25,20 @@ _CLIENT_IDENTITY_HEADERS = frozenset(
         "x-real-ip",
     }
 )
+_CAPACITOR_IOS_ORIGIN = "capacitor://localhost"
+
+
+def _private_mobile_discovery_enabled(request: Request) -> bool:
+    enabled = os.getenv("CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY", "").strip()
+    origin = request.headers.get("origin", "").rstrip("/")
+    return enabled.casefold() == "true" and origin == _CAPACITOR_IOS_ORIGIN
 
 
 def require_direct_loopback_client(request: Request) -> None:
-    """Reject public discovery unless an unforwarded ASGI peer is loopback."""
+    """Reject discovery outside loopback unless private mobile access is explicit."""
+
+    if _private_mobile_discovery_enabled(request):
+        return
 
     if any(header in request.headers for header in _CLIENT_IDENTITY_HEADERS):
         raise HTTPException(status_code=403, detail=_LOOPBACK_ONLY_DETAIL)

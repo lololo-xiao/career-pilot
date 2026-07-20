@@ -392,7 +392,7 @@ export default function WorkspacePage() {
         </nav>
         <div className="workspace-local-note">
           <i />
-          <div><strong>Stored on this device</strong><span>Account-isolated workspace</span></div>
+          <div><strong>Stored in your runtime</strong><span>Account-isolated workspace</span></div>
         </div>
         <div className="workspace-sidebar-bottom">
           <Link href="/">Talk with Pilot</Link>
@@ -788,7 +788,7 @@ function ProfilePanel({
         <form className="workspace-card workspace-import-card" onSubmit={importCV}>
           <span className="workspace-kicker">IMPORT</span>
           <h2>Import details from a CV</h2>
-          <p>PDF or DOCX, up to 20 MB. The original and extracted text stay on this device.</p>
+          <p>PDF or DOCX, up to 20 MB. The original and extracted text stay in your private workspace.</p>
           <input accept=".pdf,.docx" name="file" required type="file" />
           <button disabled={busy} type="submit">{busy ? "Reading…" : "Import details"}</button>
         </form>

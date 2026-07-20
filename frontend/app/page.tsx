@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { explainApproval, type ApprovalRequest } from "./approval-explanation";
+import { API_BASE_URL } from "./api-base-url";
 import { MemoryRetrievalInspector } from "./memory-retrieval-inspector";
 import { MEMORY_RETRIEVAL_LABELS } from "./memory-retrieval";
 import { ResultView } from "./result-view";
@@ -22,10 +23,6 @@ import type {
   ReasoningEffort,
 } from "./types";
 
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "";
 
 const SAMPLE_PROFILE = `AI engineer with 4 years of Python experience. Built retrieval-augmented generation applications using LangChain, Chroma, and FastAPI. Designed evaluation datasets for LLM quality and added tracing for prompt latency and token usage. Deployed Dockerized services to Azure Container Apps. Mentored two junior engineers.`;
 
@@ -997,7 +994,7 @@ export default function Home() {
     return (
       <main className="auth-shell auth-loading" aria-live="polite">
         <div className="loading-orbit" aria-hidden="true"><span /></div>
-        <p>{isCheckingSession ? "Opening your local workspace…" : "CareerPilot could not open its local workspace."}</p>
+        <p>{isCheckingSession ? "Opening your private workspace…" : "CareerPilot could not open its private workspace."}</p>
       </main>
     );
   }
@@ -1321,8 +1318,8 @@ export default function Home() {
           </button>
         </section>
 
-        <div className="pilot-privacy-note"><span>Persistent session memory</span><p>Messages, CV text, role context, and fit checks are saved in your device-local CareerPilot database until you delete the session.</p></div>
-        <div className="pilot-privacy-note"><span>Local-only access</span><p>No CareerPilot account or sign-in is required on this device.</p></div>
+        <div className="pilot-privacy-note"><span>Persistent session memory</span><p>Messages, CV text, role context, and fit checks are saved in your private CareerPilot database until you delete the session.</p></div>
+        <div className="pilot-privacy-note"><span>Private access</span><p>No CareerPilot account or sign-in is required inside your single-user runtime.</p></div>
       </aside>
 
       <MemoryRetrievalInspector
@@ -1341,7 +1338,7 @@ export default function Home() {
               <div><small>Persistent agent identity</small><h2 id="pilot-identity-title">Make {identityNameDraft || agentName} feel like yours</h2></div>
               <button type="button" onClick={() => setIdentityEditorOpen(false)} aria-label="Close identity editor">×</button>
             </div>
-            <p>Your agent’s name and personality are saved on this device and used across every conversation. You can also ask the agent to change them; CareerPilot will pause for your approval first.</p>
+            <p>Your agent’s name and personality are saved in your private workspace and used across every conversation. You can also ask the agent to change them; CareerPilot will pause for your approval first.</p>
 
             <div className="pilot-identity-tabs" role="tablist" aria-label="Identity editor view">
               <button className={identityEditorView === "guided" ? "is-active" : ""} type="button" role="tab" aria-selected={identityEditorView === "guided"} onClick={() => setIdentityEditorView("guided")}>Personality</button>

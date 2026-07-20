@@ -67,7 +67,13 @@ def start_command(args: argparse.Namespace) -> int:
         )
     origin_host = f"[{host}]" if host == "::1" else host
     origin = f"http://{origin_host}:{port}"
-    _configure_runtime_environment(paths, origin, port, web_directory)
+    _configure_runtime_environment(
+        paths,
+        origin,
+        port,
+        web_directory,
+        allow_private_mobile=args.allow_remote,
+    )
     from app.main import app
 
     if not args.no_open and web_directory is not None:
@@ -184,11 +190,19 @@ def _configure_runtime_environment(
     origin: str,
     port: int,
     web_directory: Path | None,
+    *,
+    allow_private_mobile: bool = False,
 ) -> None:
     os.environ["CAREERPILOT_AUTH_SECRET"] = _ensure_auth_secret(paths)
     os.environ["AUTH_DATABASE_PATH"] = str(paths.auth_database)
     os.environ["CAREERPILOT_INTERNAL_API_URL"] = f"http://127.0.0.1:{port}"
-    os.environ["FRONTEND_ORIGINS"] = origin
+    allowed_origins = [origin]
+    if allow_private_mobile:
+        allowed_origins.append("capacitor://localhost")
+    os.environ["CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY"] = (
+        "true" if allow_private_mobile else "false"
+    )
+    os.environ["FRONTEND_ORIGINS"] = ",".join(allowed_origins)
     os.environ.setdefault("LANGFUSE_TRACING_ENABLED", "false")
     if web_directory is not None:
         os.environ["CAREER_COMPANION_WEB_DIR"] = str(web_directory)

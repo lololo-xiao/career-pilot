@@ -408,6 +408,11 @@
 }
 
 @media (max-width: 720px) {
+  :global(.capacitor-native) .shell {
+    padding-bottom: calc(64px + var(--safe-area-bottom));
+    padding-left: calc(5vw + var(--safe-area-left));
+    padding-right: calc(5vw + var(--safe-area-right));
+  }
   .shell {
     padding: 0 18px 40px;
   }

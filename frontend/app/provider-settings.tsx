@@ -16,6 +16,11 @@ import {
   type CodexAttemptStorageBinding,
   type CodexAttemptStorageLifecycle,
 } from "./provider-login-storage";
+import {
+  closeExternalBrowser,
+  isNativeApp,
+  openExternalUrl,
+} from "./native-platform";
 import type {
   AuthSessionResponse,
   AuthUser,
@@ -398,9 +403,17 @@ export function ProviderSettings({
     }
   }
 
-  function openCodexLoginWindow() {
+  async function openCodexLoginWindow() {
     if (!codexAttempt) return;
     setError(null);
+    if (isNativeApp()) {
+      try {
+        await openExternalUrl(codexAttempt.verification_url);
+      } catch {
+        setError("CareerPilot could not open the secure ChatGPT sign-in page.");
+      }
+      return;
+    }
     const loginWindow = window.open(
       codexAttempt.verification_url,
       "careerpilot-chatgpt-login",
@@ -417,6 +430,7 @@ export function ProviderSettings({
   async function cancelCodexLogin() {
     const attempt = codexAttempt;
     if (!activeUserId || !attempt) return;
+    await closeExternalBrowser();
     loginWindowRef.current?.close();
     loginWindowRef.current = null;
     setCodexState((current) => ({

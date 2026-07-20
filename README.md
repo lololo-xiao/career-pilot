@@ -71,6 +71,7 @@ tailoring, interview practice, and scheduled search queues.
 | Interview practice | ⬜ Planned | The navigation placeholder exists; the guided practice and feedback experience does not |
 | Backup and restore | ✅ Ready | A credential-free source-to-restore drill preserved the database, workspace, and a user skill while excluding credentials and requiring provider reconnection |
 | Local release bundle | 🟡 Partial | Source distributions and wheels include a reproducibly verified static UI with build-ID and artifact-integrity checks; clean-platform install and Docker verification are still planned |
+| iOS client | 🟡 Partial | Capacitor 8/Xcode target, first-launch private-server setup, native OAuth browser, file sharing, safe-area layout, privacy manifest, icon, and launch artwork are implemented; public App Store hosting/authentication remains a separate gate |
 | Public deployment | ⬜ Planned | The current product is a trusted single-user local app with no public multi-user authentication boundary |
 
 **Legend:** ✅ usable in the current local build · 🟡 real foundation with incomplete
@@ -186,6 +187,21 @@ encrypted before local storage.
 
 See the [installation guide](docs/installation.md) for integrity checks, backup/restore,
 platform notes, and the Docker fallback.
+
+### iOS client
+
+The same feature UI can run as a native iPhone/iPad client. Python, Hermes, Codex,
+SQLite, Tectonic, Playwright, and MCP subprocesses remain on a private CareerPilot runtime;
+they are not embedded in the iOS bundle. The app asks for that private HTTPS server on
+first launch and uses native Safari for provider authorization plus the iOS share sheet for
+generated artifacts.
+
+Start with the [iOS publishing playbook](docs/ios-publishing-playbook.md), then use the
+[technical iOS deployment guide](docs/ios-deployment.md) while building. The current
+single-user server must be reachable only through a private network or a trusted access
+gateway. It is suitable for device testing and controlled TestFlight distribution, but a
+public App Store service still requires product authentication, account isolation, deletion
+workflows, and an operator-owned privacy/support surface.
 
 ### Development setup
 
@@ -444,6 +460,9 @@ worktree.
 - [Installation](docs/installation.md)
 - [Architecture](docs/architecture.md)
 - [Security](docs/security.md)
+- [Git and GitHub workflow](docs/git-workflow.md)
+- [iOS publishing playbook](docs/ios-publishing-playbook.md)
+- [iOS deployment](docs/ios-deployment.md)
 - [Demo script](docs/demo-script.md)
 - [Meetup slides](docs/meetup-slides.html)
 - [Build-week plan](docs/build-week-plan.md)

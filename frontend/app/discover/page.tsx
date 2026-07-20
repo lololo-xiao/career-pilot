@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { API_BASE_URL } from "../api-base-url";
 import styles from "./discovery.module.css";
 import {
   jobKey,
@@ -22,8 +23,6 @@ import {
   type SaveOutcome,
 } from "./discovery";
 
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
 
 interface BoundPreview {
   binding: PreviewBinding;
@@ -474,7 +473,7 @@ export default function GuidedJobDiscovery() {
       </div>
 
       <footer className={styles.footer}>
-        <p>This is known-board discovery, not broad web search. CareerPilot remains a loopback-only local release; this page makes no public-hosting or remote-authentication claim.</p>
+        <p>This is known-board discovery, not broad web search. CareerPilot remains a private single-user release; this page makes no public-hosting or remote-authentication claim.</p>
       </footer>
     </main>
   );

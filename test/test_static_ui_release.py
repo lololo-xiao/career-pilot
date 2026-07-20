@@ -136,7 +136,7 @@ def _copy_project(repository: Path, project: Path, *, frontend: bool = True) -> 
             repository / "frontend",
             project / "frontend",
             ignore=shutil.ignore_patterns(
-                "node_modules", ".next", "out", ".DS_Store"
+                "node_modules", ".next", "out", ".DS_Store", ".env", ".env.*"
             ),
         )
 
@@ -220,6 +220,13 @@ def test_manifest_is_deterministic_and_ignores_only_generated_build_inputs(
     (frontend / "next-env.d.ts").write_text("// generated after build\n")
     assert frontend_source_fingerprint(frontend, project_root=tmp_path) == before
     assert verify_static_ui(frontend, project_root=tmp_path).source_fingerprint == before
+
+    # Capacitor owns and rewrites the generated native target and copied web bundle.
+    (frontend / "ios" / "App" / "App" / "public").mkdir(parents=True)
+    (frontend / "ios" / "App" / "App" / "public" / "index.html").write_text(
+        "generated native bundle\n"
+    )
+    assert frontend_source_fingerprint(frontend, project_root=tmp_path) == before
 
     # Authored input remains freshness-sensitive.
     (frontend / "app" / "page.tsx").write_text("export default function Changed() {}\n")

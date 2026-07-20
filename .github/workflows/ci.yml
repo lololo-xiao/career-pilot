@@ -107,6 +107,42 @@ jobs:
             "${runtime}/venv/bin/python" "${runtime}/smoke.py" \
             --expected-fingerprint "${fingerprint}" --require-no-node
 
+  ios:
+    name: iOS unsigned simulator build
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install uv and Python for release packaging
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Confirm Apple toolchain
+        run: xcodebuild -version
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build and synchronize the verified iOS bundle
+        run: uv run --no-project --python 3.12 python -m scripts.ios_release prepare
+      - name: Compile unsigned iOS Simulator app
+        run: |
+          xcodebuild \
+            -project frontend/ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "${RUNNER_TEMP}/career-pilot-ios-derived-data" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
   hermes-contract:
     runs-on: ubuntu-latest
     steps:

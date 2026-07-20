@@ -30,7 +30,7 @@ BUILD_CONTRACT = {
     "NEXT_TELEMETRY_DISABLED": "1",
 }
 
-_IGNORED_SOURCE_DIRECTORIES = frozenset({".next", "node_modules", "out"})
+_IGNORED_SOURCE_DIRECTORIES = frozenset({".next", "ios", "node_modules", "out"})
 _IGNORED_GENERATED_SOURCE_FILES = frozenset({"next-env.d.ts"})
 _JUNK_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 _JUNK_DIRECTORIES = frozenset({"__MACOSX"})

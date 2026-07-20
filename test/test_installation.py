@@ -120,6 +120,8 @@ def test_runtime_configuration_does_not_change_default_path_layout(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.delenv("CAREER_COMPANION_HOME", raising=False)
+    monkeypatch.setenv("CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY", "true")
+    monkeypatch.setenv("FRONTEND_ORIGINS", "https://untrusted.example")
     paths = CompanionPaths.at_root(
         tmp_path / "data",
         tmp_path / "config",
@@ -133,6 +135,8 @@ def test_runtime_configuration_does_not_change_default_path_layout(
     )
 
     assert "CAREER_COMPANION_HOME" not in os.environ
+    assert os.environ["CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY"] == "false"
+    assert os.environ["FRONTEND_ORIGINS"] == "http://127.0.0.1:8787"
 
 
 def test_start_disables_proxy_headers_even_when_environment_trusts_all(
@@ -149,12 +153,15 @@ def test_start_disables_proxy_headers_even_when_environment_trusts_all(
         "AUTH_DATABASE_PATH",
         "CAREERPILOT_AUTH_SECRET",
         "CAREERPILOT_INTERNAL_API_URL",
+        "CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY",
         "FRONTEND_ORIGINS",
         "LANGFUSE_TRACING_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CAREER_COMPANION_HOME", str(tmp_path / "companion"))
+    monkeypatch.setenv("CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY", "false")
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    monkeypatch.setenv("FRONTEND_ORIGINS", "https://untrusted.example")
     monkeypatch.setattr("career_companion.cli.frontend_build_directory", lambda: None)
     monkeypatch.setattr("career_companion.cli.uvicorn.run", fake_run)
 
@@ -176,6 +183,11 @@ def test_start_disables_proxy_headers_even_when_environment_trusts_all(
     assert kwargs["proxy_headers"] is False
     assert "forwarded_allow_ips" not in kwargs
     assert os.environ["FORWARDED_ALLOW_IPS"] == "*"
+    assert os.environ["FRONTEND_ORIGINS"].split(",") == [
+        "http://0.0.0.0:8787",
+        "capacitor://localhost",
+    ]
+    assert os.environ["CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY"] == "true"
 
 
 def test_public_workspace_templates_are_generic_and_non_destructive(tmp_path) -> None:
