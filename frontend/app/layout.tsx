@@ -4,6 +4,7 @@ import { NativeAppShell } from "./native-app-shell";
 import "./globals.css";
 import "./companion.css";
 import "./workspace/workspace.css";
+import "./native.css";
 
 
 export const metadata: Metadata = {
@@ -15,6 +16,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   colorScheme: "light",
   initialScale: 1,
+  interactiveWidget: "resizes-content",
   themeColor: "#f4f0e8",
   viewportFit: "cover",
   width: "device-width",

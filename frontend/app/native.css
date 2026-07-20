@@ -1,0 +1,54 @@
+html.capacitor-native {
+  -webkit-text-size-adjust: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  width: 100%;
+}
+
+html.capacitor-native body {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+  width: 100%;
+}
+
+html.capacitor-native input:not([type="button"]):not([type="checkbox"]):not([type="color"]):not([type="file"]):not([type="hidden"]):not([type="image"]):not([type="radio"]):not([type="range"]):not([type="reset"]):not([type="submit"]),
+html.capacitor-native select,
+html.capacitor-native textarea {
+  font-size: 16px;
+}
+
+html.capacitor-native .pilot-shell {
+  height: var(--native-viewport-height, 100dvh);
+  max-width: 100%;
+  transform: translateY(var(--native-viewport-offset-top, 0px));
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  html.capacitor-native.native-text-entry-focused .pilot-conversation-header {
+    gap: 0.4rem;
+    grid-template-areas: "title actions";
+    min-height: 56px;
+    padding-block: 0.55rem;
+  }
+
+  html.capacitor-native.native-text-entry-focused .pilot-conversation-header > div:first-child > span,
+  html.capacitor-native.native-text-entry-focused .pilot-compact-sessions,
+  html.capacitor-native.native-text-entry-focused .pilot-composer-wrap > p {
+    display: none;
+  }
+
+  html.capacitor-native.native-text-entry-focused .pilot-thread {
+    padding-bottom: 0.75rem;
+    padding-top: 0.75rem;
+  }
+
+  html.capacitor-native.native-text-entry-focused .pilot-composer-wrap {
+    padding-top: 0.5rem;
+  }
+
+  html.capacitor-native.native-text-entry-focused .pilot-composer textarea {
+    min-height: 54px;
+  }
+}

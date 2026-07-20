@@ -12,6 +12,7 @@ import {
   saveNativeApiBaseUrl,
 } from "./api-base-url";
 import { isNativeApp, openExternalUrl } from "./native-platform";
+import { getNativeViewportState } from "./native-viewport";
 
 
 function normalizedBackendUrl(value: string): string {
@@ -29,6 +30,16 @@ function normalizedBackendUrl(value: string): string {
     throw new Error("Enter the backend origin without an extra path.");
   }
   return url.origin;
+}
+
+function hasFocusedTextControl(): boolean {
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLTextAreaElement) return true;
+  if (activeElement instanceof HTMLElement && activeElement.isContentEditable) return true;
+  if (!(activeElement instanceof HTMLInputElement)) return false;
+  return !["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(
+    activeElement.type,
+  );
 }
 
 function NativeBackendSetup({ onReady }: { onReady: () => void }) {
@@ -122,7 +133,36 @@ export function NativeAppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     const native = platform === "native";
     if (!native) return;
-    document.documentElement.classList.add("capacitor-native");
+    const root = document.documentElement;
+    const visualViewport = window.visualViewport;
+    let animationFrame: number | null = null;
+    let viewportBaselineHeight = window.innerHeight;
+
+    const syncViewport = () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        const textControlFocused = hasFocusedTextControl();
+        if (!textControlFocused) {
+          viewportBaselineHeight = window.innerHeight;
+        } else {
+          viewportBaselineHeight = Math.max(viewportBaselineHeight, window.innerHeight);
+        }
+        const viewportState = getNativeViewportState({
+          hasFocusedTextControl: textControlFocused,
+          layoutHeight: viewportBaselineHeight,
+          visualHeight: visualViewport?.height,
+          visualOffsetTop: visualViewport?.offsetTop,
+        });
+        root.style.setProperty("--native-viewport-height", `${viewportState.height}px`);
+        root.style.setProperty("--native-viewport-offset-top", `${viewportState.offsetTop}px`);
+        root.classList.toggle("native-text-entry-focused", textControlFocused);
+        root.classList.toggle("native-keyboard-visible", viewportState.keyboardVisible);
+      });
+    };
+
+    root.classList.add("capacitor-native");
+    syncViewport();
     void StatusBar.setOverlaysWebView({ overlay: false });
     void StatusBar.setStyle({ style: Style.Dark });
 
@@ -136,9 +176,26 @@ export function NativeAppShell({ children }: { children: ReactNode }) {
       void openExternalUrl(anchor.href);
     };
     document.addEventListener("click", openExternalLink);
+    document.addEventListener("focusin", syncViewport);
+    document.addEventListener("focusout", syncViewport);
+    window.addEventListener("resize", syncViewport);
+    visualViewport?.addEventListener("resize", syncViewport);
+    visualViewport?.addEventListener("scroll", syncViewport);
     return () => {
-      document.documentElement.classList.remove("capacitor-native");
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      root.classList.remove(
+        "capacitor-native",
+        "native-keyboard-visible",
+        "native-text-entry-focused",
+      );
+      root.style.removeProperty("--native-viewport-height");
+      root.style.removeProperty("--native-viewport-offset-top");
       document.removeEventListener("click", openExternalLink);
+      document.removeEventListener("focusin", syncViewport);
+      document.removeEventListener("focusout", syncViewport);
+      window.removeEventListener("resize", syncViewport);
+      visualViewport?.removeEventListener("resize", syncViewport);
+      visualViewport?.removeEventListener("scroll", syncViewport);
     };
   }, [platform]);
 

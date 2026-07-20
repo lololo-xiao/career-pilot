@@ -439,6 +439,12 @@ export default function Home() {
     conversationEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isChatting, isAnalyzing, chatActivity, pendingApproval]);
 
+  function handleComposerFocus() {
+    window.requestAnimationFrame(() => {
+      conversationEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+  }
+
   async function appendStoredMessage(
     role: ChatMessage["role"],
     content: string,
@@ -1185,7 +1191,7 @@ export default function Home() {
 
         <div className="pilot-composer-wrap">
           <form className="pilot-composer" onSubmit={handleSubmit}>
-            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={`Ask ${agentName} to research, create, analyze, or plan…`} rows={2} maxLength={4000} disabled={isChatting || isAnalyzing} aria-label={`Message ${agentName}`} />
+            <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onFocus={handleComposerFocus} onKeyDown={handleComposerKeyDown} placeholder={`Ask ${agentName} to research, create, analyze, or plan…`} rows={2} maxLength={4000} disabled={isChatting || isAnalyzing} aria-label={`Message ${agentName}`} autoCapitalize="sentences" enterKeyHint="send" spellCheck />
             <div className="pilot-composer-actions">
               <div>
                 <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isParsingCV || isChatting || isAnalyzing} title="Attach your CV"><Icon name="paperclip" size={18} /><span>{isParsingCV ? "Reading CV…" : "Attach CV"}</span></button>
