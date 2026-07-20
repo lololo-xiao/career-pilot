@@ -27,6 +27,7 @@ from career_companion.database import ApprovalRecord, AuditEventRecord, MCPServe
 from career_companion.paths import CompanionPaths
 from career_companion.persistence import account_session, clear_factory_cache
 from career_companion.services import approvals as approval_service
+from career_companion.services import mcp_probe as probe_service
 from career_companion.services.approval_history import list_approval_history
 from career_companion.services.approvals import (
     AUTHORIZATION_SNAPSHOT_KEY,
@@ -41,6 +42,7 @@ from career_companion.services.mcp_probe import (
     MCPProbeConflict,
     MCPProbeManager,
     _failed_result,
+    _http_url_secret_values,
     _safe_tools,
     create_probe_intent,
     prepare_worker_payload,
@@ -605,17 +607,202 @@ def test_server_initiated_requests_cannot_expand_the_disclosed_protocol(
     assert not any(method.startswith("tools/call") for method in methods)
 
 
-def test_windows_process_boundary_uses_the_sdk_job_object_implementation() -> None:
-    import career_companion.services.mcp_probe as probe_service
+class _FakeWindowsPopen:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.kill_calls = 0
+        self.poll_calls = 0
+
+    def poll(self) -> int | None:
+        self.poll_calls += 1
+        return self.returncode
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = 1
+
+
+class _FakeWindowsFallbackProcess:
+    def __init__(self, job: object | None) -> None:
+        self._job_object = job
+        self.popen = _FakeWindowsPopen()
+        self.pid = 1234
+        self.stdin_payloads: list[bytes] = []
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+    async def wait(self) -> int:
+        self.wait_calls += 1
+        raise AssertionError("fallback cleanup must poll Popen instead of awaiting wait()")
+
+
+@pytest.mark.parametrize("job", [None, 0])
+def test_windows_worker_never_receives_payload_without_confirmed_outer_job(
+    monkeypatch: pytest.MonkeyPatch,
+    job: object | None,
+) -> None:
+    process = _FakeWindowsFallbackProcess(job)
+    communication_calls = 0
+
+    async def fake_create(*_args, **_kwargs):
+        return process
+
+    async def forbidden_communication(*_args, **_kwargs):
+        nonlocal communication_calls
+        communication_calls += 1
+        raise AssertionError("payload must not be sent without Job containment")
+
+    monkeypatch.setattr(probe_service, "_is_windows", lambda: True)
+    monkeypatch.setattr(probe_service, "_create_worker_process", fake_create)
+    monkeypatch.setattr(probe_service, "_communicate_worker", forbidden_communication)
+    monkeypatch.setattr(probe_service, "MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS", 0.001)
+
+    result = asyncio.run(run_probe_worker({"server_secret": "must-not-be-sent"}))
+
+    assert result == {
+        "ok": False,
+        "error": "process_containment_unavailable",
+    }
+    assert communication_calls == 0
+    assert process.stdin_payloads == []
+    assert process.terminate_calls == 1
+    assert process.popen.kill_calls == 1
+    assert process.popen.poll_calls >= 2
+    assert process.kill_calls == 0
+    assert process.wait_calls == 0
+    assert result["error"] in probe_service._ALLOWED_WORKER_ERRORS
+    assert _failed_result(result["error"], 1)["status"] == "policy_blocked"
+
+
+def test_confirmed_windows_job_uses_sdk_termination_then_force_reaps_fallback_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeWindowsFallbackProcess(job=object())
+    sdk_calls: list[tuple[object, float]] = []
+    communication_calls = 0
+
+    async def fake_create(*_args, **_kwargs):
+        return process
+
+    async def fake_communicate(_process, encoded: bytes) -> bytes:
+        nonlocal communication_calls
+        communication_calls += 1
+        assert b"server_secret" in encoded
+        return b'{"ok":true,"tools":[],"truncated":false}'
+
+    async def fake_sdk_terminate(target, timeout: float) -> None:
+        sdk_calls.append((target, timeout))
+        target.terminate()
+
+    monkeypatch.setattr(probe_service, "_is_windows", lambda: True)
+    monkeypatch.setattr(probe_service, "_create_worker_process", fake_create)
+    monkeypatch.setattr(probe_service, "_communicate_worker", fake_communicate)
+    monkeypatch.setattr(
+        probe_service,
+        "terminate_windows_process_tree",
+        fake_sdk_terminate,
+    )
+    monkeypatch.setattr(probe_service, "MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS", 0.001)
+
+    result = asyncio.run(run_probe_worker({"server_secret": "contained"}))
+
+    assert result == {"ok": True, "tools": [], "truncated": False}
+    assert communication_calls == 1
+    assert sdk_calls == [(process, 2.0)]
+    assert process.terminate_calls == 1
+    assert process.popen.kill_calls == 1
+    assert process.kill_calls == 0
+    assert process.wait_calls == 0
+
+
+def test_windows_root_is_force_reaped_when_sdk_job_termination_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeWindowsFallbackProcess(job=object())
+
+    async def failed_sdk_termination(*_args, **_kwargs) -> None:
+        raise RuntimeError("simulated Win32 helper failure")
+
+    monkeypatch.setattr(probe_service, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        probe_service,
+        "terminate_windows_process_tree",
+        failed_sdk_termination,
+    )
+    monkeypatch.setattr(probe_service, "MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS", 0.001)
+
+    asyncio.run(probe_service._terminate_worker(process, None))
+
+    assert process.popen.kill_calls == 1
+    assert process.popen.poll_calls >= 2
+    assert process.wait_calls == 0
+
+
+def test_windows_anyio_root_wait_is_bounded_then_force_killed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAnyIOProcess:
+        def __init__(self) -> None:
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.wait_calls = 0
+            self.killed = False
+
+        def terminate(self) -> None:
+            self.terminate_calls += 1
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.killed = True
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            while not self.killed:
+                await asyncio.sleep(1)
+            return 1
+
+    process = FakeAnyIOProcess()
+    monkeypatch.setattr(probe_service, "MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS", 0.001)
+
+    asyncio.run(probe_service._reap_windows_root(process, terminate_first=True))
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.wait_calls == 2
+
+
+def test_windows_process_boundary_requires_confirmed_sdk_job_before_communication() -> None:
     from mcp.os.win32 import utilities as windows_utilities
+    from career_companion.services import mcp_probe_worker as probe_worker_service
 
     service_source = inspect.getsource(probe_service)
     sdk_source = inspect.getsource(windows_utilities)
+    runner_source = inspect.getsource(probe_service.run_probe_worker)
+    reaper_source = inspect.getsource(probe_service._bounded_wait_windows_root)
+    worker_main_source = inspect.getsource(probe_worker_service.main)
     assert "create_windows_process" in service_source
     assert "terminate_windows_process_tree" in service_source
     assert "taskkill" not in service_source.casefold()
     assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in sdk_source
     assert "AssignProcessToJobObject" in sdk_source
+    assert "process._job_object = job" in sdk_source
+    assert "TerminateJobObject" in sdk_source
+    assert runner_source.index("_has_confirmed_windows_job") < runner_source.index(
+        "_communicate_worker"
+    )
+    assert "popen" in reaper_source
+    assert "poll" in reaper_source
+    assert worker_main_source.index("sys.stdin.buffer.read") < worker_main_source.index(
+        "_probe(config)"
+    )
+    # Portable invariants do not replace the native Windows CI release gate.
 
 
 def test_bounded_http_worker_discovers_tools_on_an_exact_loopback_target() -> None:
@@ -864,11 +1051,111 @@ def test_short_secrets_suppress_untrusted_claims_instead_of_partial_redaction() 
         {secret},
     )
 
-    assert (tools, present, missing, available) == ([], [], [], [])
+    assert tools == [
+        {
+            "name": "search_fixture",
+            "description": "[redacted]",
+            "allowed": True,
+            "selectable": True,
+            "policy_reason": None,
+        }
+    ]
+    assert present == ["search_fixture"]
+    assert missing == []
+    assert available == []
     assert suppressed is True
     assert secret not in json.dumps(
         {"tools": tools, "present": present, "missing": missing, "available": available}
     )
+
+
+def test_http_url_candidates_cover_decoded_short_paths_and_blank_query_keys() -> None:
+    url = (
+        "https://mcp.example.test/%EF%BD%98%EF%BC%97?"
+        "%EF%BD%82%EF%BD%8C%EF%BD%81%EF%BD%8E%EF%BD%8B=&token=long-value"
+    )
+
+    candidates = _http_url_secret_values(url)
+
+    assert url in candidates
+    assert "ｘ７" in candidates
+    assert "ｂｌａｎｋ" in candidates
+    assert "long-value" in candidates
+
+
+def test_short_http_tokens_are_removed_per_claim_after_unicode_normalization() -> None:
+    candidates = _http_url_secret_values(
+        "https://mcp.example.test/%EF%BD%98%EF%BC%97?"
+        "%EF%BD%82%EF%BD%8C%EF%BD%81%EF%BD%8E%EF%BD%8B="
+    )
+    tools, present, missing, available, suppressed = _safe_tools(
+        [
+            {"name": "leak_x7", "description": "name must be omitted"},
+            {"name": "blank_tool", "description": "name must be omitted"},
+            {"name": "path_reader", "description": "x7"},
+            {"name": "query_reader", "description": "blank"},
+        ],
+        ["leak_x7", "blank_tool", "path_reader", "query_reader"],
+        candidates,
+    )
+    payload = {
+        "tools": tools,
+        "present": present,
+        "missing": missing,
+        "available": available,
+    }
+
+    assert tools == [
+        {
+            "name": "path_reader",
+            "description": "[redacted]",
+            "allowed": True,
+            "selectable": True,
+            "policy_reason": None,
+        },
+        {
+            "name": "query_reader",
+            "description": "[redacted]",
+            "allowed": True,
+            "selectable": True,
+            "policy_reason": None,
+        },
+    ]
+    assert present == ["path_reader", "query_reader"]
+    assert missing == []
+    assert available == []
+    assert suppressed is True
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "x7" not in serialized
+    assert "blank" not in serialized
+    assert "ｘ７" not in serialized
+    assert "ｂｌａｎｋ" not in serialized
+
+
+def test_common_mcp_path_redacts_only_matching_claims_not_all_tools() -> None:
+    candidates = _http_url_secret_values("https://mcp.example.test/mcp")
+    tools, present, missing, available, suppressed = _safe_tools(
+        [
+            {"name": "safe_search", "description": "reads mcp metadata"},
+            {"name": "mcp_debug", "description": "name must be omitted"},
+        ],
+        ["safe_search", "mcp_debug"],
+        candidates,
+    )
+
+    assert tools == [
+        {
+            "name": "safe_search",
+            "description": "[redacted]",
+            "allowed": True,
+            "selectable": True,
+            "policy_reason": None,
+        }
+    ]
+    assert present == ["safe_search"]
+    assert missing == []
+    assert available == []
+    assert suppressed is True
 
 
 def test_secret_substrings_are_removed_from_names_descriptions_and_lists() -> None:
@@ -1053,8 +1340,19 @@ def test_stdio_secret_never_reaches_result_stderr_or_logs(
     result = asyncio.run(MCPProbeManager().probe("stdio-secret", probe_paths, server))
     captured = capsys.readouterr()
     assert secret not in json.dumps(result, default=str)
+    assert "x7" not in json.dumps(result, default=str)
     assert result["truncated"] is True
-    assert result["discovered_tools"] == []
+    assert result["discovered_tools"] == [
+        {
+            "name": "search_fixture",
+            "description": (
+                "Search a deterministic local fixture without side effects. [redacted]"
+            ),
+            "allowed": True,
+            "selectable": True,
+            "policy_reason": None,
+        }
+    ]
     MCPProbeResultResponse.model_validate(result)
     assert secret not in captured.out
     assert secret not in captured.err

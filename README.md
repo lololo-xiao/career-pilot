@@ -335,7 +335,8 @@ into a genuinely proactive job-search agent.
 
 ### P2 — extensibility
 
-- [ ] Add connection health checks and tool discovery for MCP servers.
+- [ ] Add connection health checks and tool discovery for MCP servers; native Windows
+  CI remains the release gate for actual Job Object attachment and descendant cleanup.
 - [ ] Add guided OAuth for selected Gmail/Calendar/Drive connectors.
 - [x] Add four curated, preview-before-install job-search skill templates.
 - [x] Add bounded single-file import and exact-content export for user-owned skills.

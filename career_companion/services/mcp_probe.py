@@ -55,6 +55,10 @@ MCP_PROBE_WORKER_TIMEOUT_SECONDS = 13.0
 MCP_PROBE_COOLDOWN_SECONDS = 2.0
 MCP_PROBE_MAX_OUTPUT_BYTES = 256 * 1024
 MCP_PROBE_MAX_TOOLS = 128
+MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS = 1.0
+MCP_PROBE_SUBSTRING_REDACTION_MIN_LENGTH = 8
+MCP_PROBE_REDACTION_PLACEHOLDER = "[redacted]"
+MCP_PROBE_CONTAINMENT_ERROR = "process_containment_unavailable"
 _ENV_REFERENCE = re.compile(r"\$\{([^}]+)\}")
 _ALLOWED_WORKER_ERRORS = {
     "authentication_required",
@@ -64,6 +68,7 @@ _ALLOWED_WORKER_ERRORS = {
     "invalid_target",
     "private_target_blocked",
     "probe_failed",
+    MCP_PROBE_CONTAINMENT_ERROR,
     "protocol_error",
     "redirect_blocked",
     "response_too_large",
@@ -370,13 +375,15 @@ def prepare_worker_payload(
 def _http_url_secret_values(url: str) -> set[str]:
     parsed = urlsplit(url)
     values = {url}
-    values.update(value for _, value in parse_qsl(parsed.query, keep_blank_values=False) if value)
-    # Long opaque path components are commonly bearer-like route tokens. Common
-    # short route names such as /mcp are not treated as credentials.
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if value:
+            values.add(value)
+        elif key:
+            values.add(key)
     values.update(
         decoded
         for component in parsed.path.split("/")
-        if (decoded := unquote(component)) and len(decoded) >= 8
+        if (decoded := unquote(component))
     )
     return values
 
@@ -385,15 +392,25 @@ class _WorkerOutputTooLarge(RuntimeError):
     pass
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _has_confirmed_windows_job(process: Process | FallbackProcess) -> bool:
+    """The SDK publishes this handle only after successful Job assignment."""
+
+    return bool(getattr(process, "_job_object", None))
+
+
 async def _create_worker_process(
     worker: Path,
     environment: dict[str, str],
 ) -> Process | FallbackProcess:
-    if os.name == "nt":  # pragma: no cover - exercised by native Windows CI
+    if _is_windows():  # pragma: no cover - exercised by native Windows CI
         command = get_windows_executable_command(sys.executable)
-        # The SDK assigns this worker to a Job Object configured with
-        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. Its MCP-server descendants are
-        # therefore terminated with it even if the worker itself is wedged.
+        # The SDK attempts to assign this worker to a kill-on-close Job Object.
+        # The caller must confirm its published handle before sending a payload:
+        # attachment failure is otherwise silent in MCP 1.26.
         return await create_windows_process(
             command,
             ["-I", str(worker)],
@@ -409,12 +426,83 @@ async def _create_worker_process(
     )
 
 
+async def _bounded_wait_windows_root(
+    process: Process | FallbackProcess,
+    timeout_seconds: float,
+) -> bool:
+    """Bound root reaping without FallbackProcess's non-cancellable wait."""
+
+    popen = getattr(process, "popen", None)
+    poll = getattr(popen, "poll", None)
+    if callable(poll):
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                if poll() is not None:
+                    return True
+            except (ChildProcessError, ProcessLookupError):
+                return True
+            except Exception:
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            await anyio.sleep(min(0.02, remaining))
+    try:
+        with anyio.move_on_after(timeout_seconds) as scope:
+            await process.wait()
+        return not scope.cancel_called
+    except (ChildProcessError, ProcessLookupError):
+        return True
+    except Exception:
+        return False
+
+
+async def _reap_windows_root(
+    process: Process | FallbackProcess,
+    *,
+    terminate_first: bool,
+) -> None:
+    if terminate_first:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+    if await _bounded_wait_windows_root(
+        process,
+        MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS,
+    ):
+        return
+    popen = getattr(process, "popen", None)
+    force_kill = getattr(popen, "kill", None) or getattr(process, "kill", None)
+    if callable(force_kill):
+        try:
+            force_kill()
+        except Exception:
+            pass
+    await _bounded_wait_windows_root(
+        process,
+        MCP_PROBE_WINDOWS_ROOT_WAIT_SECONDS,
+    )
+
+
 async def _terminate_worker(
     process: Process | FallbackProcess,
     worker_process_group: int | None,
 ) -> None:
-    if os.name == "nt":  # pragma: no cover - exercised by native Windows CI
-        await terminate_windows_process_tree(process, 2.0)
+    if _is_windows():  # pragma: no cover - exercised by native Windows CI
+        contained = _has_confirmed_windows_job(process)
+        try:
+            if contained:
+                # This invokes TerminateJobObject through the installed MCP SDK. The
+                # confirmed outer Job contains every descendant even when a nested
+                # MCP-server Job cannot be assigned inside the worker.
+                await terminate_windows_process_tree(process, 2.0)
+        except Exception:
+            # Root reaping below is still mandatory if the SDK/Win32 helper fails.
+            pass
+        finally:
+            await _reap_windows_root(process, terminate_first=not contained)
         return
     if worker_process_group is None:
         return
@@ -466,10 +554,15 @@ async def run_probe_worker(payload: dict[str, Any]) -> dict[str, Any]:
     worker = Path(__file__).with_name("mcp_probe_worker.py")
     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     process = await _create_worker_process(worker, _safe_parent_environment())
+    if _is_windows() and not _has_confirmed_windows_job(process):
+        # Fail before stdin is touched: without the outer Job, an inner worker
+        # could start descendants that root-only cleanup cannot contain.
+        await _complete_cleanup(_terminate_worker(process, None))
+        return {"ok": False, "error": MCP_PROBE_CONTAINMENT_ERROR}
     # POSIX workers are session/process-group leaders. Preserve the exact PGID
     # now: once the leader exits, os.getpgid(pid) can no longer recover the
     # group even while an inherited MCP-server descendant is still alive.
-    worker_process_group = process.pid if os.name != "nt" else None
+    worker_process_group = process.pid if not _is_windows() else None
     try:
         async with asyncio.timeout(MCP_PROBE_WORKER_TIMEOUT_SECONDS):
             stdout = await _communicate_worker(process, encoded)
@@ -512,8 +605,8 @@ def _normalized_visible_text(value: str, *, preserve_layout: bool) -> str:
 def _redact(value: str, secrets_to_redact: set[str]) -> str:
     redacted = _normalized_visible_text(value, preserve_layout=True)
     for secret in sorted(secrets_to_redact, key=len, reverse=True):
-        if len(secret) >= 4:
-            redacted = redacted.replace(secret, "[redacted]")
+        if len(secret) >= MCP_PROBE_SUBSTRING_REDACTION_MIN_LENGTH:
+            redacted = redacted.replace(secret, MCP_PROBE_REDACTION_PLACEHOLDER)
     return redacted
 
 
@@ -527,16 +620,18 @@ def _safe_tools(
     secrets_to_redact: set[str],
 ) -> tuple[list[dict[str, Any]], list[str], list[str], list[str], bool]:
     secrets = {
-        _normalized_visible_text(secret, preserve_layout=False)
+        normalized
         for secret in secrets_to_redact
         if secret
+        and (normalized := _normalized_visible_text(secret, preserve_layout=False))
     }
-    if any(len(secret) < 4 for secret in secrets):
-        return [], [], [], [], True
+
+    def matching_secrets(value: str) -> set[str]:
+        normalized = _normalized_visible_text(value, preserve_layout=False)
+        return {secret for secret in secrets if secret in normalized}
 
     def contains_secret(value: str) -> bool:
-        normalized = _normalized_visible_text(value, preserve_layout=False)
-        return any(secret in normalized for secret in secrets)
+        return bool(matching_secrets(value))
 
     counts: dict[str, int] = {}
     normalized_origins: dict[str, set[str]] = {}
@@ -551,7 +646,8 @@ def _safe_tools(
             continue
         if contains_secret(name):
             continue
-        redacted_description = redacted_description or contains_secret(description)
+        description_matches = matching_secrets(description)
+        redacted_description = redacted_description or bool(description_matches)
         counts[name] = counts.get(name, 0) + 1
         reason: str | None = None
         try:
@@ -560,7 +656,15 @@ def _safe_tools(
             reason = "Blocked by CareerPilot's MCP tool policy."
         normalized = normalized_hermes_tool_name(name)
         normalized_origins.setdefault(normalized, set()).add(name)
-        validated.append((name, description, reason))
+        safe_description = (
+            MCP_PROBE_REDACTION_PLACEHOLDER
+            if any(
+                len(secret) < MCP_PROBE_SUBSTRING_REDACTION_MIN_LENGTH
+                for secret in description_matches
+            )
+            else _redact(description, description_matches)
+        )
+        validated.append((name, safe_description, reason))
 
     allowed = {name for name in allowed_tools if not contains_secret(name)}
     result: list[dict[str, Any]] = []
@@ -574,10 +678,7 @@ def _safe_tools(
         result.append(
             {
                 "name": display_name,
-                "description": _safe_display_text(
-                    _redact(description, secrets),
-                    1_000,
-                ),
+                "description": _safe_display_text(description, 1_000),
                 "allowed": name in allowed,
                 "selectable": reason is None,
                 "policy_reason": reason,
@@ -612,6 +713,9 @@ def _failed_result(error: str, latency_ms: int) -> dict[str, Any]:
     }:
         status = "policy_blocked"
         message = "CareerPilot blocked behavior outside the safe discovery boundary."
+    elif error == MCP_PROBE_CONTAINMENT_ERROR:
+        status = "policy_blocked"
+        message = "CareerPilot could not establish the required process containment boundary."
     elif error in {
         "command_not_found",
         "invalid_configuration",
