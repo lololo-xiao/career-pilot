@@ -603,7 +603,10 @@ def _normalized_visible_text(value: str, *, preserve_layout: bool) -> str:
 
 
 def _redact(value: str, secrets_to_redact: set[str]) -> str:
-    redacted = _normalized_visible_text(value, preserve_layout=True)
+    # Match and render from the same compact representation. Otherwise a long
+    # secret such as ``long\nsecret`` matches as ``longsecret`` but survives
+    # replacement when layout controls are preserved in the emitted text.
+    redacted = _normalized_visible_text(value, preserve_layout=False)
     for secret in sorted(secrets_to_redact, key=len, reverse=True):
         if len(secret) >= MCP_PROBE_SUBSTRING_REDACTION_MIN_LENGTH:
             redacted = redacted.replace(secret, MCP_PROBE_REDACTION_PLACEHOLDER)

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 import pytest
@@ -1156,6 +1157,68 @@ def test_common_mcp_path_redacts_only_matching_claims_not_all_tools() -> None:
     assert missing == []
     assert available == []
     assert suppressed is True
+
+
+@pytest.mark.parametrize("location", ["path", "blank_query_key"])
+@pytest.mark.parametrize(("control", "escaped"), [("\n", "n"), ("\t", "t")])
+def test_control_compacted_http_tokens_never_survive_result_rendering(
+    location: str,
+    control: str,
+    escaped: str,
+) -> None:
+    unicode_raw = f"ｌｏｎｇ{control}ｓｅｃｒｅｔ"
+    ascii_raw = f"long{control}secret"
+    compact = "longsecret"
+    encoded = quote(unicode_raw, safe="")
+    url = (
+        f"https://mcp.example.test/{encoded}"
+        if location == "path"
+        else f"https://mcp.example.test/mcp?{encoded}="
+    )
+    candidates = _http_url_secret_values(url)
+    assert unicode_raw in candidates
+
+    unsafe_unicode_name = f"unsafe_{unicode_raw}"
+    unsafe_compact_name = f"unsafe_{compact}"
+    safe_names = ["ascii_reader", "compact_reader", "unicode_reader"]
+    tools, present, missing, available, suppressed = _safe_tools(
+        [
+            {"name": unsafe_unicode_name, "description": "omit raw-token name"},
+            {"name": unsafe_compact_name, "description": "omit compact-token name"},
+            {"name": "ascii_reader", "description": f"before {ascii_raw} after"},
+            {"name": "compact_reader", "description": f"before {compact} after"},
+            {"name": "unicode_reader", "description": f"before {unicode_raw} after"},
+        ],
+        [unsafe_unicode_name, unsafe_compact_name, *safe_names],
+        candidates,
+    )
+    result = {
+        "discovered_tools": tools,
+        "allowed_present": present,
+        "allowed_missing": missing,
+        "discovered_not_allowed": available,
+    }
+
+    assert [tool["name"] for tool in tools] == safe_names
+    assert {tool["description"] for tool in tools} == {
+        "before [redacted] after"
+    }
+    assert present == safe_names
+    assert missing == []
+    assert available == []
+    assert suppressed is True
+    returned_strings = [
+        *present,
+        *missing,
+        *available,
+        *(str(value) for tool in tools for value in tool.values()),
+    ]
+    for token in (unicode_raw, ascii_raw, compact):
+        assert all(token not in value for value in returned_strings)
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert compact not in serialized
+    assert unicode_raw.replace(control, "") not in serialized
+    assert f"long\\{escaped}secret" not in serialized
 
 
 def test_secret_substrings_are_removed_from_names_descriptions_and_lists() -> None:
