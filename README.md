@@ -1,17 +1,32 @@
-![CareerPilot — a bird and paper plane flying above a city](assets/branding/city-bird-plane-v2/careerpilot-thumbnail-city-companion-v2-1536x1024.png)
+<h1 align="center">
+  <img src="assets/branding/city-bird-plane-v2/careerpilot-app-icon-bird-plane-v2-1024.png" alt="CareerPilot iOS app icon" width="76" />
+  CareerPilot
+</h1>
 
-# CareerPilot
+<p align="center">
+  <strong>One place to get all your job hunting done. Your AI partner who helps, understands, and grows with you.</strong>
+</p>
 
-> **One place to get all your job hunting done. Your AI partner who helps, understands, and grows with you.**
+<p align="center">
+  <a href="https://github.com/lololo-xiao/career-pilot/tree/build-week-2026"><img src="https://img.shields.io/badge/OpenAI-Build_Week_2026-111111" alt="OpenAI Build Week 2026" /></a>
+  <img src="https://img.shields.io/badge/model-GPT--5.6_Sol-10a37f" alt="GPT-5.6 Sol" />
+  <img src="https://img.shields.io/badge/runtime-Codex-111111" alt="Codex" />
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.12%2B-176b55" alt="Python 3.12 or newer" /></a>
+  <a href="https://nextjs.org/"><img src="https://img.shields.io/badge/Next.js-16-20332d" alt="Next.js 16" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-d22128" alt="Apache License 2.0" /></a>
+</p>
 
-[![OpenAI Build Week 2026](https://img.shields.io/badge/OpenAI-Build_Week_2026-111111)](https://github.com/lololo-xiao/career-pilot/tree/build-week-2026)
-![GPT-5.6 Sol](https://img.shields.io/badge/model-GPT--5.6_Sol-10a37f)
-![Codex](https://img.shields.io/badge/runtime-Codex-111111)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-176b55)](https://www.python.org/)
-[![Next.js 16](https://img.shields.io/badge/Next.js-16-20332d)](https://nextjs.org/)
-[![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-d22128)](LICENSE)
+<p align="center">
+  <a href="#demo">Watch the demo</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#built-with-gpt-56-and-codex">GPT-5.6 + Codex</a> ·
+  <a href="#license">License</a>
+</p>
 
-[Watch the demo](#demo) · [Quick start](#quick-start) · [Architecture](#architecture) · [GPT-5.6 + Codex](#built-with-gpt-56-and-codex) · [License](#license)
+<p align="center">
+  <img src="assets/branding/city-bird-plane-v2/careerpilot-thumbnail-city-companion-v2-1536x1024.png" alt="CareerPilot — a bird and paper plane flying above a city" />
+</p>
 
 ## Introduction
 
