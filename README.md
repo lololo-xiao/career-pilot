@@ -17,14 +17,6 @@
 </p>
 
 <p align="center">
-  <a href="#demo">Watch the demo</a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#architecture">Architecture</a> ·
-  <a href="#built-with-gpt-56-and-codex">GPT-5.6 + Codex</a> ·
-  <a href="#license">License</a>
-</p>
-
-<p align="center">
   <img src="assets/branding/city-bird-plane-v2/careerpilot-thumbnail-city-companion-v2-1536x1024.png" alt="CareerPilot — a bird and paper plane flying above a city" />
 </p>
 
@@ -67,15 +59,15 @@ multi-user service.
 
 ## Demo
 
-![Watch the narrated CareerPilot demo](docs/demo/careerpilot-demo-poster.jpg)
+<p align="center">
+  <strong>See the complete job-search workflow in 47 seconds.</strong><br />
+  <sub>Recorded with the current product UI using a fictional, credential-free workspace.</sub>
+</p>
 
 https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7
 
-▶ **[Open the 47-second narrated product demo](https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7)**
-
-The demo uses the current product UI and a fictional, credential-free workspace. For a
-longer walkthrough, open the keyboard-controlled [demo deck](docs/meetup-slides.html) or
-follow the [five-minute demo script](docs/demo-script.md).
+For a deeper walkthrough, open the keyboard-controlled [demo deck](docs/meetup-slides.html)
+or follow the [five-minute demo script](docs/demo-script.md).
 
 ## Quick start
 
