@@ -60,14 +60,11 @@ multi-user service.
 ## Demo
 
 <p align="center">
-  <strong>See the complete job-search workflow in 47 seconds.</strong><br />
-  <sub>Recorded with the current product UI using a fictional, credential-free workspace.</sub>
+  <strong>See the complete job-search workflow in under three minutes.</strong><br />
+  <sub>2:57 · 4K master · Higgs TTS 3 narration · fictional, credential-free workspace</sub>
 </p>
 
-https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7
-
-For a deeper walkthrough, open the keyboard-controlled [demo deck](docs/meetup-slides.html)
-or follow the [five-minute demo script](docs/demo-script.md).
+https://github.com/user-attachments/assets/94b4fb8e-8dbe-4674-b19e-ba0f99704fe7
 
 ## Quick start
 
