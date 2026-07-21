@@ -5,7 +5,7 @@ import os
 import secrets
 import shutil
 import sqlite3
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -274,7 +274,7 @@ def _reject_stored_credentials(database: Path) -> None:
     if not database.is_file():
         return
     try:
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             table_names = {
                 str(row[0])
                 for row in connection.execute(

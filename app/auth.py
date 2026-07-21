@@ -4,9 +4,11 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Iterator
 
 from cryptography.fernet import Fernet, InvalidToken
 from openai import OpenAI, OpenAIError
@@ -97,13 +99,24 @@ class AuthStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Commit or roll back a short-lived connection, then always close it."""
+
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def _ensure_schema(self) -> None:
         if self._schema_ready:
             return
         with self._schema_lock:
             if self._schema_ready:
                 return
-            with self._connect() as connection:
+            with self._connection() as connection:
                 connection.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS accounts (
@@ -158,7 +171,7 @@ class AuthStore:
 
         self._ensure_schema()
         now = int(time.time())
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             local_identity = connection.execute(
                 """
@@ -212,7 +225,7 @@ class AuthStore:
         identity_method: IdentityMethod,
     ) -> AuthenticatedAccount:
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT
@@ -279,7 +292,7 @@ class AuthStore:
         """Decrypt one connected provider without changing the active selection."""
 
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT encrypted_credentials, provider_email, plan_type
@@ -322,7 +335,7 @@ class AuthStore:
         self._ensure_schema()
         encrypted = self._cipher.encrypt(credential)
         now = int(time.time())
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO provider_connections(
@@ -355,7 +368,7 @@ class AuthStore:
 
     def select_provider(self, account_id: str, provider: ProviderMethod) -> bool:
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             exists = connection.execute(
                 """
                 SELECT 1 FROM provider_connections
@@ -374,7 +387,7 @@ class AuthStore:
     def disconnect_provider(self, account_id: str, provider: ProviderMethod) -> None:
         self._ensure_schema()
         now = int(time.time())
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 UPDATE accounts SET active_provider = NULL, updated_at = ?
@@ -398,7 +411,7 @@ class AuthStore:
     ) -> None:
         self._ensure_schema()
         encrypted = self._cipher.encrypt(credential)
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 UPDATE provider_connections
@@ -419,7 +432,7 @@ class AuthStore:
         self._ensure_schema()
         encrypted = self._cipher.encrypt(credential)
         now = int(time.time())
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 INSERT INTO service_credentials(
@@ -436,7 +449,7 @@ class AuthStore:
         """Decrypt one optional service credential for the local runtime."""
 
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 """
                 SELECT encrypted_credentials FROM service_credentials
@@ -454,7 +467,7 @@ class AuthStore:
 
     def delete_service_credential(self, account_id: str, service: str) -> None:
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 """
                 DELETE FROM service_credentials
@@ -465,7 +478,7 @@ class AuthStore:
 
     def provider_settings(self, account_id: str) -> ProviderSettingsResponse:
         self._ensure_schema()
-        with self._connect() as connection:
+        with self._connection() as connection:
             account = connection.execute(
                 "SELECT active_provider FROM accounts WHERE id = ?", (account_id,)
             ).fetchone()

@@ -4,6 +4,8 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { API_BASE_URL } from "../api-base-url";
+import { BrandMark } from "../brand-mark";
 import styles from "./discovery.module.css";
 import {
   jobKey,
@@ -22,8 +24,6 @@ import {
   type SaveOutcome,
 } from "./discovery";
 
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "";
 
 interface BoundPreview {
   binding: PreviewBinding;
@@ -311,7 +311,7 @@ export default function GuidedJobDiscovery() {
   return (
     <main className={styles.shell}>
       <header className={styles.header}>
-        <Link className={styles.brand} href="/"><span>CP</span><strong>CareerPilot</strong></Link>
+        <Link className={styles.brand} href="/"><span aria-hidden="true"><BrandMark /></span><strong>CareerPilot</strong></Link>
         <nav aria-label="Discovery navigation">
           <Link href="/">Talk with Pilot</Link>
           <Link href="/workspace">Job queue</Link>
@@ -474,7 +474,7 @@ export default function GuidedJobDiscovery() {
       </div>
 
       <footer className={styles.footer}>
-        <p>This is known-board discovery, not broad web search. CareerPilot remains a loopback-only local release; this page makes no public-hosting or remote-authentication claim.</p>
+        <p>This is known-board discovery, not broad web search. CareerPilot remains a private single-user release; this page makes no public-hosting or remote-authentication claim.</p>
       </footer>
     </main>
   );

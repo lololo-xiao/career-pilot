@@ -25,6 +25,7 @@ import {
   recoverableReadReducer,
   startRecoverableSettingsRead,
 } from "./settings-recovery";
+import { shareNativeBlob } from "./native-platform";
 import type {
   AgentAsset,
   AgentAssetKind,
@@ -270,11 +271,17 @@ export function AgentResourceSettings({ apiBaseUrl }: AgentResourceSettingsProps
     }
   }
 
-  function exportSelectedSkill() {
+  async function exportSelectedSkill() {
     if (!selected) return;
     try {
       const exported = buildUserSkillExport(selected);
-      const url = URL.createObjectURL(new Blob([exported.content], { type: exported.mimeType }));
+      const blob = new Blob([exported.content], { type: exported.mimeType });
+      if (await shareNativeBlob(blob, exported.filename, "CareerPilot skill")) {
+        setError(null);
+        setNotice(`Shared ${exported.filename} with the exact saved skill content.`);
+        return;
+      }
+      const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = exported.filename;

@@ -98,6 +98,19 @@ def _direct_request(client: tuple[str, int] | None) -> Request:
     return Request({"type": "http", "client": client, "headers": []})
 
 
+def _request_with_origin(
+    client: tuple[str, int] | None,
+    origin: str,
+) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "client": client,
+            "headers": [(b"origin", origin.encode("ascii"))],
+        }
+    )
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
 def test_direct_loopback_helper_accepts_ipv4_and_ipv6(host: str) -> None:
     require_direct_loopback_client(_direct_request((host, 50_000)))
@@ -122,6 +135,23 @@ def test_direct_loopback_helper_rejects_missing_malformed_and_remote_clients(
     assert caught.value.detail == (
         "Public job discovery is available only from this device"
     )
+
+
+def test_private_mobile_override_requires_flag_and_exact_capacitor_origin(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY", raising=False)
+    remote = ("203.0.113.10", 50_000)
+    request = _request_with_origin(remote, "capacitor://localhost")
+    with pytest.raises(HTTPException):
+        require_direct_loopback_client(request)
+
+    monkeypatch.setenv("CAREERPILOT_ALLOW_PRIVATE_MOBILE_DISCOVERY", "true")
+    require_direct_loopback_client(request)
+    with pytest.raises(HTTPException):
+        require_direct_loopback_client(
+            _request_with_origin(remote, "https://untrusted.example")
+        )
 
 
 def test_preview_is_bounded_and_creates_no_operational_rows(

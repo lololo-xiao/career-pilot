@@ -47,7 +47,8 @@
   height: 2.15rem;
   justify-content: center;
   letter-spacing: -0.06em;
-  transform: rotate(-3deg);
+  overflow: hidden;
+  transform: none;
   width: 2.15rem;
 }
 
@@ -570,7 +571,9 @@
   .workspace-local-note,
   .workspace-sidebar-bottom { display: none; }
   .workspace-topbar { top: 0; }
-  .workspace-content { padding: 2rem 1rem; }
+  .workspace-content {
+    padding: 2rem calc(1rem + var(--safe-area-right)) calc(2rem + var(--safe-area-bottom)) calc(1rem + var(--safe-area-left));
+  }
   .workspace-grid-two,
   .workspace-guided-grid,
   .workspace-form-grid,

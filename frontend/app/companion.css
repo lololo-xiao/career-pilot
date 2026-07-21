@@ -53,7 +53,8 @@
   height: 2rem;
   justify-content: center;
   letter-spacing: -0.06em;
-  transform: rotate(-3deg);
+  overflow: hidden;
+  transform: none;
   width: 2rem;
 }
 
@@ -2616,7 +2617,12 @@
   .pilot-approval-actions button { flex: 1; }
   .pilot-suggestions { flex-direction: column; align-items: stretch; width: 100%; }
   .pilot-suggestions button { justify-content: space-between; width: 100%; }
-  .pilot-composer-wrap { padding: 0.75rem; }
+  .pilot-composer-wrap {
+    padding: 0.75rem;
+    padding-bottom: calc(0.75rem + var(--safe-area-bottom));
+    padding-left: calc(0.75rem + var(--safe-area-left));
+    padding-right: calc(0.75rem + var(--safe-area-right));
+  }
   .pilot-composer-actions button span { display: none; }
   .pilot-match-topline { align-items: start; grid-template-columns: 1fr; }
   .pilot-score { height: 68px; width: 68px; }

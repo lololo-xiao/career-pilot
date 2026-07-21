@@ -11,9 +11,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { CapabilitySettings } from "../capability-settings";
+import { API_BASE_URL } from "../api-base-url";
 import { AgentResourceSettings } from "../agent-resource-settings";
 import { AgentIdentitySettings } from "../agent-identity-settings";
+import { BrandMark } from "../brand-mark";
 import { MCPSettings } from "../mcp-settings";
+import { NativeBackendControl } from "../native-app-shell";
 import { ProviderSettings } from "../provider-settings";
 import {
   createSettingsReadController,
@@ -31,10 +34,6 @@ import {
 } from "../settings-recovery";
 import type { AuthSessionResponse, AuthUser } from "../types";
 
-
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "";
 
 const NEXT_STEP_COPY: Record<SettingsStepId, string> = {
   "ai-connection": "Connection ready? Shape how your companion sounds and collaborates.",
@@ -148,11 +147,13 @@ export default function SettingsPage() {
     <main>
       <header className="site-header">
         <Link className="brand" href="/" aria-label="CareerPilot home">
-          <span className="brand-mark" aria-hidden="true">CP</span>
+          <span className="brand-mark" aria-hidden="true"><BrandMark /></span>
           <span>CareerPilot</span>
         </Link>
         <div className="account-control">
-          <span className="account-identity">Local-only workspace</span>
+          <span className="account-identity">Private workspace</span>
+          <NativeBackendControl />
+          <Link className="header-action" href="/privacy">Privacy</Link>
           <Link className="header-action" href="/workspace">Workspace</Link>
           {user?.active_provider ? (
             <Link className="header-action" href="/">Return to Pilot</Link>
@@ -165,21 +166,21 @@ export default function SettingsPage() {
           <span className="eyebrow">Settings</span>
           <h1>Choose how Pilot thinks—and what it can use.</h1>
           <p>
-            CareerPilot runs locally without a CareerPilot account. Connect an OpenAI
+            CareerPilot runs in your private runtime without a CareerPilot account. Connect an OpenAI
             API key, or use an eligible ChatGPT plan through a compatible Codex runtime
-            already installed on this device. Then review every tool and connected
+            already installed on the runtime host. Then review every tool and connected
             service available to Pilot.
           </p>
 
           {sessionRead.status === "loading" && !user ? (
             <p className="settings-session-loading" role="status">
-              Checking this device’s local session…
+              Checking your private workspace session…
             </p>
           ) : null}
           {sessionRead.error ? (
             <div className="settings-recovery-error settings-session-error" role="alert">
               <div>
-                <strong>Local session unavailable</strong>
+                <strong>Workspace session unavailable</strong>
                 <span>{sessionRead.error} Your settings and drafts remain on this page.</span>
               </div>
               <button

@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -158,7 +159,7 @@ def _database_checks(paths: CompanionPaths) -> list[Check]:
 
 def _database_check(name: str, database: Path, required: bool) -> Check:
     try:
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             result = connection.execute("PRAGMA quick_check").fetchone()
         ok = result == ("ok",)
         return Check(name, ok, str(database), required=required)

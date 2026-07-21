@@ -1036,6 +1036,17 @@ def _read_anchored_file(
 ) -> tuple[str, bytes | None]:
     if max_bytes <= 0:
         raise ValueError("Anchored file reads require a positive byte limit")
+    if os.name == "nt":
+        from career_companion.services.windows_anchored_file import (
+            read_anchored_file as read_windows_anchored_file,
+        )
+
+        return read_windows_anchored_file(
+            root,
+            relative_path,
+            capture=capture,
+            max_bytes=max_bytes,
+        )
     parts = _relative_parts(relative_path)
     root_fd = _open_trusted_directory(root)
     parent_fd = -1

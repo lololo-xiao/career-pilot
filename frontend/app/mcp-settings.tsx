@@ -422,7 +422,7 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
         <div>
           <span className="eyebrow">MCP connections</span>
           <h2 id="mcp-settings-title" tabIndex={-1}>Choose the outside tools Pilot can see</h2>
-          <p>Every server is local configuration with an explicit tool allowlist. Stdio servers run commands on this device.</p>
+          <p>Every server is private configuration with an explicit tool allowlist. Stdio servers run commands on the CareerPilot runtime host.</p>
         </div>
         <span className={enabledCount ? "mcp-count is-ready" : "mcp-count"}>{enabledCount} enabled</span>
       </div>
@@ -481,7 +481,7 @@ export function MCPSettings({ apiBaseUrl, onUpdated }: MCPSettingsProps) {
             {draft.name === "linkedin-search" ? (
               <div className="linkedin-mcp-note">
                 <span>LinkedIn search</span>
-                <p>Uses <code>uvx mcp-server-linkedin@latest</code>. The first search may open a browser so you can sign in; the session stays on this device.</p>
+                <p>Uses <code>uvx mcp-server-linkedin@latest</code>. The first search may open a browser so you can sign in; the session stays on the CareerPilot runtime host.</p>
                 {draft.source_url ? <a href={draft.source_url} rel="noreferrer" target="_blank">Review the community server <span aria-hidden="true">↗</span></a> : null}
                 {draft.command_available === false ? <small><strong>uvx was not found.</strong> Install uv before enabling this server.</small> : null}
               </div>

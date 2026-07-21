@@ -34,11 +34,19 @@ from career_companion.static_ui_release import (
 def _frontend(root: Path) -> Path:
     frontend = root / "frontend"
     (frontend / "app").mkdir(parents=True)
-    (frontend / "app" / "page.tsx").write_text("export default function Page() {}\n")
-    (frontend / "package.json").write_text('{"name":"release-test"}\n')
-    (frontend / "package-lock.json").write_text('{"lockfileVersion":3}\n')
-    (frontend / "next.config.ts").write_text("export default {};\n")
-    (frontend / "next-env.d.ts").write_text("// generated before build\n")
+    (frontend / "app" / "page.tsx").write_text(
+        "export default function Page() {}\n", encoding="utf-8"
+    )
+    (frontend / "package.json").write_text(
+        '{"name":"release-test"}\n', encoding="utf-8"
+    )
+    (frontend / "package-lock.json").write_text(
+        '{"lockfileVersion":3}\n', encoding="utf-8"
+    )
+    (frontend / "next.config.ts").write_text("export default {};\n", encoding="utf-8")
+    (frontend / "next-env.d.ts").write_text(
+        "// generated before build\n", encoding="utf-8"
+    )
     return frontend
 
 
@@ -57,20 +65,26 @@ def _export(
     build_directory = frontend / "out" / "_next" / "static" / build_id
     build_directory.mkdir(parents=True)
     (build_directory / "_buildManifest.js").write_text(
-        f'self.__BUILD_MANIFEST={{"buildId":{json.dumps(build_id)}}};\n'
+        f'self.__BUILD_MANIFEST={{"buildId":{json.dumps(build_id)}}};\n',
+        encoding="utf-8",
     )
     (build_directory / "_ssgManifest.js").write_text(
-        "self.__SSG_MANIFEST=new Set([]);\n"
+        "self.__SSG_MANIFEST=new Set([]);\n", encoding="utf-8"
     )
     chunks = frontend / "out" / "_next" / "static" / "chunks"
     chunks.mkdir()
-    (chunks / "release.js").write_text("self.__CAREERPILOT_RELEASE=true;\n")
-    (chunks / "workspace.js").write_text("self.__CAREERPILOT_WORKSPACE=true;\n")
+    (chunks / "release.js").write_text(
+        "self.__CAREERPILOT_RELEASE=true;\n", encoding="utf-8"
+    )
+    (chunks / "workspace.js").write_text(
+        "self.__CAREERPILOT_WORKSPACE=true;\n", encoding="utf-8"
+    )
     (frontend / "out" / "index.html").write_text(
         f"<title>CareerPilot</title><meta content='{build_id}'>"
         '<script src="/_next/static/chunks/release.js"></script>'
         f'<script src="/_next/static/{build_id}/_buildManifest.js"></script>'
-        f'<script src="/_next/static/{build_id}/_ssgManifest.js"></script>\n'
+        f'<script src="/_next/static/{build_id}/_ssgManifest.js"></script>\n',
+        encoding="utf-8",
     )
     workspace = frontend / "out" / "workspace"
     workspace.mkdir()
@@ -78,11 +92,16 @@ def _export(
         "<title>Workspace</title>"
         '<link rel="preload" as="script" '
         'href="/_next/static/chunks/workspace.js">'
-        '<script src="/_next/static/chunks/workspace.js"></script>\n'
+        '<script src="/_next/static/chunks/workspace.js"></script>\n',
+        encoding="utf-8",
     )
-    (frontend / "out" / "_next" / "app.js").write_text("release bundle\n")
+    (frontend / "out" / "_next" / "app.js").write_text(
+        "release bundle\n", encoding="utf-8"
+    )
     if attest:
-        (frontend / "out" / BUILD_ID_ATTESTATION_NAME).write_text(build_id)
+        (frontend / "out" / BUILD_ID_ATTESTATION_NAME).write_text(
+            build_id, encoding="utf-8"
+        )
     (frontend / "out" / ".DS_Store").write_bytes(b"junk")
     return build_id
 
@@ -108,7 +127,8 @@ def _write_manifest_references(
     )
     (frontend / "out" / "index.html").write_text(
         f"<title>CareerPilot</title><meta content='{build_id}'>"
-        f"{representative}{references}{extra}\n"
+        f"{representative}{references}{extra}\n",
+        encoding="utf-8",
     )
 
 
@@ -136,7 +156,7 @@ def _copy_project(repository: Path, project: Path, *, frontend: bool = True) -> 
             repository / "frontend",
             project / "frontend",
             ignore=shutil.ignore_patterns(
-                "node_modules", ".next", "out", ".DS_Store"
+                "node_modules", ".next", "out", ".DS_Store", ".env", ".env.*"
             ),
         )
 
@@ -220,6 +240,13 @@ def test_manifest_is_deterministic_and_ignores_only_generated_build_inputs(
     (frontend / "next-env.d.ts").write_text("// generated after build\n")
     assert frontend_source_fingerprint(frontend, project_root=tmp_path) == before
     assert verify_static_ui(frontend, project_root=tmp_path).source_fingerprint == before
+
+    # Capacitor owns and rewrites the generated native target and copied web bundle.
+    (frontend / "ios" / "App" / "App" / "public").mkdir(parents=True)
+    (frontend / "ios" / "App" / "App" / "public" / "index.html").write_text(
+        "generated native bundle\n"
+    )
+    assert frontend_source_fingerprint(frontend, project_root=tmp_path) == before
 
     # Authored input remains freshness-sensitive.
     (frontend / "app" / "page.tsx").write_text("export default function Changed() {}\n")
@@ -783,8 +810,9 @@ def test_browser_executable_script_types_always_validate_their_urls(
     )
     index = frontend / "out" / "index.html"
     index.write_text(
-        index.read_text()
-        + f'<script type="{script_type}" src="{source}"></script>'
+        index.read_text(encoding="utf-8")
+        + f'<script type="{script_type}" src="{source}"></script>',
+        encoding="utf-8",
     )
 
     if external:
@@ -811,8 +839,9 @@ def test_script_type_rejects_unicode_whitespace_ambiguity(
     )
     index = frontend / "out" / "index.html"
     index.write_text(
-        index.read_text()
-        + f'<script type="{script_type}" src="{source}"></script>'
+        index.read_text(encoding="utf-8")
+        + f'<script type="{script_type}" src="{source}"></script>',
+        encoding="utf-8",
     )
 
     with pytest.raises(StaticUIReleaseError, match="ambiguous"):
@@ -864,8 +893,9 @@ def test_stylesheet_rel_rejects_unicode_whitespace_ambiguity(
     _export(frontend)
     index = frontend / "out" / "index.html"
     index.write_text(
-        index.read_text()
-        + f'<link rel="{rel}" href="https://example.invalid/ambiguous.css">'
+        index.read_text(encoding="utf-8")
+        + f'<link rel="{rel}" href="https://example.invalid/ambiguous.css">',
+        encoding="utf-8",
     )
 
     with pytest.raises(StaticUIReleaseError, match="ambiguous"):
@@ -888,7 +918,7 @@ def test_preload_urls_receive_local_containment_validation(
     frontend = _frontend(tmp_path)
     _export(frontend)
     index = frontend / "out" / "index.html"
-    index.write_text(index.read_text() + markup)
+    index.write_text(index.read_text(encoding="utf-8") + markup, encoding="utf-8")
 
     with pytest.raises(StaticUIReleaseError, match="asset reference|local export"):
         write_static_ui_manifest(frontend, project_root=tmp_path)
@@ -925,7 +955,7 @@ def test_preload_markup_fails_closed_when_missing_or_ambiguous(
     frontend = _frontend(tmp_path)
     _export(frontend)
     index = frontend / "out" / "index.html"
-    index.write_text(index.read_text() + markup)
+    index.write_text(index.read_text(encoding="utf-8") + markup, encoding="utf-8")
 
     with pytest.raises(StaticUIReleaseError, match="ambiguous"):
         write_static_ui_manifest(frontend, project_root=tmp_path)
@@ -1280,16 +1310,23 @@ def test_manifest_writer_rejects_physical_portability_collisions_when_supported(
         "_next/static/chunks/question?.js",
     ],
 )
-def test_manifest_writer_rejects_nonportable_export_paths(
+def test_release_path_validator_rejects_nonportable_export_paths(
     tmp_path: Path,
     relative: str,
 ) -> None:
+    with pytest.raises(
+        StaticUIReleaseError,
+        match="cross-platform safe|Windows-reserved",
+    ):
+        static_release._portable_release_path_parts(relative)
+    if os.name == "nt":
+        return
+
     frontend = _frontend(tmp_path)
     _export(frontend)
     target = frontend / "out" / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("nonportable\n")
-
+    target.write_text("nonportable\n", encoding="utf-8")
     with pytest.raises(
         StaticUIReleaseError,
         match="cross-platform safe|Windows-reserved",
@@ -1483,7 +1520,8 @@ def test_build_inserts_manifest_references_without_casefold_index_drift(
         (frontend / "out" / "index.html").write_text(
             f"<html><body>{unicode_marker}<title>CareerPilot</title>"
             '<script src="/_next/static/chunks/release.js"></script>'
-            "</BODY></html>"
+            "</BODY></html>",
+            encoding="utf-8",
         )
         return subprocess.CompletedProcess(command, 0)
 
@@ -1491,7 +1529,7 @@ def test_build_inserts_manifest_references_without_casefold_index_drift(
     monkeypatch.setattr(subprocess, "run", fake_build)
 
     release = build_static_ui(frontend, project_root=tmp_path)
-    index = (release.export / "index.html").read_text()
+    index = (release.export / "index.html").read_text(encoding="utf-8")
 
     assert f"{unicode_marker}<title>" in index
     assert index.index("_buildManifest.js") < index.index("</BODY>")
@@ -1533,7 +1571,7 @@ def test_windows_cmd_launcher_runs_with_minimal_scrubbed_environment(
         "build_dir.mkdir(parents=True)\n"
         "(build_dir / '_buildManifest.js').write_text("
         "'self.__BUILD_MANIFEST={\"buildId\":\"' + build_id + '\"};')\n"
-        "(build_dir / '_ssgManifest.js').write_text('self.__SSG_MANIFEST=new Set([])')\n"
+        "(build_dir / '_ssgManifest.js').write_text('self.__SSG_MANIFEST=new Set([]);')\n"
         "Path('out/_next/static/chunks').mkdir()\n"
         "Path('out/_next/static/chunks/release.js').write_text('self.__CAREERPILOT_RELEASE=true')\n"
         "Path('out/index.html').write_text('<html><body><title>CareerPilot</title>' + build_id + 'clean<script src=\"/_next/static/chunks/release.js\"></script></body></html>\\n')\n"
@@ -1921,8 +1959,8 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
     _export(frontend)
     source_release = write_static_ui_manifest(frontend, project_root=project)
     page = frontend / "app" / "page.tsx"
-    original_page = page.read_text()
-    page.write_text(original_page + "// changed after export\n")
+    original_page = page.read_text(encoding="utf-8")
+    page.write_text(original_page + "// changed after export\n", encoding="utf-8")
     stale = subprocess.run(
         [uv, "build", "--offline", "--out-dir", str(tmp_path / "stale"), str(project)],
         env=environment,
@@ -1933,7 +1971,7 @@ def test_offline_sdist_and_wheel_bundle_only_verified_static_ui(
     assert stale.returncode != 0
     assert "Bundled static UI release policy failed" in stale.stdout
     assert "frontend sources changed" in stale.stdout
-    page.write_text(original_page)
+    page.write_text(original_page, encoding="utf-8")
 
     unmanifested = frontend / "out" / "unmanifested-release-rogue.js"
     unmanifested.write_text("must be rejected\n")

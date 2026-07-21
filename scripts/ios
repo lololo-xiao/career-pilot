@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPOSITORY_DIRECTORY=$(dirname -- "$SCRIPT_DIRECTORY")
+
+if [ -x "$REPOSITORY_DIRECTORY/.venv/bin/python" ]; then
+  exec "$REPOSITORY_DIRECTORY/.venv/bin/python" -m scripts.ios_release "$@"
+fi
+
+if command -v uv >/dev/null 2>&1; then
+  cd "$REPOSITORY_DIRECTORY"
+  exec uv run python -m scripts.ios_release "$@"
+fi
+
+if [ -x "$HOME/.local/bin/uv" ]; then
+  cd "$REPOSITORY_DIRECTORY"
+  exec "$HOME/.local/bin/uv" run python -m scripts.ios_release "$@"
+fi
+
+echo "CareerPilot needs Python 3.12. Run ./install.sh, then retry ./scripts/ios $*." >&2
+exit 1
