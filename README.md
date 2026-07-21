@@ -18,6 +18,8 @@
 
 <p align="center">
   <img src="assets/branding/city-bird-plane-v2/careerpilot-thumbnail-city-companion-v2-1536x1024.png" alt="CareerPilot — a bird and paper plane flying above a city" />
+  <br />
+  <sub>Image inspired by <a href="https://youtu.be/HAsFPfjQRAA?si=5n4u_C2TW0i9v1rl">「夕空の紙飛行機」</a>, the ending theme from one of my favorite manga/anime, <em>Hajime no Ippo</em> 🥊.</sub>
 </p>
 
 ## Introduction
