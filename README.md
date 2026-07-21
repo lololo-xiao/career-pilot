@@ -67,9 +67,11 @@ multi-user service.
 
 ## Demo
 
-[![Watch the narrated CareerPilot demo](docs/demo/careerpilot-demo-poster.jpg)](docs/demo/careerpilot-demo.mp4)
+[![Watch the narrated CareerPilot demo](docs/demo/careerpilot-demo-poster.jpg)](https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7)
 
-▶ **[Watch the 47-second narrated product demo](docs/demo/careerpilot-demo.mp4)**
+https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7
+
+▶ **[Open the 47-second narrated product demo](https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7)**
 
 The demo uses the current product UI and a fictional, credential-free workspace. For a
 longer walkthrough, open the keyboard-controlled [demo deck](docs/meetup-slides.html) or
