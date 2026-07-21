@@ -47,6 +47,7 @@
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
+  overflow: hidden;
   border-radius: 11px;
   background: var(--green-dark);
 }

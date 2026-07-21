@@ -11,6 +11,7 @@ import {
   resolveApiBaseUrl,
   saveNativeApiBaseUrl,
 } from "./api-base-url";
+import { BrandMark } from "./brand-mark";
 import { isNativeApp, openExternalUrl } from "./native-platform";
 import { getNativeViewportState } from "./native-viewport";
 
@@ -81,7 +82,7 @@ function NativeBackendSetup({ onReady }: { onReady: () => void }) {
   return (
     <main className="native-setup-shell">
       <section className="native-setup-card">
-        <div className="native-setup-mark" aria-hidden="true">CP</div>
+        <div className="native-setup-mark" aria-hidden="true"><BrandMark /></div>
         <span className="native-setup-eyebrow">iPhone setup</span>
         <h1>Connect your private CareerPilot runtime.</h1>
         <p>
@@ -202,7 +203,7 @@ export function NativeAppShell({ children }: { children: ReactNode }) {
   if (platform === "checking") {
     return (
       <main className="native-bootstrap" aria-label="Opening CareerPilot">
-        <span aria-hidden="true">CP</span>
+        <span aria-hidden="true"><BrandMark /></span>
       </main>
     );
   }

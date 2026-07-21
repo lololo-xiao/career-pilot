@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import { explainApproval, type ApprovalRequest } from "./approval-explanation";
 import { API_BASE_URL } from "./api-base-url";
+import { BrandMark } from "./brand-mark";
 import { MemoryRetrievalInspector } from "./memory-retrieval-inspector";
 import { MEMORY_RETRIEVAL_LABELS } from "./memory-retrieval";
 import { ResultView } from "./result-view";
@@ -1065,7 +1066,7 @@ export default function Home() {
       />
 
       <aside className="pilot-left-rail">
-        <a className="pilot-brand" href="#conversation" aria-label="CareerPilot home"><span>CP</span><strong>CareerPilot</strong></a>
+        <a className="pilot-brand" href="#conversation" aria-label="CareerPilot home"><span aria-hidden="true"><BrandMark /></span><strong>CareerPilot</strong></a>
         <button
           className="pilot-agent-card"
           type="button"

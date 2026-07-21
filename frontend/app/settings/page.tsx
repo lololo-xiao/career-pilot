@@ -14,6 +14,7 @@ import { CapabilitySettings } from "../capability-settings";
 import { API_BASE_URL } from "../api-base-url";
 import { AgentResourceSettings } from "../agent-resource-settings";
 import { AgentIdentitySettings } from "../agent-identity-settings";
+import { BrandMark } from "../brand-mark";
 import { MCPSettings } from "../mcp-settings";
 import { NativeBackendControl } from "../native-app-shell";
 import { ProviderSettings } from "../provider-settings";
@@ -146,7 +147,7 @@ export default function SettingsPage() {
     <main>
       <header className="site-header">
         <Link className="brand" href="/" aria-label="CareerPilot home">
-          <span className="brand-mark" aria-hidden="true">CP</span>
+          <span className="brand-mark" aria-hidden="true"><BrandMark /></span>
           <span>CareerPilot</span>
         </Link>
         <div className="account-control">

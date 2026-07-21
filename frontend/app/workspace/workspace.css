@@ -47,7 +47,8 @@
   height: 2.15rem;
   justify-content: center;
   letter-spacing: -0.06em;
-  transform: rotate(-3deg);
+  overflow: hidden;
+  transform: none;
   width: 2.15rem;
 }
 

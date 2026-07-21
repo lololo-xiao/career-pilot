@@ -1,12 +1,14 @@
 import Link from "next/link";
 
+import { BrandMark } from "../brand-mark";
+
 
 export default function PrivacyPage() {
   return (
     <main className="privacy-page">
       <header className="site-header">
         <Link className="brand" href="/" aria-label="CareerPilot home">
-          <span className="brand-mark" aria-hidden="true">CP</span>
+          <span className="brand-mark" aria-hidden="true"><BrandMark /></span>
           <span>CareerPilot</span>
         </Link>
         <div className="account-control">

@@ -5,6 +5,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { API_BASE_URL } from "../api-base-url";
+import { BrandMark } from "../brand-mark";
 import styles from "./discovery.module.css";
 import {
   jobKey,
@@ -310,7 +311,7 @@ export default function GuidedJobDiscovery() {
   return (
     <main className={styles.shell}>
       <header className={styles.header}>
-        <Link className={styles.brand} href="/"><span>CP</span><strong>CareerPilot</strong></Link>
+        <Link className={styles.brand} href="/"><span aria-hidden="true"><BrandMark /></span><strong>CareerPilot</strong></Link>
         <nav aria-label="Discovery navigation">
           <Link href="/">Talk with Pilot</Link>
           <Link href="/workspace">Job queue</Link>

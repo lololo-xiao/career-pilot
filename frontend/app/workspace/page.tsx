@@ -11,6 +11,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { BrandMark } from "../brand-mark";
 import { getGuidedProgress, type GuidedStepId } from "../guided-progress";
 import type {
   AuthSessionResponse,
@@ -372,7 +373,7 @@ export default function WorkspacePage() {
     <main className="workspace-shell">
       <aside className="workspace-sidebar">
         <Link className="workspace-brand" href="/">
-          <span>CP</span>
+          <span aria-hidden="true"><BrandMark /></span>
           <div><strong>CareerPilot</strong><small>Private workspace</small></div>
         </Link>
         <nav aria-label="Career workspace">

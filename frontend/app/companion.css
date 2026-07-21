@@ -53,7 +53,8 @@
   height: 2rem;
   justify-content: center;
   letter-spacing: -0.06em;
-  transform: rotate(-3deg);
+  overflow: hidden;
+  transform: none;
   width: 2rem;
 }
 
