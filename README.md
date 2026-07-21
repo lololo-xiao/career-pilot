@@ -67,7 +67,7 @@ multi-user service.
 
 ## Demo
 
-[![Watch the narrated CareerPilot demo](docs/demo/careerpilot-demo-poster.jpg)](https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7)
+![Watch the narrated CareerPilot demo](docs/demo/careerpilot-demo-poster.jpg)
 
 https://github.com/user-attachments/assets/d3a16517-c2d7-428c-a37f-73439fae37c7
 
